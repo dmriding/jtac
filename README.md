@@ -31,6 +31,13 @@ A developer's machine reports to nothing. Evidence leaves only with a push,
 only roots and signatures are shared, and `jtac show` prints exactly what a
 push will carry. See `DESIGN.md` section 19.
 
+## Support the work
+
+jtac is free to use. If it saved you a bad merge, the maintainer takes
+coffee: https://buymeacoffee.com/netviper. Organisations that want to offer
+it as part of a product need a commercial license, which is the
+competing-use case the license reserves.
+
 ## Contributing
 
 Read `CONTRIBUTING.md`, then `DESIGN.md`. Decisions are recorded in

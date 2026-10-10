@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "FSL-1.1-ALv2"
+repository = "https://github.com/dmriding/jtac"
+authors = ["David Riding"]
+publish = false
+
+[workspace.dependencies]
+jtac-core = { path = "crates/jtac-core" }
+jtac-policy = { path = "crates/jtac-policy" }
+jtac-gate = { path = "crates/jtac-gate" }
+jtac-checks = { path = "crates/jtac-checks" }
+jtac-store = { path = "crates/jtac-store" }
+jtac-sign = { path = "crates/jtac-sign" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+too_many_lines = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
