@@ -1,0 +1,26 @@
+name: Feature or design question
+description: Something jtac should do, or a place where DESIGN.md is unclear or wrong
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What goes wrong today, in one paragraph. A real workflow helps more than a hypothetical.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What jtac should do. Say which DESIGN.md section it touches and whether it changes a shipped format, the verdict function, policy, signing, storage, or a hook.
+    validations:
+      required: true
+  - type: dropdown
+    id: principle
+    attributes:
+      label: Does it keep the verdict a pure function and model-free?
+      description: DESIGN.md section 4, principles 1 and 2
+      options: ["Yes", "No, and here is why it should still be considered", "Not sure"]
+    validations:
+      required: true

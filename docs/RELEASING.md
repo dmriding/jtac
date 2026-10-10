@@ -1,0 +1,39 @@
+# Releasing
+
+`main` is the development line. It is always green, always signed, and never
+promised to anyone. A release is a signed tag `vX.Y.Z` on a commit of `main`.
+Nothing is "released" because it merged.
+
+## Rules enforced by the repository
+
+- Only the repository admin can create a `v*` tag, and the tag must be
+  signed. No one, admin included, can move or delete one.
+- `main` requires a pull request, a code-owner review, signed commits, and
+  green checks.
+
+## Cutting a release
+
+1. On `main`, the version in the workspace manifest is already the one to
+   release, bumped by the pull requests since the last tag.
+2. In `CHANGELOG.md`, move the `[Unreleased]` entries under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, in a pull request titled
+   `release: vX.Y.Z`. Merge it.
+3. Tag the merge commit and push the tag:
+
+   ```
+   git tag -s vX.Y.Z -m "jtac vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+4. The release workflow runs the full quality bars on the tagged commit,
+   builds the binaries, and publishes a GitHub release with the changelog
+   section as its notes. A failed workflow means no release; fix on `main`
+   and tag the next patch. Tags are never reused.
+
+## Version policy
+
+Semver, pre-1.0: a breaking change to the CLI, a policy key, a hook, or an
+evidence format is a minor bump; anything else is a patch. Every pull request
+bumps the version and adds its `[Unreleased]` entry. Shipped evidence and
+policy schemas are never edited: a change is a new schema version with a
+reader for the old one, whatever the crate version does.

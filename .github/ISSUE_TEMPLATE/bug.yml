@@ -1,0 +1,50 @@
+name: Bug
+description: jtac did something the design says it must not, or failed to do something it says it must
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: jtac version
+      description: Output of `jtac --version`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+      description: Cite the DESIGN.md section if you can
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Paste the exact output, including any `ABORT` or error text, in a code block. Scrub paths, hostnames, and anything private first.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: On a throwaway repository with generic names (`example-app`, `example.com`, `/workspace/...`). Never paste real repository content or evidence roots.
+      placeholder: |
+        1. jtac init
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux, macOS, Windows]
+    validations:
+      required: true
+  - type: checkboxes
+    id: clean
+    attributes:
+      label: Content check
+      options:
+        - label: This report contains no real transcripts, logs, paths, hostnames, credentials, or organisation names.
+          required: true

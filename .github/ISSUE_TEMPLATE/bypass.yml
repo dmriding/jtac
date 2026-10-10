@@ -1,0 +1,24 @@
+name: Gate bypass or missed rule
+description: A hook-bypass spelling, a suppression, a test weakening, or any pattern the gate should catch and does not
+labels: ["bug", "gate"]
+body:
+  - type: textarea
+    id: pattern
+    attributes:
+      label: The spelling or change that got through
+      description: The exact command or diff shape, with generic names. Each rule is tested by a table of every spelling found; this becomes a new row.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Rule that should have caught it
+      description: A rule id such as `JT-TEST-001`, or "classifier" for a shell spelling, or "unknown"
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: What the refusal should say
+      description: What happened, why the rule exists, the command to run next. Optional.
