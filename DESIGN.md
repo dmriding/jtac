@@ -179,7 +179,7 @@ Rust 2024 edition, one cargo workspace. Start with these crates and split furthe
 | `jtac-checks` | Check runner: subprocess execution, caching, diff-integrity checks | Impure |
 | `jtac-store` | Local content-addressed store and the git ref layer | Impure |
 | `jtac-sign` | SSHSIG signing and verification | Impure |
-| `jtac-cli` | The `jtac` binary, hook entry points, rendering | Impure |
+| `jtac` | The `jtac` binary (the crates.io package), hook entry points, rendering | Impure |
 
 The binary re-exports the library crates. Tests exercise the same code the binary runs.
 
@@ -507,6 +507,7 @@ cargo llvm-cov --workspace --summary-only     # line coverage at or above 80%
 - A fix to a rule adds the rule's own edge case to the table.
 - Integration tests build throwaway git repositories in a temp directory. No test touches the network or the developer's real config.
 - No `#[allow]` without a comment explaining why the lint is wrong in that place.
+- One concern per file. A file past about 1,500 production lines or a function past 150 lines needs a stated reason in the pull request. Comments say why, never what, and there are fewer comment lines than code lines.
 - Tests are named for the claim they assert.
 - Schema and evidence format are versioned. A shipped version is never edited. A change is a new version with a reader for the old one.
 

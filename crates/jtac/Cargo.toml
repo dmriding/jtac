@@ -1,0 +1,18 @@
+[package]
+name = "jtac"
+description = "Provenance and verification for AI-written code: a local gate with signed evidence that travels with commits. Pre-implementation."
+readme = "../../README.md"
+keywords = ["git", "provenance", "code-review", "ai", "attestation"]
+categories = ["development-tools", "command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = true
+
+[dependencies]
+
+[lints]
+workspace = true

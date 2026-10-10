@@ -17,7 +17,9 @@ Nothing is "released" because it merged.
    release, bumped by the pull requests since the last tag.
 2. In `CHANGELOG.md`, move the `[Unreleased]` entries under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading, in a pull request titled
-   `release: vX.Y.Z`. Merge it.
+   `release: vX.Y.Z`. That pull request is the one exception to the bump
+   rule: it changes no version, because the tag must equal the manifest.
+   Merge it.
 3. Tag the merge commit and push the tag:
 
    ```
