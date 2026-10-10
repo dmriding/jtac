@@ -8,7 +8,8 @@ evidence that travels with the commits. A CI gate that verifies that evidence
 independently and a review packet for humans follow in later releases.
 
 **Status: pre-implementation.** `DESIGN.md` is the source of truth and the
-build plan is its section 14. Nothing here runs yet.
+build plan is its section 14. Nothing here runs yet. `main` is the
+development line; releases are signed `v*` tags (`docs/RELEASING.md`).
 
 ## What it will do
 
