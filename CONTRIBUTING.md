@@ -28,3 +28,19 @@ Before anything is merged:
 
 Pull requests say what changed, why, the risky parts, and what to review
 hardest. The maintainer reviews and merges.
+
+## Contributions written with AI tools
+
+Welcome. jtac exists because AI-written code can be good, and this project
+uses these tools itself. The condition is accountability: the person who
+submits a pull request is its author, whatever produced the text. That means
+you have read every line, you understand why it is there, you have run the
+quality bars yourself, and you can answer questions about it in review.
+
+A pull request whose author cannot do those things is closed without review.
+Signs that lead there: a description that does not match the diff, tests that
+were weakened or removed to get green, changes outside the stated scope,
+commentary that narrates the code instead of explaining it, or answers in
+review that are plainly generated rather than considered. None of this is a
+judgment on the tool. It is the same standard a human-written change meets,
+and the same one jtac enforces on its users.
