@@ -1,0 +1,5 @@
+/target
+/docs/ignored/
+*.private.md
+.env
+.DS_Store
