@@ -162,8 +162,8 @@ impl PolicyError {
                 format!("rename the tier name \"{name}\" in {POLICY_PATH} to {spelling}")
             }
             Self::Glob { key, .. } => format!(
-                "fix {key} in {POLICY_PATH}: globset syntax, relative to the repository root, \
-                 / between directories, [*] for a literal *"
+                "fix {key} in {POLICY_PATH}: literals, ?, * and ** only, relative to the \
+                 repository root, / between directories"
             ),
         };
         format!("{fix}{NEXT}")

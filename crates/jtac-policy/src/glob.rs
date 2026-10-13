@@ -49,14 +49,16 @@ fn glob_error(key: String, pattern: &str, detail: impl ToString) -> PolicyError 
 const EMPTY: &str = "an empty pattern matches nothing";
 const LEADING: &str = "paths are relative to the repository root: no leading / or ./";
 const TRAILING: &str = "a path never ends in /: write dir/** for everything under dir";
-const BACKSLASH: &str = "paths are matched with /, never a backslash: write [*] for a literal *";
+const BACKSLASH: &str = "paths are matched with /, never a backslash: write ? for a special char";
 const ALTERNATION: &str = "alternation is not supported: write one pattern per branch";
+const CLASS: &str = "character classes are not supported: the language is literals, ?, * and **";
 const COMPONENT: &str = "a path has no empty, . or .. component";
 const CHARACTER: &str = "only printable ASCII, letters, and digits: no invisible characters";
 const EDGE: &str = "a pattern does not start or end with whitespace";
 
 /// Why `pattern` can never match a repository-relative path or a branch name, if it cannot
-/// (DESIGN.md 10.2). Alternation is refused so one pattern cannot smuggle in a refused branch.
+/// (DESIGN.md 10.2). Alternation and classes are refused so neither can smuggle in what the
+/// raw-string checks refuse, as `[/]src/**` would a leading `/`.
 fn unmatchable(pattern: &str) -> Option<&'static str> {
     let odd = |c: char| !(' '..='~').contains(&c) && !c.is_alphanumeric();
     let edge = |c: Option<char>| c.is_some_and(char::is_whitespace);
@@ -70,6 +72,8 @@ fn unmatchable(pattern: &str) -> Option<&'static str> {
         Some(BACKSLASH)
     } else if pattern.contains(['{', '}']) {
         Some(ALTERNATION)
+    } else if pattern.contains(['[', ']']) {
+        Some(CLASS)
     } else if pattern
         .split('/')
         .any(|part| matches!(part, "" | "." | ".."))
@@ -182,6 +186,9 @@ mod tests {
             ("{/src/**,x}", ALTERNATION),
             ("{src/,lib/}", ALTERNATION),
             ("src/{a,b}/**", ALTERNATION),
+            ("[/]src/**", CLASS),
+            ("[.]/src/**", CLASS),
+            ("src/[a]/**", CLASS),
             ("src//**", COMPONENT),
             ("src/./**", COMPONENT),
             ("src/../src/**", COMPONENT),
@@ -232,7 +239,6 @@ mod tests {
             "\u{6587}\u{6863}/**",
             "**/*.rs",
             "release/*",
-            "[*]",
             "a~b",
             "docs/my file.md",
             "v1..2",
