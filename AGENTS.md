@@ -39,7 +39,9 @@ cargo llvm-cov --workspace --summary-only     # line coverage at or above 80%
 - **Subprocesses take argv arrays.** No shell, no string interpolation into a command.
 - **Shipped formats are never edited.** Evidence and policy schemas are versioned. A change is a new version with a reader for the old one.
 - **No model call anywhere in v0.1.**
-- **New code is born in the right module.** One concern per file. Past roughly 1,500 production lines or a 150-line function, stop and ask whether it belongs elsewhere. Grep for an existing helper before writing one.
+- **New code is born in the right module.** One concern per file, split at birth, never in a later refactor. A file holds at most 800 production lines (everything outside its `#[cfg(test)] mod` tail) and a function at most 150; `scripts/loc-cap.sh` and clippy enforce both in CI, and `scripts/loc-cap-test.sh` is the script's bypass table. The only way past the file cap is `// jtac-loc-exempt: <reason>` on line 1 and a defense in the PR body. Grep for an existing helper before writing one.
+- **Shortest readable form first.** Write the version a person reads top to bottom, then stop. Lines added is a cost the PR body accounts for, not a sign of work.
+- **Comments sit at a block's head or tail,** sized for grep: enough to find the thing and the WHY. Nothing inside a block, nothing that narrates the next line. Explanation belongs in the PR body. Fewer plain `//` lines than code lines in production code; doc comments the `missing_docs` lint demands are not counted. CI counts.
 
 ## Tests
 

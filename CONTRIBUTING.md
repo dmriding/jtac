@@ -40,6 +40,7 @@ quality bars yourself, and you can answer questions about it in review.
 A pull request whose author cannot do those things is closed without review.
 Signs that lead there: a description that does not match the diff, tests that
 were weakened or removed to get green, changes outside the stated scope,
+a file past the cap in `AGENTS.md` with no defended exemption,
 commentary that narrates the code instead of explaining it, or answers in
 review that are plainly generated rather than considered. None of this is a
 judgment on the tool. It is the same standard a human-written change meets,
