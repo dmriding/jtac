@@ -194,6 +194,8 @@ The binary re-exports the library crates. Tests exercise the same code the binar
 - Nodes and roots are JSON, canonicalized with the JSON Canonicalization Scheme (RFC 8785).
 - A node's id is `sha256:<hex>` over its canonical bytes.
 - Hashes of git objects are recorded as git reports them, with the algorithm named, so SHA-1 and SHA-256 repositories both work.
+- Digests are lowercase hex. A node id is `sha256:` followed by 64 hex digits.
+- Numbers are integers. A float anywhere in a node, root, or policy is refused: RFC 8785 number formatting is the one place canonicalizers disagree, and nothing here needs one.
 
 ### 9.2 Node
 
@@ -208,7 +210,7 @@ The binary re-exports the library crates. Tests exercise the same code the binar
 }
 ```
 
-`ts` is recorded for humans. The verdict function never reads it.
+A node's `ts` is informational. The verdict function reads the root's `ts` (section 9.4), never a node's.
 
 v0.1 node kinds and bodies:
 
@@ -226,9 +228,36 @@ Rules:
 - `stdout_sha` and `stderr_sha` reference blobs in the local store. Output is capped at capture and the cap is recorded, so a truncated capture is distinguishable from a short one.
 - A `finding` always points at the `check` node that produced it.
 
+Known answer (test `node_id_known_answer`). This check node, canonical:
+
+```
+{"body":{"argv":["cargo","test","--workspace"],"cached":false,"duration_ms":1234,"exit":0,"id":"cargo-test","outcome":"pass","stderr_sha":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","stdout_sha":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","tool_version":"1.98.0"},"kind":"check","policy":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":1}
+```
+
+has id `sha256:34bb1ab4a26a881ab4c03234fe6ac2a1a618f2d501bfeac4a8c874d69fae3209`.
+
 ### 9.3 Merkle tree
 
-The nodes for one root form a binary Merkle tree in the RFC 6962 style: leaf hash is `sha256(0x00 || node_id_bytes)`, interior hash is `sha256(0x01 || left || right)`, leaves sorted by node id. This gives inclusion proofs, so a developer can later reveal one node and prove it was part of a root without revealing the rest.
+The nodes for one root form a Merkle tree in the RFC 6962 shape over the raw 32-byte digests of their ids. This gives inclusion proofs, so a developer can later reveal one node and prove it was part of a root without revealing the rest.
+
+- Leaves are the digests sorted ascending as bytes. A duplicate digest is a refused root.
+- `MTH([]) = SHA-256("")`.
+- `MTH([d]) = SHA-256(0x00 || d)`.
+- `MTH(D[0:n]) = SHA-256(0x01 || MTH(D[0:k]) || MTH(D[k:n]))` for `n > 1`, where `k` is the largest power of two smaller than `n`.
+- An inclusion proof is the RFC 6962 audit path: leaf index, tree size, and the sibling hashes from the leaf upward.
+
+Known answers (test `merkle_known_answers`). Leaves are the SHA-256 digests of the single ASCII bytes `a` through `e`, which sort to `d, c, b, e, a`:
+
+| n | root |
+| --- | --- |
+| 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| 1 | `de22f76c222682c331f7dda7349654b6a9f4f710077025e9b29130023712780f` |
+| 2 | `19abe2ce03b25e3d5616841e998bf9a6d82385a4aa54420cb4543fde06731b47` |
+| 3 | `5a5a959d18f4993fbdb0337315966dd7d3555b530ab5d095e47490150806e868` |
+| 4 | `f777efb8147617bc84463a6e7954eccad236ca12e1e87c22e98c2dcbbc39ac50` |
+| 5 | `006b72c2b127f9e2011db36182468cb6c3a92836fc3e39eb4fdbc3ea604f62b8` |
+
+Audit path for leaf index 1 of 3: `de22f76c…780f`, `a0d9f0a50b35b9f7d7edc57fb64f4771ddef0fefeaca4e6f949a1514db5b136d`. Audit path for leaf index 4 of 5: `f777efb8…ac50` alone.
 
 ### 9.4 Root
 
@@ -239,21 +268,28 @@ One root per push tip.
   "v": 1,
   "commit": "sha1:<tip commit>",
   "tree": "sha1:<tip tree>",
+  "ts": "2026-10-10T18:30:00Z",
   "covers": ["sha1:<commit>", "..."],
   "parents": [{ "commit": "sha1:<ancestor>", "root": "sha256:<its root id>" }],
   "policy": { "hash": "sha256:...", "version": 3, "source": "repo" },
   "gate": { "version": "0.1.0", "binary": "sha256:..." },
   "state": "covered",
   "evidence": "sha256:<merkle root>",
+  "levers": [],
   "counts": { "checks": 6, "pass": 6, "fail": 0, "findings": { "blocker": 0, "major": 0, "minor": 2 }, "waivers": 0 },
-  "signer": "SHA256:<ssh key fingerprint>"
+  "signer": { "principal": "dev@example.com", "fingerprint": "SHA256:<ssh key fingerprint>" }
 }
 ```
+
+- `ts` is the instant of the verdict and the `now` the verdict function was given (section 11.2). Replay hands it back, so a waiver's expiry is judged the same on every machine.
+- `levers` holds the lever nodes in full. They are leaves of `evidence` like any other node and the only nodes that leave the machine.
+- `counts` is derived from the nodes. `jtac replay` recomputes it, and a mismatch invalidates the root.
+- `signer.principal` is the identity looked up in the allowed-signers file (section 11.8). `signer.fingerprint` is for people and audit rows.
 
 - `covers` lists the commits between the nearest covered ancestors and the tip. Checks run on the tip's tree, and the root vouches for the path that led to it. Past a bound (default 256) the root records the base and tip instead of the list.
 - `parents` links to the roots of the nearest covered ancestors. An empty list on a non-initial commit is a visible break in coverage.
 - `state` is `covered` or `declared_off`. There is no root for `absent`. Absence is the missing root.
-- A `declared_off` root carries at least one `lever` node with action `waive`.
+- A `declared_off` root carries at least one lever in `levers` with action `waive`.
 - The root is signed as a detached SSHSIG signature, namespace `jtac-root-v1`, over its canonical bytes.
 
 ### 9.5 Coverage states
@@ -281,7 +317,7 @@ refs/jtac/roots/<first two hex of commit>/<commit>
 - The `pre-push` hook pushes the root refs for the commits being pushed, in a separate `git push` with an environment guard against recursion.
 - If the root push fails, the developer's push still proceeds and jtac warns loudly. The commits will read as absent until the roots are pushed. A strict mode that blocks instead is a policy option.
 
-Only roots and signatures are pushed. Nodes, captured output, and attempt history stay local.
+Only roots and signatures are pushed. Lever nodes travel inside the root. Every other node, captured output, and attempt history stays local.
 
 ---
 
@@ -381,8 +417,10 @@ Subprocess rules: argv arrays only, working directory at the repository root, a 
 ### 11.2 The verdict function
 
 ```rust
-pub fn gate(tree: &TreeId, policy: &Policy, nodes: &[Node]) -> Verdict
+pub fn gate(tree: &TreeId, policy: &Policy, nodes: &[Node], now: Timestamp) -> Verdict
 ```
+
+`now` is the only clock the function knows. `jtac check` passes the instant it records as the root's `ts`; `jtac replay` passes the root's `ts` back. A waiver whose `expires` is before `now` is not in scope.
 
 - Fails if any required check has no node for this tree and policy.
 - Fails if any required check's outcome is not `pass`.
@@ -465,7 +503,7 @@ Target: a working gate on any repository in under five minutes, with no account 
 ### 11.9 Reading evidence
 
 - **`jtac verify [range]`** checks, for each commit: a root exists or a tree match exists, the signature verifies, the signer is trusted or unknown, the root's commit and tree match the repository, and the parent links resolve. Exit code is non-zero if any root is invalid. Absent commits are reported and do not fail verification unless `--require-coverage` is set.
-- **`jtac replay <commit>`** loads the root and its nodes from the local store, recomputes the Merkle root and the verdict, and compares. On another person's machine the nodes are not present, so replay reports that the root verifies and the detail is not available locally.
+- **`jtac replay <commit>`** loads the root and its nodes from the local store, recomputes the Merkle root, the counts, and the verdict with the root's `ts` as `now`, and compares. Any mismatch invalidates the root. On another person's machine the nodes are not present, so replay reports that the root verifies and the detail is not available locally.
 - **`jtac audit [range]`** prints one row per commit with its coverage state, signer, policy version, and gate version, then the totals and the percentage in each state.
 - **`jtac show [range]`** prints the roots and signatures that a push of this range would send, exactly as they would be sent.
 - **`jtac why`** prints the last verdict's reasons, each with its rule, why the rule exists, and the next command.
@@ -528,15 +566,16 @@ Each milestone is one branch and ends with the quality bars green.
 | M2 | `jtac-policy`: parse, validate, hash, defaults per language | A malformed or unknown-key policy is refused with a three-part error |
 | M3 | `jtac-core` verdict function | Every verdict rule has a struct-literal test, including skipped and error outcomes |
 | M4 | `jtac-checks`: subprocess runner, capture caps, env scrub, timeouts, cache | A check that cannot spawn is `error`. Cache hits are marked |
-| M5 | `jtac-store`: local store and git ref layer | A root written on one clone is fetched and read on another |
-| M6 | `jtac-sign`: sign, verify, namespaces, trust file | A rewritten body and a wrong namespace both fail verification |
-| M7 | `jtac check`, `status`, `why` | A passing repository prints `CLEARED HOT` and writes a signed root. A failing one explains itself |
-| M8 | `jtac-gate` classifier, `pre-push` hook, `jtac init` | A push without a root is refused with the exact command. Every bypass spelling is in the table |
-| M9 | Diff-integrity checks | Each rule in section 10.3 has per-language pattern tests |
-| M10 | `verify`, `replay`, `audit`, `show` | Coverage states including tree fallback are reported correctly on a scripted history |
-| M11 | `waive` | Waivers are signed, scoped, expiring, and shown everywhere they apply |
-| M12 | Agent tool-call hook for the first agent | The advisory names the fence and the clearing command |
-| M13 | `jtac bench`, README with measured numbers, install script | Bench passes. A stranger can install and gate a repository in five minutes |
+| M5 | Diff-integrity checks | Each rule in section 10.3 has per-language pattern tests |
+| M6 | `jtac check --preview`, `status`, `why` | A repository gets a verdict with reasons and nothing is written or signed. The first demo |
+| M7 | `jtac-store`: local store and git ref layer | A root written on one clone is fetched and read on another |
+| M8 | `jtac-sign`: sign, verify, namespaces, trust file | A rewritten body and a wrong namespace both fail verification |
+| M9 | `jtac check` writes roots | A passing repository prints `CLEARED HOT` and writes a signed root. A failing one explains itself |
+| M10 | `jtac-gate` classifier, `pre-push` hook, `jtac init` | A push without a root is refused with the exact command. Every bypass spelling is in the table |
+| M11 | `verify`, `replay`, `audit`, `show` | Coverage states including tree fallback are reported correctly on a scripted history |
+| M12 | `waive` | Waivers are signed, scoped, expiring, and shown everywhere they apply |
+| M13 | Agent tool-call hook for the first agent | The advisory names the fence and the clearing command |
+| M14 | `jtac bench`, README with measured numbers, install script | Bench passes. A stranger can install and gate a repository in five minutes |
 
 Not in v0.1: any model call, CI verification, review rounds, tiers beyond recording, the collector, scoring, shared lessons, practices. Their node kinds and fields are reserved.
 
@@ -740,6 +779,13 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 11. **No default rule forbids or requires AI attribution in commit messages.** Provenance belongs in evidence. A repository can add a commit-text rule in its own policy.
 12. **Waivers are capped at 30 days and fences are not waivable in v0.1.**
 13. **License is FSL-1.1-ALv2 (Functional Source License): free for any use except a competing product or service, each release converting to Apache-2.0 after two years. It is source-available, not OSI open source, and the README says so. A contributor license agreement is in place before the first outside contribution.**
+14. **The root carries `ts`, and the verdict function takes `now`.** Replay passes the root's `ts` back, so expiry is reproducible.
+15. **Lever nodes are embedded in the root.** They are the only nodes that leave the machine.
+16. **The signer is a principal plus a fingerprint.** The principal is what the allowed-signers file keys on.
+17. **Integers only.** No float in any node, root, or policy.
+18. **Merkle leaves are raw digests, RFC 6962 shape, with the known answers in section 9.3.**
+19. **`counts` is derived and replay recomputes it.** A mismatch invalidates the root.
+20. **Diff-integrity and an unsigned `jtac check --preview` land before store and sign.** A demo exists after six milestones.
 
 ## 22. Open questions
 
