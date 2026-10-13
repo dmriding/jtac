@@ -384,7 +384,7 @@ branches = ["*"]
 paths = ["**"]
 ```
 
-- `run` is an argv array. There is no shell, no interpolation, and no environment passthrough beyond an allowlist built into the runner.
+- `run` is an argv array. There is no shell, no interpolation, and no environment passthrough beyond an allowlist of names built into the runner: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `CI`, `NO_COLOR`, the Cargo, rustup, Go, and Python location variables, and the Windows system set. No policy key widens it in v0.1.
 - A check id is `[a-z0-9_-]`, at most 64 bytes, because it names node bodies and cache keys. `required` defaults to true and `timeout_secs` to 600. A required check runs every time; there is no file-presence switch, so `init` writes only the checks that apply.
 - `block_at` is the lowest severity that fails the verdict (section 11.2): `blocker`, `major`, or `minor`. The default `major` leaves minor as the advisory tier.
 - Fence keys take `deny` or `allow`; `deny` is the default and the only value `init` writes.
@@ -428,12 +428,12 @@ The reason a blocker can still be legitimate (a test really was obsolete) is why
 1. **Preflight.** The working tree must be clean and HEAD must be the commit under test. If git cannot answer, that is a refusal, never a pass. `jtac check --preview` runs the checks, prints the verdict with its reasons, and writes nothing; it is the only mode that runs on a dirty tree.
 2. **Load policy** and compute its hash.
 3. **Run diff-integrity checks** first. They are fast and their failures are the most informative.
-4. **Run configured checks**, consulting the cache. Cache key: tree id, policy hash, check id, tool version. A cached result is recorded with `cached: true` and points at the original node.
+4. **Run configured checks**, consulting the cache. Cache key: tree id, policy hash, check id, tool version. Only a `pass` is cached; a failure reruns, because a cached failure would block until a cache nobody sees is cleared. A hit is a new node whose `cached_from` names the original.
 5. **Compute the verdict** with the pure function.
 6. **On pass:** build the Merkle tree, write and sign the root, print `CLEARED HOT`.
 7. **On fail:** write nodes and the verdict to the local store, write no root, print `ABORT` with each reason and the fix.
 
-Subprocess rules: argv arrays only, working directory at the repository root, a timeout per check, an environment scrubbed of anything shaped like a credential, stdout and stderr captured with a byte cap. A check that cannot be spawned is `error`, never `skipped`.
+Subprocess rules: argv arrays only, working directory at the repository root, stdin closed, a timeout that bounds the whole run: at the deadline the process group (a job object on Windows) is killed, whether the check still runs or has exited leaving a descendant that holds its output, and stdout and stderr captured with a 1 MiB cap per stream that keeps the head and marks the cut. The environment is the allowlist of names in section 10.2 and nothing else; a value is never inspected, because a token with no recognizable shape is still a token. Exit 0 is `pass` and a positive code is `fail`; a timeout, a spawn failure, and a negative code (a signal, a crash) are `error`, never `skipped`. `tool_version` is the first line of a version probe chosen by the tool's file name from a table built into the runner (`cargo --version`, `go version`, and peers), a rustup `+toolchain` selector carried along, and a tool that runs on Node probing `node --version` (the `node` beside it when the tool is given by path, as the npm launcher prefers) because its own version is in the lockfile and the runtime's is not; the probe spends from the check's own timeout; a tool the table does not know has an empty `tool_version` and is never cached. Project-pinned tools are already in the tree id through their lockfile, so the probe covers the global toolchain.
 
 ### 11.2 The verdict function
 
@@ -820,6 +820,7 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 25. **The policy hash covers the resolved policy,** defaults filled in, so it names the rules actually applied.
 26. **No `when` switch on checks, and no policy file refuses.** A required check always runs; `init` writes only the checks that apply; `check` never assumes defaults.
 27. **The verdict takes gathered facts, not the policy, and enforces waiver scope itself.** `jtac-policy` depends on `jtac-core`, so `gate` cannot take `Policy`; and replay must not trust whoever wrote a waiver. A commit waiver passes with `declared_off` and keeps the reasons; a rule waiver covers findings only, never a failed check.
+28. **Checks see an allowlisted environment, only a pass is cached, and the tool version comes from a probe table.** A value scrub cannot recognize every token; a cached failure blocks until a cache nobody sees is cleared; the policy has no version key, and a launcher shim's hash hides a toolchain upgrade.
 
 ## 22. Open questions
 
