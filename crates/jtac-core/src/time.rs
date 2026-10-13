@@ -15,7 +15,9 @@ impl Ts {
     /// Truncate `t` to the second. The writer's path. Refuses what the reader would refuse,
     /// so a written `ts` always reads back: years before 0000 have no four-digit spelling.
     pub fn from_timestamp(t: Timestamp) -> Result<Self, TsError> {
-        let ts = Self(Timestamp::from_second(t.as_second()).map_err(|_| TsError)?);
+        let floor =
+            i64::try_from(t.as_nanosecond().div_euclid(1_000_000_000)).map_err(|_| TsError)?;
+        let ts = Self(Timestamp::from_second(floor).map_err(|_| TsError)?);
         ts.to_string().parse()
     }
 
@@ -117,15 +119,17 @@ mod tests {
     }
 
     #[test]
-    fn from_timestamp_truncates_to_the_second_and_writes_only_what_reads_back() {
+    fn from_timestamp_floors_to_the_second_and_writes_only_what_reads_back() {
         let t: Timestamp = "2026-10-10T18:30:00.999999999Z".parse().unwrap();
         assert_eq!(Ts::from_timestamp(t).unwrap().to_string(), ONE);
-        assert_eq!(Ts::from_timestamp(Timestamp::MIN), Err(TsError));
-        let year_zero: Timestamp = "0000-01-01T00:00:00Z".parse().unwrap();
+        let year_zero: Timestamp = "0000-01-01T00:00:00.5Z".parse().unwrap();
         assert_eq!(
             Ts::from_timestamp(year_zero).unwrap().to_string(),
             "0000-01-01T00:00:00Z"
         );
+        let before_zero: Timestamp = "-000001-12-31T23:59:59.5Z".parse().unwrap();
+        assert_eq!(Ts::from_timestamp(before_zero), Err(TsError));
+        assert_eq!(Ts::from_timestamp(Timestamp::MIN), Err(TsError));
         assert!(Ts::from_timestamp(Timestamp::MAX).is_ok());
     }
 }

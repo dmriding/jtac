@@ -213,7 +213,7 @@ The binary re-exports the library crates. Tests exercise the same code the binar
 }
 ```
 
-A node's `ts` is informational. The verdict function reads the root's `ts` (section 9.4), never a node's.
+A node's `ts` is informational, with one exception: a waiver's `ts` is when it was written, and its 30-day cap runs from there (section 11.6). The verdict function reads the root's `ts` (section 9.4) for everything else.
 
 v0.1 node kinds and bodies:
 
@@ -485,7 +485,7 @@ jtac waive --rule JT-SUP-001 --path src/ffi/ --reason "..." --expires 14d
 ```
 
 - Writes a `lever` node, signed, with the reason verbatim.
-- A waiver is scoped: one commit, or one rule on one path with an expiry (maximum 30 days).
+- A waiver is scoped: one commit, or one rule on one path with an expiry at most 30 days after the waiver was written. A waiver written after the root that cites it is refused.
 - A waived root has state `declared_off` when the waiver covers the whole commit, and stays `covered` with `waivers > 0` when it covers one rule.
 - Every waiver in effect is printed by `jtac status` and on every `check` and push it affects.
 - Fences are never waivable from the CLI in v0.1.
