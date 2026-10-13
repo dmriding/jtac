@@ -642,6 +642,19 @@ mod tests {
                 Err(RootError::WaiverExpired { index: 0 }),
             ),
             (
+                "waiver expired one second before ts",
+                with(vec![rule(Some("2026-10-10T18:29:59Z"))], State::Covered),
+                Err(RootError::WaiverExpired { index: 0 }),
+            ),
+            (
+                "commit waiver expired one second before ts",
+                with(
+                    vec![with_expiry(commit_waiver(), "2026-10-10T18:29:59Z")],
+                    State::DeclaredOff,
+                ),
+                Err(RootError::WaiverExpired { index: 0 }),
+            ),
+            (
                 "waiver expiring at ts",
                 with(vec![rule(Some(TS))], State::Covered),
                 Ok(()),
@@ -802,6 +815,8 @@ mod tests {
     #[test]
     fn validate_refuses_mixed_hash_algorithms() {
         let one: GitOid = COMMIT_ONE.parse().unwrap();
+        let zero: GitOid = COMMIT_ZERO.parse().unwrap();
+        let later = rule(Some("2026-10-20T18:30:00Z"));
         let s256: GitOid =
             "sha256:6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
                 .parse()
@@ -844,20 +859,23 @@ mod tests {
                 Err(RootError::OidAlgorithm),
             ),
             (
-                "sha256 parent",
+                "sha256 parent at index 1",
                 Root {
-                    parents: vec![parent(s256)],
+                    parents: vec![parent(zero), parent(s256)],
                     ..root()
                 },
                 Err(RootError::OidAlgorithm),
             ),
             (
-                "sha256 lever tree",
+                "sha256 lever tree at index 1",
                 with(
-                    vec![Node {
-                        tree: s256,
-                        ..rule_waiver()
-                    }],
+                    vec![
+                        rule_waiver(),
+                        Node {
+                            tree: s256,
+                            ..later
+                        },
+                    ],
                     State::Covered,
                 ),
                 Err(RootError::OidAlgorithm),

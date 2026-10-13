@@ -16,7 +16,7 @@ pub struct Node {
     pub tree: GitOid,
     /// Hash of the effective policy (DESIGN.md section 10.1).
     pub policy: Sha256Digest,
-    /// Informational. The verdict reads the root's `ts`, never a node's.
+    /// Informational, except a waiver's: its 30-day cap runs from here (DESIGN.md 11.6).
     pub ts: Ts,
     /// The kind-specific body.
     pub body: Body,
