@@ -8,6 +8,15 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.2, M1) `jtac-core`: `sha256:` digests and git object ids with one spelling each,
+  RFC 8785 canonical bytes that refuse floats and integers past 2^53, evidence node and root
+  types that refuse unknown fields and versions, and the RFC 6962 Merkle tree with inclusion
+  proofs. Known-answer vectors from DESIGN.md sections 9.2 and 9.3 are asserted by
+  `node_id_known_answer` and `merkle_known_answers`.
+- (0.0.2, M1) DESIGN.md decisions 14 to 20: root `ts` and a `now` argument to the verdict,
+  levers embedded in the root, signer principal plus fingerprint, integers only, pinned Merkle
+  leaves, replay recomputes counts, preview before store and sign. `AGENTS.md` is the public
+  working agreement.
 - (0.0.1, M0) Cargo workspace with the seven crates from DESIGN.md section 8.1 as documented
   stubs. The `jtac` binary prints its version and refuses every other argument with a non-zero
   exit, so an unbuilt gate can never read as a pass.
