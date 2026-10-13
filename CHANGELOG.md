@@ -8,15 +8,17 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
-- (0.0.2, M1) `jtac-core`: `sha256:` digests and git object ids with one spelling each,
-  RFC 8785 canonical bytes that refuse floats and integers past 2^53, evidence node and root
-  types that refuse unknown fields and versions, and the RFC 6962 Merkle tree with inclusion
-  proofs. Known-answer vectors from DESIGN.md sections 9.2 and 9.3 are asserted by
-  `node_id_known_answer` and `merkle_known_answers`.
-- (0.0.2, M1) DESIGN.md decisions 14 to 20: root `ts` and a `now` argument to the verdict,
-  levers embedded in the root, signer principal plus fingerprint, integers only, pinned Merkle
-  leaves, replay recomputes counts, preview before store and sign. `AGENTS.md` is the public
-  working agreement.
+- (0.0.2, M1) `jtac-core`: `sha256:` digests, git object ids, and whole-second `ts` values
+  with one spelling each; RFC 8785 canonical bytes that refuse floats and integers past 2^53;
+  a reader that accepts only canonical bytes and refuses unknown fields and versions; evidence
+  node and root types; the RFC 6962 Merkle tree with inclusion proofs. Known answers from
+  DESIGN.md sections 9.2, 9.3, and 9.4 are asserted by `node_id_known_answer`,
+  `merkle_known_answers`, and `root_id_known_answer`.
+- (0.0.2, M1) DESIGN.md decisions 14 to 23: root `ts` and a `now` argument to the verdict,
+  applied waivers embedded in the root with their signatures, signer principal plus
+  fingerprint, integers only, pinned Merkle leaves, replay recomputes counts, preview before
+  store and sign, canonical-only readers, one `ts` spelling, error contract at the user
+  surface. `AGENTS.md` is the public working agreement.
 - (0.0.1, M0) Cargo workspace with the seven crates from DESIGN.md section 8.1 as documented
   stubs. The `jtac` binary prints its version and refuses every other argument with a non-zero
   exit, so an unbuilt gate can never read as a pass.

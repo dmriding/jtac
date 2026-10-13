@@ -11,7 +11,7 @@ jtac is provenance and verification for AI-written code: a local gate, signed ev
 - **Stop at the PR.** Open it with a full title and body: what changed, why, the risky parts, what to review hardest. The maintainer reviews and merges. Never merge, and never present a merge as done.
 - **Explicit `git add` paths only.** Never `-A` or `.`.
 - **No AI attribution** in commits, PR bodies, docs, or comments: no co-author trailers, no session links, no "generated with" footers. Saying what a tool found and why it mattered is fine. A byline is not.
-- **Bump the workspace version in every PR** and add a CHANGELOG entry. Patch for fixes, minor for new compatible behavior or any breaking change before 1.0.
+- **Bump the workspace version in every PR** and add a CHANGELOG entry. Every PR is a patch until `v0.1.0` is cut at the last v0.1 milestone; after that, `docs/RELEASING.md` decides.
 - Sections 21 and 22 of `DESIGN.md` list decisions awaiting confirmation and open questions. Do not build past one that your milestone depends on without asking.
 
 ## Quality bars, every commit
@@ -51,7 +51,7 @@ cargo llvm-cov --workspace --summary-only     # line coverage at or above 80%
 
 ## Writing for the reader, who is often a model
 
-Every error and refusal has three parts, in order: what happened, why the rule exists, and the exact command to run next with values filled in. Where the wrong instinct is predictable, name it and say not to. A refusal says whether it is a fence or a negotiation. One test iterates every error variant and asserts all three parts. See `DESIGN.md` section 12.
+Every error and refusal that reaches a person or a model has three parts, in order: what happened, why the rule exists, and the exact command to run next with values filled in. Where the wrong instinct is predictable, name it and say not to. A refusal says whether it is a fence or a negotiation. One test per user-facing surface iterates every error variant and asserts all three parts. Library errors carry the fields that surface needs and nothing more. See `DESIGN.md` section 12.
 
 ## Hard rules
 

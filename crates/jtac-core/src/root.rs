@@ -1,17 +1,17 @@
 //! The root: one signed summary per push tip (DESIGN.md section 9.4).
 
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
 use crate::digest::Sha256Digest;
-use crate::node::{Action, Body, Node};
+use crate::node::{Action, Body, Node, Scope};
 use crate::oid::GitOid;
 use crate::schema::V1;
 use crate::signer::Signer;
+use crate::time::Ts;
 
-/// What a push tip's evidence adds up to. Signed as a whole; `levers` are the only nodes
-/// that travel with it.
+/// What a push tip's evidence adds up to. Signed as a whole; applied waivers are the only
+/// nodes that travel with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Root {
@@ -22,7 +22,7 @@ pub struct Root {
     /// The tip tree, what the checks judged.
     pub tree: GitOid,
     /// Instant of the verdict and the `now` the verdict function saw.
-    pub ts: Timestamp,
+    pub ts: Ts,
     /// Commits between the nearest covered ancestors and the tip.
     pub covers: Covers,
     /// Roots of the nearest covered ancestors. Empty on a non-initial commit is a visible break.
@@ -35,8 +35,8 @@ pub struct Root {
     pub state: State,
     /// Merkle root over every node id (DESIGN.md section 9.3).
     pub evidence: Sha256Digest,
-    /// Lever nodes in full.
-    pub levers: Vec<Node>,
+    /// Every waiver the verdict applied, with its signature.
+    pub levers: Vec<SignedLever>,
     /// Derived from the nodes. Replay recomputes it; a mismatch invalidates the root.
     pub counts: Counts,
     /// Who signed.
@@ -57,34 +57,62 @@ impl Root {
     /// Shape rules a reader checks before trusting any field. Signature, Merkle root, and
     /// counts are checked by their own code; this is only what the type cannot express.
     pub fn validate(&self) -> Result<(), RootError> {
-        if let Some(index) = self
-            .levers
-            .iter()
-            .position(|n| !matches!(n.body, Body::Lever(_)))
-        {
-            return Err(RootError::NotALever { index });
+        for (index, lever) in self.levers.iter().enumerate() {
+            let Body::Lever(body) = &lever.node.body else {
+                return Err(RootError::NotAWaiver { index });
+            };
+            if body.action != Action::Waive {
+                return Err(RootError::NotAWaiver { index });
+            }
+            match &body.scope {
+                None => return Err(RootError::WaiverScope { index }),
+                Some(Scope::Commit { commit }) if *commit != self.commit => {
+                    return Err(RootError::WaiverCommit { index });
+                }
+                Some(Scope::Rule { .. }) if body.expires.is_none() => {
+                    return Err(RootError::WaiverExpiry { index });
+                }
+                Some(_) => {}
+            }
         }
-        let waived = self
-            .levers
-            .iter()
-            .any(|n| matches!(&n.body, Body::Lever(b) if b.action == Action::Waive));
-        if self.state == State::DeclaredOff && !waived {
+        if self.state == State::DeclaredOff && !self.levers.iter().any(|l| l.covers_commit()) {
             return Err(RootError::DeclaredOffWithoutWaiver);
         }
-        if let Some(index) = self.levers.iter().position(|n| n.tree != self.tree) {
-            return Err(RootError::LeverTree { index });
+        let tip = match &self.covers {
+            Covers::List(list) => list.last(),
+            Covers::Range { tip, .. } => Some(tip),
+        };
+        if tip != Some(&self.commit) {
+            return Err(RootError::CoversTip);
         }
         Ok(())
     }
 }
 
-/// The commits a root vouches for. A list up to the bound, then the ends of the range.
+/// A waiver and the signature over its node, namespace `jtac-lever-v1` (DESIGN.md 11.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(deny_unknown_fields)]
+pub struct SignedLever {
+    /// The lever node in full.
+    pub node: Node,
+    /// SSHSIG over the node's canonical bytes.
+    pub sig: String,
+}
+
+impl SignedLever {
+    fn covers_commit(&self) -> bool {
+        matches!(&self.node.body, Body::Lever(b) if matches!(b.scope, Some(Scope::Commit { .. })))
+    }
+}
+
+/// The commits a root vouches for, oldest first and ending at the tip. Past the bound, the
+/// ends of the range.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum Covers {
-    /// Every commit, newest last.
+    /// Every commit.
     List(Vec<GitOid>),
-    /// Too many to list: the oldest and the tip.
+    /// Too many to list.
     Range {
         /// Oldest covered commit.
         base: GitOid,
@@ -121,8 +149,6 @@ pub struct PolicyRef {
 pub enum PolicySource {
     /// `.jtac/policy.toml` in the repository.
     Repo,
-    /// Built-in defaults, no file present.
-    Default,
     /// A signed org policy release.
     Org,
 }
@@ -143,11 +169,11 @@ pub struct GateRef {
 pub enum State {
     /// The gate ran and passed.
     Covered,
-    /// The gate was waived for the whole commit.
+    /// A waiver covers the whole commit.
     DeclaredOff,
 }
 
-/// Totals derived from the nodes.
+/// Totals derived from the nodes (DESIGN.md section 9.4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Counts {
@@ -159,7 +185,7 @@ pub struct Counts {
     pub fail: u64,
     /// Findings by severity.
     pub findings: FindingCounts,
-    /// Lever nodes with action `waive`.
+    /// Length of `levers`.
     pub waivers: u64,
 }
 
@@ -175,50 +201,67 @@ pub struct FindingCounts {
     pub minor: u64,
 }
 
-/// A root whose shape is wrong, whatever its signature says.
+/// A root whose shape is wrong, whatever its signature says. `index` is the position in
+/// `levers`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RootError {
-    /// An entry of `levers` is not a lever node.
-    #[error("levers[{index}] is not a lever node")]
-    NotALever {
-        /// Position in `levers`.
+    /// An entry of `levers` is not a lever node with action `waive`.
+    #[error("levers[{index}] is not a waiver")]
+    NotAWaiver {
+        /// Where.
         index: usize,
     },
-    /// `declared_off` needs a waiver to point at.
-    #[error("state is declared_off but no lever has action waive")]
+    /// A waiver with no scope.
+    #[error("levers[{index}] has no scope")]
+    WaiverScope {
+        /// Where.
+        index: usize,
+    },
+    /// A commit-scoped waiver for some other commit.
+    #[error("levers[{index}] waives a different commit than the root's")]
+    WaiverCommit {
+        /// Where.
+        index: usize,
+    },
+    /// A rule-scoped waiver with no expiry (DESIGN.md section 11.6).
+    #[error("levers[{index}] is a rule waiver without an expiry")]
+    WaiverExpiry {
+        /// Where.
+        index: usize,
+    },
+    /// `declared_off` needs a waiver that covers the whole commit.
+    #[error("state is declared_off but no lever waives the whole commit")]
     DeclaredOffWithoutWaiver,
-    /// A lever about some other tree.
-    #[error("levers[{index}] is about a different tree than the root")]
-    LeverTree {
-        /// Position in `levers`.
-        index: usize,
-    },
+    /// `covers` does not end at the root's commit.
+    #[error("covers does not end at the root's commit")]
+    CoversTip,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::tests::{EMPTY, TS, check_node, lever_node};
+    use crate::canonical::from_canonical;
+    use crate::node::tests::{
+        COMMIT_ONE, EMPTY, TS, check_node, commit_waiver, lever, rule_waiver, signer, waiver,
+    };
+
+    const COMMIT_ZERO: &str = "sha1:0000000000000000000000000000000000000000";
+
+    fn signed(node: Node) -> SignedLever {
+        SignedLever {
+            node,
+            sig: "example-signature".into(),
+        }
+    }
 
     fn root() -> Root {
         Root {
             v: V1,
-            commit: "sha1:0000000000000000000000000000000000000001"
-                .parse()
-                .unwrap(),
+            commit: COMMIT_ONE.parse().unwrap(),
             tree: GitOid::EMPTY_TREE_SHA1.parse().unwrap(),
             ts: TS.parse().unwrap(),
-            covers: Covers::List(vec![
-                "sha1:0000000000000000000000000000000000000001"
-                    .parse()
-                    .unwrap(),
-            ]),
-            parents: vec![Parent {
-                commit: "sha1:0000000000000000000000000000000000000000"
-                    .parse()
-                    .unwrap(),
-                root: EMPTY.parse().unwrap(),
-            }],
+            covers: Covers::List(vec![COMMIT_ONE.parse().unwrap()]),
+            parents: vec![],
             policy: PolicyRef {
                 hash: EMPTY.parse().unwrap(),
                 version: 1,
@@ -231,44 +274,83 @@ mod tests {
             state: State::Covered,
             evidence: EMPTY.parse().unwrap(),
             levers: vec![],
+            counts: Counts::default(),
+            signer: signer(),
+        }
+    }
+
+    fn declared_off() -> Root {
+        Root {
+            state: State::DeclaredOff,
+            evidence: "sha256:60d73f36e3a666adcfe47ee42cd116a0c910364dcb1f096477d9d1e56e9b7d40"
+                .parse()
+                .unwrap(),
+            levers: vec![signed(commit_waiver())],
             counts: Counts {
-                checks: 1,
-                pass: 1,
+                waivers: 1,
                 ..Counts::default()
             },
-            signer: Signer {
-                principal: "dev@example.com".into(),
-                fingerprint: "SHA256:AAAA".into(),
-            },
+            ..root()
         }
     }
 
     #[test]
-    fn root_round_trips_with_levers_and_a_range() {
-        let mut r = root();
-        r.levers.push(lever_node(Action::Waive));
-        r.state = State::DeclaredOff;
-        r.covers = Covers::Range {
-            base: "sha1:0000000000000000000000000000000000000000"
-                .parse()
-                .unwrap(),
-            tip: r.commit,
-        };
-        let json = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<Root>(&json).unwrap(), r);
-        assert!(
-            json.contains(r#""levers":[{"#) && json.contains(r#""base":"#),
-            "{json}"
+    fn root_id_known_answer() {
+        // DESIGN.md section 9.4: a declared_off root with one commit waiver. Changing these
+        // bytes changes every root id ever written.
+        let want = concat!(
+            r#"{"commit":"sha1:0000000000000000000000000000000000000001","counts":{"checks":0,"fail":0,"findings":{"blocker":0,"major":0,"minor":0},"pass":0,"waivers":1},"#,
+            r#""covers":["sha1:0000000000000000000000000000000000000001"],"evidence":"sha256:60d73f36e3a666adcfe47ee42cd116a0c910364dcb1f096477d9d1e56e9b7d40","#,
+            r#""gate":{"binary":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","version":"0.1.0"},"#,
+            r#""levers":[{"node":{"body":{"action":"waive","reason":"example reason","scope":{"commit":"sha1:0000000000000000000000000000000000000001"},"#,
+            r#""signer":{"fingerprint":"SHA256:AAAA","principal":"dev@example.com"}},"kind":"lever","policy":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","#,
+            r#""tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":1},"sig":"example-signature"}],"parents":[],"#,
+            r#""policy":{"hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","source":"repo","version":1},"#,
+            r#""signer":{"fingerprint":"SHA256:AAAA","principal":"dev@example.com"},"state":"declared_off","tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":1}"#
+        );
+        let r = declared_off();
+        assert_eq!(
+            String::from_utf8(r.canonical_bytes().unwrap()).unwrap(),
+            want
         );
         assert_eq!(
-            r.id().unwrap(),
-            Sha256Digest::of(r.canonical_bytes().unwrap())
+            r.id().unwrap().to_string(),
+            "sha256:01e449f228a88b336568a36424831f2c866c94d24b0916312442da7d89b67091"
         );
+        let lever_id = r.levers[0].node.id().unwrap();
+        assert_eq!(crate::merkle::merkle_root(&[lever_id]).unwrap(), r.evidence);
+        assert_eq!(from_canonical::<Root>(want.as_bytes()).unwrap(), r);
+        assert_eq!(r.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_range_and_a_rule_waiver_round_trip() {
+        let r = Root {
+            covers: Covers::Range {
+                base: COMMIT_ZERO.parse().unwrap(),
+                tip: COMMIT_ONE.parse().unwrap(),
+            },
+            levers: vec![signed(rule_waiver())],
+            counts: Counts {
+                waivers: 1,
+                ..Counts::default()
+            },
+            ..root()
+        };
+        let bytes = r.canonical_bytes().unwrap();
+        assert_eq!(from_canonical::<Root>(&bytes).unwrap(), r);
+        let json = String::from_utf8(bytes).unwrap();
+        assert!(
+            json.contains(r#""covers":{"base":"#)
+                && json.contains(r#""expires":"2026-10-24T18:30:00Z""#),
+            "{json}"
+        );
+        assert_eq!(r.validate(), Ok(()));
     }
 
     #[test]
     fn unknown_fields_and_versions_are_refused() {
-        let good = serde_json::to_value(root()).unwrap();
+        let good = serde_json::to_value(declared_off()).unwrap();
         let mut extra = good.clone();
         extra["note"] = "x".into();
         let mut v2 = good.clone();
@@ -277,11 +359,23 @@ mod tests {
         bad_state["state"] = "absent".into();
         let mut extra_counts = good.clone();
         extra_counts["counts"]["errors"] = 0.into();
+        let mut extra_lever = good.clone();
+        extra_lever["levers"][0]["key"] = "x".into();
+        let mut lever_v2 = good.clone();
+        lever_v2["levers"][0]["node"]["v"] = 2.into();
+        let mut default_source = good.clone();
+        default_source["policy"]["source"] = "default".into();
+        let mut range = serde_json::to_value(root()).unwrap();
+        range["covers"] = serde_json::json!({"base": COMMIT_ZERO, "tip": COMMIT_ONE, "x": 1});
         for (name, doc) in [
             ("extra key", extra),
             ("v2", v2),
             ("state absent", bad_state),
             ("extra count", extra_counts),
+            ("extra lever key", extra_lever),
+            ("lever v2", lever_v2),
+            ("policy source default", default_source),
+            ("extra covers key", range),
         ] {
             assert!(
                 serde_json::from_value::<Root>(doc).is_err(),
@@ -291,30 +385,101 @@ mod tests {
     }
 
     #[test]
-    fn validate_table() {
-        let mut not_a_lever = root();
-        not_a_lever.levers.push(check_node());
-        let mut off_without_waiver = root();
-        off_without_waiver.state = State::DeclaredOff;
-        off_without_waiver.levers.push(lever_node(Action::Init));
-        let mut other_tree = root();
-        other_tree.levers.push(lever_node(Action::Waive));
-        other_tree.levers[0].tree =
-            "sha256:6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
-                .parse()
-                .unwrap();
-        let mut off_with_waiver = root();
-        off_with_waiver.state = State::DeclaredOff;
-        off_with_waiver.levers.push(lever_node(Action::Waive));
+    fn validate_refuses_every_wrong_shape() {
+        let other_commit = waiver(
+            Scope::Commit {
+                commit: COMMIT_ZERO.parse().unwrap(),
+            },
+            None,
+        );
+        let rule_no_expiry = waiver(
+            Scope::Rule {
+                rule: "JT-SUP-001".into(),
+                path: "src/".into(),
+            },
+            None,
+        );
+        let with = |levers: Vec<Node>, state: State| Root {
+            state,
+            levers: levers.into_iter().map(signed).collect(),
+            ..root()
+        };
         let table = [
-            (root(), Ok(())),
-            (not_a_lever, Err(RootError::NotALever { index: 0 })),
-            (off_without_waiver, Err(RootError::DeclaredOffWithoutWaiver)),
-            (other_tree, Err(RootError::LeverTree { index: 0 })),
-            (off_with_waiver, Ok(())),
+            ("covered, no levers", root(), Ok(())),
+            (
+                "rule waiver keeps covered",
+                with(vec![rule_waiver()], State::Covered),
+                Ok(()),
+            ),
+            (
+                "check node as lever",
+                with(vec![commit_waiver(), check_node()], State::Covered),
+                Err(RootError::NotAWaiver { index: 1 }),
+            ),
+            (
+                "init lever",
+                with(vec![lever(Action::Init)], State::Covered),
+                Err(RootError::NotAWaiver { index: 0 }),
+            ),
+            (
+                "waiver without scope",
+                with(vec![commit_waiver(), lever(Action::Waive)], State::Covered),
+                Err(RootError::WaiverScope { index: 1 }),
+            ),
+            (
+                "waiver for another commit",
+                with(vec![other_commit], State::Covered),
+                Err(RootError::WaiverCommit { index: 0 }),
+            ),
+            (
+                "rule waiver without expiry",
+                with(vec![rule_waiver(), rule_no_expiry], State::Covered),
+                Err(RootError::WaiverExpiry { index: 1 }),
+            ),
+            (
+                "declared_off with rule waiver only",
+                with(vec![rule_waiver()], State::DeclaredOff),
+                Err(RootError::DeclaredOffWithoutWaiver),
+            ),
+            (
+                "declared_off with no levers",
+                with(vec![], State::DeclaredOff),
+                Err(RootError::DeclaredOffWithoutWaiver),
+            ),
+            ("declared_off with commit waiver", declared_off(), Ok(())),
+            (
+                "covers empty",
+                Root {
+                    covers: Covers::List(vec![]),
+                    ..root()
+                },
+                Err(RootError::CoversTip),
+            ),
+            (
+                "covers ends elsewhere",
+                Root {
+                    covers: Covers::List(vec![
+                        COMMIT_ONE.parse().unwrap(),
+                        COMMIT_ZERO.parse().unwrap(),
+                    ]),
+                    ..root()
+                },
+                Err(RootError::CoversTip),
+            ),
+            (
+                "range tip elsewhere",
+                Root {
+                    covers: Covers::Range {
+                        base: COMMIT_ZERO.parse().unwrap(),
+                        tip: COMMIT_ZERO.parse().unwrap(),
+                    },
+                    ..root()
+                },
+                Err(RootError::CoversTip),
+            ),
         ];
-        for (r, want) in table {
-            assert_eq!(r.validate(), want);
+        for (name, r, want) in table {
+            assert_eq!(r.validate(), want, "{name}");
         }
     }
 }

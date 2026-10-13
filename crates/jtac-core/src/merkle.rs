@@ -1,6 +1,5 @@
 //! RFC 6962 tree over raw node-id digests, with inclusion proofs (DESIGN.md section 9.3).
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::digest::Sha256Digest;
@@ -24,15 +23,15 @@ pub fn prove(leaves: &[Sha256Digest], leaf: &Sha256Digest) -> Result<InclusionPr
     })
 }
 
-/// An RFC 6962 audit path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// An RFC 6962 audit path. No wire form yet: a reveal format gets its own versioned schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InclusionProof {
     /// The leaf digest.
     pub leaf: Sha256Digest,
     /// Position of the leaf in sorted order.
     pub index: u64,
-    /// Number of leaves in the tree.
+    /// Number of leaves in the tree. Not bound by the root: a size that keeps the path shape
+    /// also verifies, so `verify` proves the leaf, never the count.
     pub size: u64,
     /// Sibling hashes from the leaf up to the root.
     pub path: Vec<Sha256Digest>,
@@ -201,14 +200,12 @@ mod tests {
             for leaf in &leaves {
                 let p = prove(&leaves, leaf).unwrap();
                 assert!(p.verify(&root), "n={n} leaf={leaf}");
-                let json = serde_json::to_string(&p).unwrap();
-                assert_eq!(serde_json::from_str::<InclusionProof>(&json).unwrap(), p);
             }
         }
     }
 
     #[test]
-    fn a_tampered_proof_never_verifies() {
+    fn a_proof_proves_only_its_leaf_under_its_root() {
         let leaves = digests(7);
         let root = merkle_root(&leaves).unwrap();
         let good = prove(&leaves, &leaves[3]).unwrap();
@@ -224,6 +221,28 @@ mod tests {
         size_too_small.size = 4;
         let mut size_too_large = good.clone();
         size_too_large.size = 100;
+        let mut same_shape = good.clone();
+        same_shape.size = 8;
+        assert!(
+            same_shape.verify(&root),
+            "size is not authenticated; see InclusionProof::size"
+        );
+        for (index, size) in [
+            (u64::MAX - 1, u64::MAX),
+            (0, u64::MAX),
+            (u64::MAX, u64::MAX),
+            (3, 1 << 63),
+        ] {
+            let mut huge = good.clone();
+            huge.index = index;
+            huge.size = size;
+            assert!(!huge.verify(&root), "index={index} size={size} verified");
+            huge.path = vec![other; 64];
+            assert!(
+                !huge.verify(&root),
+                "index={index} size={size} with a 64-entry path verified"
+            );
+        }
         let mut short_path = good.clone();
         short_path.path.pop();
         let mut long_path = good.clone();

@@ -10,17 +10,19 @@ pub mod oid;
 pub mod root;
 pub mod schema;
 pub mod signer;
+pub mod time;
 
-pub use canonical::{CanonicalError, canonical_bytes, canonical_digest};
+pub use canonical::{CanonicalError, ReadError, canonical_bytes, canonical_digest, from_canonical};
 pub use digest::{ParseError, Sha256Digest};
-pub use jiff::Timestamp;
 pub use merkle::{InclusionProof, MerkleError, merkle_root, prove};
 pub use node::{
-    Action, Body, CheckBody, FindingBody, Kind, LeverBody, Node, Outcome, Scope, Severity,
+    Action, Body, Capture, CheckBody, FindingBody, Kind, LeverBody, Node, Outcome, Scope, Severity,
 };
 pub use oid::GitOid;
 pub use root::{
-    Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError, State,
+    Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError,
+    SignedLever, State,
 };
 pub use schema::V1;
 pub use signer::Signer;
+pub use time::{Ts, TsError};
