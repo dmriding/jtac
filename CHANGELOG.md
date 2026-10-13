@@ -6,6 +6,13 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.0.5, issue #6) `jtac-policy` globs: a branch pattern git could never name (`HEAD`,
+  `main.lock`, `.hidden`, `v1..2`, a space, `~`, `^`, `:`) is refused like an unmatchable path;
+  `?` is documented as one byte; the refusal table covers control characters, DEL, and lone
+  brackets.
+
 ### Added
 
 - (0.0.4, M2) `jtac-policy`: parse `.jtac/policy.toml`, refuse unknown keys, floats, and
