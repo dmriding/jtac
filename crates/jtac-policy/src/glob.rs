@@ -12,7 +12,8 @@ use crate::error::PolicyError;
 use crate::schema::{Policy, with_jtac_dir};
 
 /// A compiled list of globs. Matches when any one does; an empty list matches nothing.
-/// `?` matches one ASCII char; a non-ASCII char in a path is matched with `*`.
+/// `?` matches one byte: one ASCII char, or part of any other. A non-ASCII path is matched
+/// with `*`; `glob_match_table` pins the byte rule.
 #[derive(Clone, Debug)]
 pub struct Matcher(GlobSet);
 
@@ -57,6 +58,7 @@ const COMPONENT: &str = "a path has no empty, . or .. component";
 const CHARACTER: &str = "printable ASCII only: match other characters with *";
 const NEGATION: &str = "no leading !: there is no negation, write the pattern you want matched";
 const EDGE: &str = "a pattern does not start or end with whitespace";
+const BRANCH: &str = "git refuses this as a branch name: see git check-ref-format --branch";
 
 /// Why `pattern` can never match a repository-relative path or a branch name, if it cannot
 /// (DESIGN.md 10.2). Alternation and classes are refused so neither can smuggle in what the
@@ -92,10 +94,27 @@ fn unmatchable(pattern: &str) -> Option<&'static str> {
     }
 }
 
-/// `Matcher::new` for a policy list, refusing first what could never match.
-fn policy_matcher(key: &str, patterns: &[String]) -> Result<Matcher, PolicyError> {
+/// `unmatchable` plus the branch-name rules of `git check-ref-format --branch` that the path
+/// rules do not already cover.
+fn unmatchable_branch(pattern: &str) -> Option<&'static str> {
+    let bad_part = |part: &str| part.starts_with('.') || part.ends_with(".lock");
+    let refused = pattern == "HEAD"
+        || pattern.starts_with('-')
+        || pattern.ends_with('.')
+        || pattern.contains("..")
+        || pattern.contains([' ', '~', '^', ':'])
+        || pattern.split('/').any(bad_part);
+    unmatchable(pattern).or(refused.then_some(BRANCH))
+}
+
+/// `Matcher::new` for a policy list, refusing first what `refuse` says could never match.
+fn policy_matcher(
+    key: &str,
+    patterns: &[String],
+    refuse: fn(&str) -> Option<&'static str>,
+) -> Result<Matcher, PolicyError> {
     for (index, pattern) in patterns.iter().enumerate() {
-        if let Some(reason) = unmatchable(pattern) {
+        if let Some(reason) = refuse(pattern) {
             return Err(glob_error(format!("{key}[{index}]"), pattern, reason));
         }
     }
@@ -125,18 +144,28 @@ impl Policy {
             .tiers
             .iter()
             .map(|(name, tier)| {
-                let matcher = policy_matcher(&format!("tiers.{name}.paths"), &tier.paths)?;
+                let matcher =
+                    policy_matcher(&format!("tiers.{name}.paths"), &tier.paths, unmatchable)?;
                 Ok((name.clone(), matcher))
             })
             .collect::<Result<_, PolicyError>>()?;
         Ok(Matchers {
-            protected: policy_matcher("protected.paths", &with_jtac_dir(&self.protected.paths))?,
+            protected: policy_matcher(
+                "protected.paths",
+                &with_jtac_dir(&self.protected.paths),
+                unmatchable,
+            )?,
             tiers,
-            scope_paths: policy_matcher("scope.paths", &self.scope.paths)?,
-            scope_branches: policy_matcher("scope.branches", &self.scope.branches)?,
+            scope_paths: policy_matcher("scope.paths", &self.scope.paths, unmatchable)?,
+            scope_branches: policy_matcher(
+                "scope.branches",
+                &self.scope.branches,
+                unmatchable_branch,
+            )?,
             protected_branches: policy_matcher(
                 "fences.protected_branches",
                 &self.fences.protected_branches,
+                unmatchable_branch,
             )?,
         })
     }
@@ -170,6 +199,7 @@ mod tests {
             ("**", "a/b/c", true),
             ("docs/*.md", "docs/\u{e9}.md", true),
             ("docs/?.md", "docs/\u{e9}.md", false),
+            ("docs/??.md", "docs/\u{e9}.md", true),
             ("main", "main", true),
             ("[*]", "*", true),
         ];
@@ -192,14 +222,20 @@ mod tests {
             ("{/src/**,x}", ALTERNATION),
             ("{src/,lib/}", ALTERNATION),
             ("src/{a,b}/**", ALTERNATION),
+            ("src/{", ALTERNATION),
+            ("}", ALTERNATION),
             ("[/]src/**", CLASS),
             ("[.]/src/**", CLASS),
             ("src/[a]/**", CLASS),
+            ("[", CLASS),
+            ("src/]", CLASS),
             ("src//**", COMPONENT),
             ("src/./**", COMPONENT),
             ("src/../src/**", COMPONENT),
             ("..", COMPONENT),
             (".", COMPONENT),
+            ("a\tb", CHARACTER),
+            ("\t", CHARACTER),
             ("\u{200b}", CHARACTER),
             ("\u{feff}.github/**", CHARACTER),
             (".github/**\u{a0}", CHARACTER),
@@ -242,6 +278,74 @@ mod tests {
                 assert!(key.ends_with("[1]"), "{text}: {key}");
                 assert_eq!(detail, reason, "{text}");
             }
+        }
+    }
+
+    /// TOML literal strings carry no control char but tab, so these bypass `parse`.
+    #[test]
+    fn control_chars_and_del_are_refused() {
+        for pattern in ["a\rb", "a\nb", "\u{1b}m", "a\u{7f}b", "\0"] {
+            assert_eq!(unmatchable(pattern), Some(CHARACTER), "{pattern:?}");
+        }
+    }
+
+    #[test]
+    fn branch_names_git_refuses_are_refused() {
+        let refused = [
+            "HEAD",
+            "-",
+            "-main",
+            "-*",
+            "release 1.0",
+            "v1..2",
+            "main.lock",
+            "x.lock/y",
+            ".hidden",
+            "release/.x",
+            "main.",
+            "*.lock",
+            ".*",
+            "a~b",
+            "a^b",
+            "a:b",
+        ];
+        let accepted = [
+            "main",
+            "@",
+            "v1.2",
+            "feature/a.b",
+            "release/*",
+            "*",
+            "**",
+            "a.b/c",
+            "a.locked",
+            "main.LOCK",
+            "a-b",
+        ];
+        for pattern in refused {
+            assert_eq!(unmatchable_branch(pattern), Some(BRANCH), "{pattern}");
+        }
+        for pattern in accepted {
+            assert_eq!(unmatchable_branch(pattern), None, "{pattern}");
+        }
+        for section in ["[scope]\nbranches", "[fences]\nprotected_branches"] {
+            let text = format!("version = 1\n{section} = ['ok', 'main.lock']");
+            let err = parse(&text).unwrap_err();
+            let PolicyError::Glob { key, detail, .. } = &err else {
+                panic!("{text}: {err:?}")
+            };
+            assert_eq!(
+                (key.as_str().ends_with("[1]"), detail.as_str()),
+                (true, BRANCH)
+            );
+        }
+        for section in [
+            "[protected]\npaths",
+            "[tiers.high]\npaths",
+            "[scope]\npaths",
+        ] {
+            let text = format!("version = 1\n{section} = ['.github/**', 'my dir/**', 'x.lock']");
+            assert!(parse(&text).is_ok(), "{text}");
         }
     }
 
