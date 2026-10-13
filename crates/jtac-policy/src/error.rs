@@ -146,7 +146,7 @@ impl PolicyError {
                 format!("add \"{JTAC_DIR_GLOB}\" to protected.paths in {POLICY_PATH}")
             }
             Self::CheckId { id } => {
-                format!("rename [checks.{id}] in {POLICY_PATH} to {spelling}")
+                format!("rename the check id \"{id}\" in {POLICY_PATH} to {spelling}")
             }
             Self::EmptyArgv { id } => format!(
                 "set run under [checks.{id}] in {POLICY_PATH} to the program and its arguments, \
@@ -159,7 +159,7 @@ impl PolicyError {
                 format!("set {key} to {MAX_SAFE_INTEGER} or less in {POLICY_PATH}")
             }
             Self::TierName { name } => {
-                format!("rename [tiers.{name}] in {POLICY_PATH} to {spelling}")
+                format!("rename the tier name \"{name}\" in {POLICY_PATH} to {spelling}")
             }
             Self::Glob { key, .. } => format!(
                 "fix {key} in {POLICY_PATH}: globset syntax, relative to the repository root, \
@@ -272,13 +272,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rename_fix_states_the_spelling_not_a_guess() {
-        let [_, _, how] = PolicyError::CheckId { id: "Fmt".into() }.three_parts();
-        assert_eq!(
-            how,
-            format!(
-                "rename [checks.Fmt] in .jtac/policy.toml to 1 to 64 bytes of [a-z0-9_-]{NEXT}"
-            )
-        );
+    fn rename_fix_quotes_the_name_and_states_the_spelling() {
+        let tail = format!(" in .jtac/policy.toml to 1 to 64 bytes of [a-z0-9_-]{NEXT}");
+        let table = [
+            (
+                PolicyError::CheckId { id: "Fmt".into() },
+                r#"the check id "Fmt""#,
+            ),
+            (
+                PolicyError::CheckId { id: "a.b".into() },
+                r#"the check id "a.b""#,
+            ),
+            (
+                PolicyError::TierName { name: "x]y".into() },
+                r#"the tier name "x]y""#,
+            ),
+        ];
+        for (error, named) in table {
+            let [_, _, how] = error.three_parts();
+            assert_eq!(how, format!("rename {named}{tail}"));
+        }
     }
 }

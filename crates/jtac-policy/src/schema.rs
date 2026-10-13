@@ -104,6 +104,16 @@ pub struct Protected {
 /// The pattern that keeps the policy itself protected.
 pub const JTAC_DIR_GLOB: &str = ".jtac/**";
 
+/// `paths` with `.jtac/**` appended when absent. Appended, so `paths[i]` in an error still
+/// points at the entry written. `parse` and `Policy::matchers` both go through here.
+pub(crate) fn with_jtac_dir(paths: &[String]) -> Vec<String> {
+    let mut paths = paths.to_vec();
+    if !paths.iter().any(|path| path == JTAC_DIR_GLOB) {
+        paths.push(JTAC_DIR_GLOB.to_owned());
+    }
+    paths
+}
+
 impl Default for Protected {
     fn default() -> Self {
         Self {

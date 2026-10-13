@@ -1,50 +1,24 @@
-//! Policy text echoed into an error, made safe for a terminal or a model to read: hidden
-//! characters dropped and length capped, so a hostile file cannot reorder, hide, or flood the
-//! message. Category Cf is Unicode 16.0, checked against the UCD when written.
+//! Policy text echoed into an error. Every char outside printable ASCII, and `\` itself, is
+//! written as `\u{XXXX}`: nothing is dropped, so nothing hides or reorders the message and two
+//! inputs never render the same below the cap. No Unicode table lives here, by design.
 
-use std::ops::RangeInclusive;
+/// Longest echo, in chars, before the `…` marker. Room for toml's expected-key lists.
+pub(crate) const MAX_ECHO_CHARS: usize = 256;
 
-/// Longest echoed value, in chars, before the `…` marker.
-pub(crate) const MAX_ECHO_CHARS: usize = 64;
-
-/// Unicode general category Cf (format), which includes the bidi overrides and isolates.
-const FORMAT: &[RangeInclusive<char>] = &[
-    '\u{ad}'..='\u{ad}',
-    '\u{600}'..='\u{605}',
-    '\u{61c}'..='\u{61c}',
-    '\u{6dd}'..='\u{6dd}',
-    '\u{70f}'..='\u{70f}',
-    '\u{890}'..='\u{891}',
-    '\u{8e2}'..='\u{8e2}',
-    '\u{180e}'..='\u{180e}',
-    '\u{200b}'..='\u{200f}',
-    '\u{202a}'..='\u{202e}',
-    '\u{2060}'..='\u{2064}',
-    '\u{2066}'..='\u{206f}',
-    '\u{feff}'..='\u{feff}',
-    '\u{fff9}'..='\u{fffb}',
-    '\u{110bd}'..='\u{110bd}',
-    '\u{110cd}'..='\u{110cd}',
-    '\u{13430}'..='\u{1343f}',
-    '\u{1bca0}'..='\u{1bca3}',
-    '\u{1d173}'..='\u{1d17a}',
-    '\u{e0001}'..='\u{e0001}',
-    '\u{e0020}'..='\u{e007f}',
-];
-
-/// Whether `c` is invisible or breaks the line: Cc, Cf, and the line and paragraph separators.
-fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(c, '\u{2028}' | '\u{2029}')
-        || FORMAT.iter().any(|range| range.contains(&c))
-}
-
-/// `raw` without hidden characters, at most `MAX_ECHO_CHARS` of them, `…` marking a cut.
+/// `raw` escaped to printable ASCII, cut at a whole char past `MAX_ECHO_CHARS` with `…`.
 pub(crate) fn shown(raw: &str) -> String {
-    let mut kept = raw.chars().filter(|c| !hidden(*c));
-    let mut out: String = kept.by_ref().take(MAX_ECHO_CHARS).collect();
-    if kept.next().is_some() {
-        out.push('…');
+    let mut out = String::new();
+    for c in raw.chars() {
+        let piece = if c == '\\' || !(' '..='~').contains(&c) {
+            format!("\\u{{{:04X}}}", u32::from(c))
+        } else {
+            c.to_string()
+        };
+        if out.len() + piece.len() > MAX_ECHO_CHARS {
+            out.push('…');
+            break;
+        }
+        out.push_str(&piece);
     }
     out
 }
@@ -54,33 +28,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hidden_char_table() {
+    fn hidden_chars_are_escaped_not_dropped() {
         let table = [
-            ('\u{202e}', true),
-            ('\u{202a}', true),
-            ('\u{2066}', true),
-            ('\u{2069}', true),
-            ('\u{200b}', true),
-            ('\u{200f}', true),
-            ('\u{feff}', true),
-            ('\u{ad}', true),
-            ('\u{e0041}', true),
-            ('\u{85}', true),
-            ('\u{2028}', true),
-            ('\u{2029}', true),
-            ('\u{1b}', true),
-            ('\n', true),
-            ('\r', true),
-            ('\t', true),
-            ('\0', true),
-            ('a', false),
-            ('é', false),
-            (' ', false),
-            ('…', false),
-            ('\u{2065}', false),
+            ("\u{202e}", r"\u{202E}"),
+            ("\u{202a}", r"\u{202A}"),
+            ("\u{2066}", r"\u{2066}"),
+            ("\u{2069}", r"\u{2069}"),
+            ("\u{200b}", r"\u{200B}"),
+            ("\u{200f}", r"\u{200F}"),
+            ("\u{feff}", r"\u{FEFF}"),
+            ("\u{fe0f}", r"\u{FE0F}"),
+            ("\u{e0100}", r"\u{E0100}"),
+            ("\u{34f}", r"\u{034F}"),
+            ("\u{3164}", r"\u{3164}"),
+            ("\u{ad}", r"\u{00AD}"),
+            ("\u{e0041}", r"\u{E0041}"),
+            ("\u{85}", r"\u{0085}"),
+            ("\u{2028}", r"\u{2028}"),
+            ("\u{2029}", r"\u{2029}"),
+            ("\u{1b}[2J", r"\u{001B}[2J"),
+            ("a\nb", r"a\u{000A}b"),
+            ("\r\t\0", r"\u{000D}\u{0009}\u{0000}"),
+            (r"\u{202E}", r"\u{005C}u{202E}"),
+            ("…", r"\u{2026}"),
+            ("é", r"\u{00E9}"),
+            ("a b~", "a b~"),
         ];
-        for (c, want) in table {
-            assert_eq!(hidden(c), want, "U+{:04X}", u32::from(c));
+        for (raw, want) in table {
+            assert_eq!(shown(raw), want, "{raw:?}");
         }
     }
 
@@ -88,8 +63,12 @@ mod tests {
     fn shown_caps_at_the_limit_and_marks_the_cut() {
         let at_limit = "x".repeat(MAX_ECHO_CHARS);
         assert_eq!(shown(&at_limit), at_limit);
-        let over = "é".repeat(MAX_ECHO_CHARS + 1);
-        assert_eq!(shown(&over), format!("{}…", "é".repeat(MAX_ECHO_CHARS)));
-        assert_eq!(shown("a\u{202e}b\nc"), "abc");
+        let over = "x".repeat(MAX_ECHO_CHARS + 1);
+        assert_eq!(shown(&over), format!("{at_limit}…"));
+        let escape_at_edge = format!("{}é", "x".repeat(MAX_ECHO_CHARS - 6));
+        assert_eq!(
+            shown(&escape_at_edge),
+            format!("{}…", "x".repeat(MAX_ECHO_CHARS - 6))
+        );
     }
 }

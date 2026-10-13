@@ -2,17 +2,14 @@
 
 use crate::echo::shown;
 use crate::error::PolicyError;
-use crate::schema::{JTAC_DIR_GLOB, Policy};
+use crate::schema::{Policy, with_jtac_dir};
 use crate::validate::validate;
 
 /// Parse, resolve, and validate `text`, the contents of `.jtac/policy.toml`. `.jtac/**` is
-/// appended to `protected.paths` when the file leaves it out: a file cannot unprotect itself.
-/// Appended, not prepended, so an error's `paths[i]` still points at the line written.
+/// added to `protected.paths` when the file leaves it out: a file cannot unprotect itself.
 pub fn parse(text: &str) -> Result<Policy, PolicyError> {
     let mut policy: Policy = toml::from_str(text).map_err(|e| parse_error(text, &e))?;
-    if !policy.protected.paths.iter().any(|p| p == JTAC_DIR_GLOB) {
-        policy.protected.paths.push(JTAC_DIR_GLOB.to_owned());
-    }
+    policy.protected.paths = with_jtac_dir(&policy.protected.paths);
     validate(&policy)?;
     Ok(policy)
 }
@@ -37,6 +34,7 @@ fn position(text: &str, start: usize) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
     use crate::error::tests::kind;
+    use crate::schema::JTAC_DIR_GLOB;
 
     const CHECK: &str = "[checks.fmt]\nrun = [\"cargo\", \"fmt\"]\n";
 
@@ -186,14 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn echoed_values_are_capped_and_stripped() {
-        let rlo = "\u{202e}";
-        let long = format!("A{rlo}{}", "b".repeat(80));
-        let want = format!("A{}…", "b".repeat(63));
+    fn echoed_values_are_capped_and_escaped() {
+        let long = format!("A\u{202e}{}", "b".repeat(300));
+        let want = format!(r"A\u{{202E}}{}…", "b".repeat(247));
         let texts = [
             format!("version = 1\n[checks.\"{long}\"]\nrun = [\"x\"]"),
             format!("version = 1\n[tiers.\"{long}\"]\npaths = [\"x\"]"),
-            format!("version = 1\n[scope]\npaths = [\"{long}[\"]"),
+            format!("version = 1\n[scope]\npaths = [\"{long}\"]"),
         ];
         let echoed: Vec<String> = texts
             .iter()
@@ -204,17 +201,26 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(echoed, [want.clone(), want.clone(), want]);
-        let Err(PolicyError::Parse { detail, .. }) =
-            parse(&format!("version = 1\n\"{rlo}x{rlo}\" = 1"))
-        else {
+        assert_eq!(echoed, [want.clone(), want.clone(), want.clone()]);
+        let [what, _, how] = parse(&texts[0]).unwrap_err().three_parts();
+        assert_eq!(
+            what,
+            format!("check id `{want}` is not 1 to 64 bytes of a-z, 0-9, _ and -")
+        );
+        assert_eq!(
+            how,
+            format!(
+                "rename the check id \"{want}\" in .jtac/policy.toml to 1 to 64 bytes of \
+                 [a-z0-9_-], then run: jtac check --preview"
+            )
+        );
+        let Err(PolicyError::Parse { detail, .. }) = parse("version = 1\n\"\u{202e}x\" = 1") else {
             panic!("not a parse error");
         };
-        assert!(detail.contains("`x`") && !detail.contains(rlo), "{detail}");
-        let three = parse(&texts[0]).unwrap_err().three_parts().concat();
-        assert!(
-            !three.contains(rlo) && !three.contains(&"b".repeat(64)),
-            "{three}"
+        assert_eq!(
+            detail,
+            "unknown field `\\u{202E}x`, expected one of `version`, `checks`, `integrity`, \
+             `protected`, `tiers`, `fences`, `scope`"
         );
     }
 

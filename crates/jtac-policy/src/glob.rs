@@ -9,7 +9,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::echo::shown;
 use crate::error::PolicyError;
-use crate::schema::Policy;
+use crate::schema::{Policy, with_jtac_dir};
 
 /// A compiled list of globs. Matches when any one does; an empty list matches nothing.
 #[derive(Clone, Debug)]
@@ -46,16 +46,39 @@ fn glob_error(key: String, pattern: &str, detail: impl ToString) -> PolicyError 
     }
 }
 
-/// Why `pattern` can never match a repository-relative path or a branch name, if it cannot.
+const EMPTY: &str = "an empty pattern matches nothing";
+const LEADING: &str = "paths are relative to the repository root: no leading / or ./";
+const TRAILING: &str = "a path never ends in /: write dir/** for everything under dir";
+const BACKSLASH: &str = "paths are matched with /, never a backslash: write [*] for a literal *";
+const ALTERNATION: &str = "alternation is not supported: write one pattern per branch";
+const COMPONENT: &str = "a path has no empty, . or .. component";
+const CHARACTER: &str = "only printable ASCII, letters, and digits: no invisible characters";
+const EDGE: &str = "a pattern does not start or end with whitespace";
+
+/// Why `pattern` can never match a repository-relative path or a branch name, if it cannot
+/// (DESIGN.md 10.2). Alternation is refused so one pattern cannot smuggle in a refused branch.
 fn unmatchable(pattern: &str) -> Option<&'static str> {
+    let odd = |c: char| !(' '..='~').contains(&c) && !c.is_alphanumeric();
+    let edge = |c: Option<char>| c.is_some_and(char::is_whitespace);
     if pattern.is_empty() {
-        Some("an empty pattern matches nothing")
+        Some(EMPTY)
     } else if pattern.starts_with('/') || pattern.starts_with("./") {
-        Some("paths are relative to the repository root, with no leading / or ./")
+        Some(LEADING)
     } else if pattern.ends_with('/') {
-        Some("a path never ends in /; use dir/** for everything under dir")
+        Some(TRAILING)
     } else if pattern.contains('\\') {
-        Some(r"paths are matched with /, never \; write [*] for a literal *")
+        Some(BACKSLASH)
+    } else if pattern.contains(['{', '}']) {
+        Some(ALTERNATION)
+    } else if pattern
+        .split('/')
+        .any(|part| matches!(part, "" | "." | ".."))
+    {
+        Some(COMPONENT)
+    } else if pattern.chars().any(odd) {
+        Some(CHARACTER)
+    } else if edge(pattern.chars().next()) || edge(pattern.chars().last()) {
+        Some(EDGE)
     } else {
         None
     }
@@ -74,7 +97,7 @@ fn policy_matcher(key: &str, patterns: &[String]) -> Result<Matcher, PolicyError
 /// Every glob list in a policy, compiled.
 #[derive(Clone, Debug)]
 pub struct Matchers {
-    /// `protected.paths`.
+    /// `protected.paths`, always with `.jtac/**`.
     pub protected: Matcher,
     /// `tiers.<name>.paths` by name.
     pub tiers: BTreeMap<String, Matcher>,
@@ -88,6 +111,7 @@ pub struct Matchers {
 
 impl Policy {
     /// Compile every glob list. `validate` calls this, so a parsed policy always compiles.
+    /// `.jtac/**` is protected here whatever the struct holds; `validate` reports its absence.
     pub fn matchers(&self) -> Result<Matchers, PolicyError> {
         let tiers = self
             .tiers
@@ -98,7 +122,7 @@ impl Policy {
             })
             .collect::<Result<_, PolicyError>>()?;
         Ok(Matchers {
-            protected: policy_matcher("protected.paths", &self.protected.paths)?,
+            protected: policy_matcher("protected.paths", &with_jtac_dir(&self.protected.paths))?,
             tiers,
             scope_paths: policy_matcher("scope.paths", &self.scope.paths)?,
             scope_branches: policy_matcher("scope.branches", &self.scope.branches)?,
@@ -114,7 +138,8 @@ impl Policy {
 mod tests {
     use super::*;
     use crate::parse::parse;
-    use crate::schema::strings;
+    use crate::schema::{Fences, Integrity, Protected, Scope, strings};
+    use crate::validate::validate;
 
     #[test]
     fn glob_match_table() {
@@ -154,7 +179,31 @@ mod tests {
     #[test]
     fn unmatchable_globs_are_refused() {
         let table = [
-            "", "/src/**", "/", "./src/**", "./", "src/", "**/", r"src\**", r"a\*b", r"\",
+            ("{/src/**,x}", ALTERNATION),
+            ("{src/,lib/}", ALTERNATION),
+            ("src/{a,b}/**", ALTERNATION),
+            ("src//**", COMPONENT),
+            ("src/./**", COMPONENT),
+            ("src/../src/**", COMPONENT),
+            ("..", COMPONENT),
+            (".", COMPONENT),
+            ("\u{200b}", CHARACTER),
+            ("\u{feff}.github/**", CHARACTER),
+            (".github/**\u{a0}", CHARACTER),
+            ("\u{3000}", CHARACTER),
+            (".github\u{ff0f}**", CHARACTER),
+            (" src/**", EDGE),
+            ("src/** ", EDGE),
+            ("", EMPTY),
+            ("/src/**", LEADING),
+            ("/", LEADING),
+            ("./src/**", LEADING),
+            ("./", LEADING),
+            ("src/", TRAILING),
+            ("**/", TRAILING),
+            (r"src\**", BACKSLASH),
+            (r"a\*b", BACKSLASH),
+            (r"\", BACKSLASH),
         ];
         let sections = [
             "[protected]\npaths",
@@ -164,15 +213,51 @@ mod tests {
             "[fences]\nprotected_branches",
         ];
         for section in sections {
-            for pattern in table {
+            for (pattern, reason) in table {
                 let text = format!("version = 1\n{section} = ['ok', '{pattern}']");
                 let err = parse(&text).unwrap_err();
-                let PolicyError::Glob { ref key, .. } = err else {
+                let PolicyError::Glob { key, detail, .. } = &err else {
                     panic!("{text}: {err:?}")
                 };
                 assert!(key.ends_with("[1]"), "{text}: {key}");
+                assert_eq!(detail, reason, "{text}");
             }
         }
+    }
+
+    #[test]
+    fn letters_digits_and_printable_ascii_are_accepted() {
+        let table = [
+            "docs/\u{e9}t\u{e9}/**",
+            "\u{6587}\u{6863}/**",
+            "**/*.rs",
+            "release/*",
+            "[*]",
+            "a~b",
+            "docs/my file.md",
+            "v1..2",
+        ];
+        for pattern in table {
+            assert_eq!(unmatchable(pattern), None, "{pattern}");
+            let text = format!("version = 1\n[protected]\npaths = ['{pattern}']");
+            assert!(parse(&text).is_ok(), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn matchers_protect_jtac_even_on_a_literal_policy() {
+        let policy = Policy {
+            version: 1,
+            checks: BTreeMap::new(),
+            integrity: Integrity::default(),
+            protected: Protected { paths: vec![] },
+            tiers: BTreeMap::new(),
+            fences: Fences::default(),
+            scope: Scope::default(),
+        };
+        let protected = policy.matchers().unwrap().protected;
+        assert!(protected.is_match(".jtac/policy.toml"));
+        assert_eq!(validate(&policy), Err(PolicyError::JtacUnprotected));
     }
 
     #[test]
