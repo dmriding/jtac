@@ -1,2 +1,2 @@
-# DESIGN.md section 13: a function past 150 lines needs a stated reason.
+# DESIGN.md section 13: a function is at most 150 lines.
 too-many-lines-threshold = 150

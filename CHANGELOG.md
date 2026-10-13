@@ -8,6 +8,10 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.3) Size and comment discipline, decision 24. `scripts/loc-cap.sh` enforces the
+  `AGENTS.md` file cap and comment ratio in CI; `scripts/loc-cap-test.sh` is its bypass
+  table. `DESIGN.md` section 10.3 adds `JT-SIZE`, `JT-CMT`, and `JT-ADD` for any project
+  the gate guards; a marker added in the same diff counts under `JT-SUP-001`.
 - (0.0.2, M1) `jtac-core`: `sha256:` digests, git object ids, and whole-second `ts` values
   with one spelling each; RFC 8785 canonical bytes that refuse floats and integers past 2^53;
   a reader that accepts only canonical bytes and refuses unknown fields and versions; evidence

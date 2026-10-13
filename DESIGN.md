@@ -368,6 +368,8 @@ timeout_secs = 1200
 max_new_suppressions = 0
 allow_removed_tests = false
 allow_newly_skipped_tests = false
+max_file_lines = 800
+max_function_lines = 150
 
 [protected]
 paths = [".jtac/**", ".github/**", "clippy.toml", "deny.toml", "rust-toolchain.toml"]
@@ -405,8 +407,14 @@ These run on the diff between the tip and its nearest covered ancestor (or the m
 | `JT-SUP-001` | A new lint or type suppression (`#[allow]`, `// eslint-disable`, `# type: ignore`, `//nolint`, and peers) | Blocker above the configured budget |
 | `JT-CI-001` | A CI step removed or made non-blocking | Blocker |
 | `JT-SEC-001` | A string shaped like a credential added | Blocker |
+| `JT-SIZE-001` | A changed file past the production-line cap for its language, with no exemption marker | Major |
+| `JT-SIZE-002` | A changed function past the line cap for its language | Major |
+| `JT-CMT-001` | A changed file with at least as many comment lines as code lines, or a comment inside a block rather than at its head or tail | Minor |
+| `JT-ADD-001` | Lines added by the diff past `max_added_lines` | Minor |
 
 Each rule has an id, a one-paragraph reason, and a fix. Detection is per language with a table of patterns, and every pattern has a test that names the spelling it catches.
+
+The size and comment rules exist because model-written code arrives correct at several times the necessary length, and length is what review cannot keep up with. Defaults: `max_file_lines = 800`, `max_function_lines = 150`, and no `max_added_lines`; the added-line count is reported by `jtac status` either way. The comment ratio is fixed: plain comment lines fewer than code lines, doc comments excluded. Production lines exclude test code by the language's own convention (the `#[cfg(test)] mod` tail in Rust, `*_test.go`, `*.test.ts`, `test_*.py`). The exemption marker is `jtac-loc-exempt: <reason>` in the language's line-comment syntax on line 1, or line 2 after a shebang; a blank reason is no marker. A marker the diff adds is a suppression under `JT-SUP-001`, so an agent cannot waive its own finding: a new marker needs the budget or a waiver, and an existing one is honored.
 
 The reason a blocker can still be legitimate (a test really was obsolete) is why `jtac waive` exists and why a waiver is recorded and loud, not silent.
 
@@ -559,7 +567,7 @@ cargo llvm-cov --workspace --summary-only     # line coverage at or above 80%
 - A fix to a rule adds the rule's own edge case to the table.
 - Integration tests build throwaway git repositories in a temp directory. No test touches the network or the developer's real config.
 - No `#[allow]` without a comment explaining why the lint is wrong in that place.
-- One concern per file. A file past about 1,500 production lines or a function past 150 lines needs a stated reason in the pull request. Comments say why, never what, and there are fewer comment lines than code lines.
+- One concern per file. `JT-SIZE` and `JT-CMT` from section 10.3 apply to this repository through `scripts/loc-cap.sh`; `AGENTS.md` has the mechanics.
 - Tests are named for the claim they assert.
 - Schema and evidence format are versioned. A shipped version is never edited. A change is a new version with a reader for the old one.
 
@@ -803,6 +811,7 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 21. **A reader accepts only canonical bytes.** Anything that would re-serialize differently is refused.
 22. **`ts` is whole-second UTC in one spelling.**
 23. **The error contract binds at the user surface.** Library errors are structured; the CLI and hooks write the three parts.
+24. **Size and comment discipline is a gate rule, not only a house rule.** Section 10.3 `JT-SIZE`, `JT-CMT`, and `JT-ADD`; this repository runs the same caps in CI.
 
 ## 22. Open questions
 
