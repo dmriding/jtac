@@ -6,6 +6,14 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Added
+
+- (0.0.6, M3) `jtac-core` verdict function: `gate(facts, nodes, now)` decides pass, fail, or
+  `declared_off` from struct-literal facts and returns ordered reasons plus the waivers it
+  applied. Waiver scope (expiry, 30-day cap, written-after-`now`, commit match, path prefix by
+  component) lives once in `waiver.rs` and `Root::validate` shares it. `jtac_policy::facts`
+  builds the inputs from a resolved policy. DESIGN.md 11.2 rewritten; decision 27.
+
 ### Fixed
 
 - (0.0.5, issue #6) `jtac-policy` globs: a branch pattern git could never name (`HEAD`,

@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
 use crate::digest::Sha256Digest;
-use crate::node::{Action, Body, Node, Scope};
+use crate::node::{Body, Node, Scope};
 use crate::oid::GitOid;
 use crate::schema::V1;
 use crate::signer::Signer;
 use crate::time::Ts;
+use crate::waiver::{OutOfScope, scope_at};
 
 /// What a push tip's evidence adds up to. Signed as a whole; applied waivers are the only
 /// nodes that travel with it.
@@ -94,14 +95,12 @@ impl Root {
             Covers::Range { base, tip } => vec![base, tip],
         };
         let parents = self.parents.iter().map(|p| &p.commit);
-        let trees = self.levers.iter().map(|l| &l.node.tree);
         let sha1 = |oid: &GitOid| matches!(oid, GitOid::Sha1(_));
         let commit_sha1 = sha1(&self.commit);
         if [&self.tree]
             .into_iter()
             .chain(covers)
             .chain(parents)
-            .chain(trees)
             .any(|o| sha1(o) != commit_sha1)
         {
             return Err(RootError::OidAlgorithm);
@@ -111,38 +110,19 @@ impl Root {
 
     fn validate_levers(&self) -> Result<(), RootError> {
         for (index, lever) in self.levers.iter().enumerate() {
-            let Body::Lever(body) = &lever.node.body else {
-                return Err(RootError::NotAWaiver { index });
-            };
-            if body.action != Action::Waive {
-                return Err(RootError::NotAWaiver { index });
-            }
             if self.levers[..index].iter().any(|l| l.node == lever.node) {
                 return Err(RootError::DuplicateWaiver { index });
             }
-            if lever.node.ts > self.ts {
-                return Err(RootError::WaiverFuture { index });
-            }
-            match &body.scope {
-                None => return Err(RootError::WaiverScope { index }),
-                Some(Scope::Commit { commit }) if *commit != self.commit => {
-                    return Err(RootError::WaiverCommit { index });
-                }
-                Some(Scope::Rule { .. }) if body.expires.is_none() => {
-                    return Err(RootError::WaiverExpiry { index });
-                }
-                Some(_) => {}
-            }
-            if let Some(expires) = body.expires {
-                if expires < self.ts {
-                    return Err(RootError::WaiverExpired { index });
-                }
-                // The cap runs from when the waiver was written; the root may come weeks later.
-                let written = lever.node.ts.timestamp().as_second();
-                if expires.timestamp().as_second() - written > MAX_WAIVER_SECS {
-                    return Err(RootError::WaiverTooLong { index });
-                }
-            }
+            scope_at(&lever.node, &self.commit, self.ts).map_err(|why| match why {
+                OutOfScope::NotAWaiver => RootError::NotAWaiver { index },
+                OutOfScope::NoScope => RootError::WaiverScope { index },
+                OutOfScope::OtherCommit => RootError::WaiverCommit { index },
+                OutOfScope::NoExpiry => RootError::WaiverExpiry { index },
+                OutOfScope::Future => RootError::WaiverFuture { index },
+                OutOfScope::Expired => RootError::WaiverExpired { index },
+                OutOfScope::TooLong => RootError::WaiverTooLong { index },
+                OutOfScope::OidAlgorithm => RootError::OidAlgorithm,
+            })?;
         }
         Ok(())
     }
@@ -151,9 +131,6 @@ impl Root {
 fn has_duplicate(oids: &[GitOid]) -> bool {
     (1..oids.len()).any(|i| oids[i..].contains(&oids[i - 1]))
 }
-
-/// Longest a waiver may run past its own `ts` (DESIGN.md decision 12).
-pub const MAX_WAIVER_SECS: i64 = 30 * 86_400;
 
 /// A waiver and the signature over its node, namespace `jtac-lever-v1` (DESIGN.md 11.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +332,7 @@ pub enum RootError {
 mod tests {
     use super::*;
     use crate::canonical::from_canonical;
+    use crate::node::Action;
     use crate::node::tests::{
         COMMIT_ONE, EMPTY, TS, check_node, commit_waiver, lever, rule_waiver, signer, waiver,
     };

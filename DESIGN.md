@@ -438,17 +438,21 @@ Subprocess rules: argv arrays only, working directory at the repository root, a 
 ### 11.2 The verdict function
 
 ```rust
-pub fn gate(tree: &GitOid, policy: &Policy, nodes: &[Node], now: Ts) -> Verdict
+pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict
 ```
 
-`now` is the only clock the function knows. `jtac check` passes the instant it records as the root's `ts`; `jtac replay` passes the root's `ts` back. A waiver whose `expires` is before `now` is not in scope.
+`Facts` is what the caller gathered: the commit under test, its tree, the policy hash, the check ids with their `required` flags in policy order, and `integrity.block_at`. `jtac-policy` builds it from a resolved policy; `jtac-core` cannot take `Policy` itself, since `jtac-policy` depends on `jtac-core`. `now` is the only clock the function knows. `jtac check` passes the instant it records as the root's `ts`; `jtac replay` passes the root's `ts` back.
+
+A check or finding node counts only when its `tree` and `policy` are the facts'. A waiver may be older than the tree. A waiver is in scope when its `ts` is not after `now`, its `expires` is not before `now` and not more than 30 days past its `ts`, and, for a rule waiver, `expires` is present. The verdict judges this itself, so a hand-written lever node is refused the same way on every machine. A rule waiver covers a finding with its rule whose path equals the prefix or sits under it by whole component; a prefix or path with an empty, `.`, or `..` component or a backslash is covered by nothing. A waiver node repeated in the input counts once, and one whose tree uses another hash algorithm than the commit is out of scope, as `Root::validate` would refuse it.
 
 - Fails if any required check has no node for this tree and policy.
 - Fails if any required check's outcome is not `pass`.
-- Fails if any finding at or above `integrity.block_at` is present and not covered by a waiver in scope.
+- Fails if one check id has two nodes, or a node names a check the policy does not.
+- Fails if any finding at or above `integrity.block_at` is present and not covered by a rule waiver in scope.
+- A commit waiver in scope for this commit passes with state `declared_off`; the reasons it overrode stay in the verdict.
 - Otherwise passes.
 
-`Verdict` carries the ordered list of reasons. It is the only place a pass or fail is decided, and `replay` calls the same function.
+`Verdict` carries pass or fail, the state, the ordered list of reasons (checks in policy order, unknown check ids in node order, then findings in node order), and the waivers it applied: every commit waiver in scope, and each rule waiver that covered a finding at or above `block_at`. Those become the root's `levers`. It is the only place a pass or fail is decided, and `replay` calls the same function.
 
 ### 11.3 Hooks
 
@@ -494,7 +498,7 @@ jtac waive --rule JT-SUP-001 --path src/ffi/ --reason "..." --expires 14d
 ```
 
 - Writes a `lever` node, signed, with the reason verbatim.
-- A waiver is scoped: one commit, or one rule on one path with an expiry at most 30 days after the waiver was written. A waiver written after the root that cites it is refused.
+- A waiver is scoped: one commit, or one rule on one path with an expiry at most 30 days after the waiver was written. A waiver written after the root that cites it is refused. The verdict function and root validation apply these bounds (section 11.2); `waive` only refuses earlier.
 - A waived root has state `declared_off` when the waiver covers the whole commit, and stays `covered` with `waivers > 0` when it covers one rule.
 - Every waiver in effect is printed by `jtac status` and on every `check` and push it affects.
 - Fences are never waivable from the CLI in v0.1.
@@ -815,6 +819,7 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 24. **Size and comment discipline is a gate rule, not only a house rule.** Section 10.3 `JT-SIZE`, `JT-CMT`, and `JT-ADD`; this repository runs the same caps in CI.
 25. **The policy hash covers the resolved policy,** defaults filled in, so it names the rules actually applied.
 26. **No `when` switch on checks, and no policy file refuses.** A required check always runs; `init` writes only the checks that apply; `check` never assumes defaults.
+27. **The verdict takes gathered facts, not the policy, and enforces waiver scope itself.** `jtac-policy` depends on `jtac-core`, so `gate` cannot take `Policy`; and replay must not trust whoever wrote a waiver. A commit waiver passes with `declared_off` and keeps the reasons; a rule waiver covers findings only, never a failed check.
 
 ## 22. Open questions
 

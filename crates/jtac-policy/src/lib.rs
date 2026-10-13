@@ -5,6 +5,7 @@
 pub mod defaults;
 mod echo;
 pub mod error;
+pub mod facts;
 pub mod glob;
 pub mod hash;
 pub mod parse;
@@ -13,6 +14,7 @@ pub mod validate;
 
 pub use defaults::{Detected, Js, Runner, default_policy};
 pub use error::PolicyError;
+pub use facts::facts;
 pub use glob::{Matcher, Matchers};
 pub use hash::{policy_hash, to_toml};
 pub use parse::parse;

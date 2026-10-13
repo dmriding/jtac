@@ -1,6 +1,6 @@
 //! Evidence types, canonical encoding, hashing, and the Merkle tree (DESIGN.md section 9).
 //!
-//! Pure: no I/O, no clock, no process. The verdict function lands here in M3.
+//! Pure: no I/O, no clock, no process.
 
 pub mod canonical;
 pub mod digest;
@@ -11,6 +11,8 @@ pub mod root;
 pub mod schema;
 pub mod signer;
 pub mod time;
+pub mod verdict;
+pub mod waiver;
 
 pub use canonical::{CanonicalError, ReadError, canonical_bytes, canonical_digest, from_canonical};
 pub use digest::{ParseError, Sha256Digest};
@@ -26,3 +28,5 @@ pub use root::{
 pub use schema::V1;
 pub use signer::Signer;
 pub use time::{Ts, TsError};
+pub use verdict::{CheckSpec, Facts, Reason, Verdict, gate};
+pub use waiver::{MAX_WAIVER_SECS, OutOfScope, covers_finding, scope_at};
