@@ -104,6 +104,10 @@ pub struct Protected {
 /// The pattern that keeps the policy itself protected.
 pub const JTAC_DIR_GLOB: &str = ".jtac/**";
 
+/// The check id diff-integrity findings point at (DESIGN.md section 10.3). `facts` lists it as
+/// required, so a run that skipped integrity fails; a policy file may not name it.
+pub const INTEGRITY_CHECK_ID: &str = "integrity";
+
 /// `paths` with `.jtac/**` appended when absent. Appended, so `paths[i]` in an error still
 /// points at the entry written. `parse` and `Policy::matchers` both go through here.
 pub(crate) fn with_jtac_dir(paths: &[String]) -> Vec<String> {
@@ -120,6 +124,15 @@ impl Default for Protected {
             paths: strings(&[
                 JTAC_DIR_GLOB,
                 ".github/**",
+                ".gitlab-ci.yml",
+                ".circleci/**",
+                ".buildkite/**",
+                "Jenkinsfile",
+                "azure-pipelines.yml",
+                "bitbucket-pipelines.yml",
+                ".travis.yml",
+                ".drone.yml",
+                ".woodpecker.yml",
                 "clippy.toml",
                 "deny.toml",
                 "rust-toolchain.toml",

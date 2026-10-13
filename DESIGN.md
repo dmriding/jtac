@@ -229,7 +229,7 @@ Rules:
 
 - `skipped` and `error` are not `pass`. A required check that is skipped or errors fails the verdict.
 - `stdout.sha` and `stderr.sha` reference blobs in the local store. `bytes` is what was stored and `truncated` says the capture cap cut it, so a truncated capture is distinguishable from a short one.
-- A `finding` always points at the `check` node that produced it.
+- A `finding` always points at the `check` node that produced it. Diff-integrity findings point at the reserved `integrity` check, which `jtac check` writes with an empty `argv`, jtac's own version as `tool_version`, `pass` when the rules ran, and `error` when the base or a blob could not be read (section 10.3).
 
 Known answer (test `node_id_known_answer`). This check node, canonical:
 
@@ -369,7 +369,11 @@ max_file_lines = 800
 max_function_lines = 150
 
 [protected]
-paths = [".jtac/**", ".github/**", "clippy.toml", "deny.toml", "rust-toolchain.toml"]
+paths = [
+  ".jtac/**", ".github/**", ".gitlab-ci.yml", ".circleci/**", ".buildkite/**", "Jenkinsfile",
+  "azure-pipelines.yml", "bitbucket-pipelines.yml", ".travis.yml", ".drone.yml", ".woodpecker.yml",
+  "clippy.toml", "deny.toml", "rust-toolchain.toml",
+]
 
 [tiers.high]
 paths = ["**/auth/**", "**/migrations/**", "**/billing/**"]
@@ -403,7 +407,7 @@ These run on the diff between the tip and its nearest covered ancestor (or the m
 | --- | --- | --- |
 | `JT-PROT-001` | A change to a protected path | Finding, severity major, escalates the tier |
 | `JT-TEST-001` | A test function or file removed | Blocker |
-| `JT-TEST-002` | A test newly marked skip or ignore | Blocker |
+| `JT-TEST-002` | A test newly marked skip or ignore, or focused so the others are skipped | Blocker |
 | `JT-TEST-003` | Assertions removed from a test that still exists | Major |
 | `JT-SUP-001` | A new lint or type suppression (`#[allow]`, `// eslint-disable`, `# type: ignore`, `//nolint`, and peers) | Blocker above the configured budget |
 | `JT-CI-001` | A CI step removed or made non-blocking | Blocker |
@@ -414,6 +418,19 @@ These run on the diff between the tip and its nearest covered ancestor (or the m
 | `JT-ADD-001` | Lines added by the diff past `max_added_lines` | Minor |
 
 Each rule has an id, a one-paragraph reason, and a fix. Detection is per language with a table of patterns, and every pattern has a test that names the spelling it catches.
+
+The rules are pure over a change set: for each path, its content before and after, and the old name of a rename. The gatherer reads paths and blobs with `git diff --raw -M` and `git cat-file`; the line diff is jtac's own (Myers over lines), so no `diff.algorithm` or whitespace setting can move a finding and a CI replay sees the same lines. A blob with a NUL in its first 8000 bytes is binary, as git decides, and no rule reads it. Which base to diff against is the caller's: the nearest covered ancestor once a store exists, the merge base with the default branch before that. Findings point at the reserved `integrity` check (section 9.2): `facts` lists it first and required, so a run that skipped the rules fails the verdict, and a policy file may not name a check `integrity`. Markers match with strings blanked, so a marker quoted in a test table or a template is not one, and a Rust attribute split across lines is read whole, one that read the same before being no new marker.
+
+- `JT-PROT-001` matches either name of a rename, and the tiers a changed path matches are reported beside the findings.
+- `JT-TEST-001` is a test present before and absent after by name, with every copy of a name counted: a function under a `#[test]`-style attribute anywhere in Rust, `Test*` in `_test.go`, `test*` in a Python test file, an `it` or `test` title in a JavaScript test file. A deleted file, a path renamed away from its language, and a test renamed are all removals; a name that gains a copy in another file of the same change is where a test moved: that removal is dropped and `JT-TEST-003` compares the two. Copies of one name pair strongest first, so a copy dropped is the weakest. A test file deleted with no test the finder names is one finding. `allow_removed_tests` makes it minor, never silent.
+- `JT-TEST-002` is an added skip, ignore, or focus marker (`.only`, `fit`, `fdescribe` skip every other test), including `#[cfg(any())]`, `pytestmark`, a bare `@skip`, `raise SkipTest`, `//go:build ignore`, and `it['only']`: anywhere in Rust, in test files elsewhere. `allow_newly_skipped_tests` makes it minor.
+- `JT-TEST-003` is a lower assertion count in a test present on both sides by name, or moved between files. Major in every language; a test refactored to assert through a helper trips it and takes a waiver.
+- `JT-SUP-001` makes every added marker a finding: all blocker when the count passes `max_new_suppressions`, minor otherwise, so a waiver by rule and path covers what a reviewer saw. Only added markers count; a moved one is new.
+- `JT-CI-001` reads CI definitions by a path table (GitHub, GitLab, CircleCI, Buildkite, Jenkins, Azure, Bitbucket, Travis, Drone, Woodpecker): fewer step lines after than before, counting a step opener (`- run`, `- uses`, `- name`, `- id` and peers, GitLab `script`, Jenkins `sh` and `stage`) and each command beyond the first under it, as list items or `|` block lines, so a step's key order changes no count, or an added line that lets a step fail (`continue-on-error`, `allow_failure`, `|| true`, `set +e`, `if: false`, `when: manual`, and peers). A path renamed away from the table counts as every step removed. No YAML is parsed, so a step replaced by another of the same shape is not seen; every path in the table is protected by default, so `JT-PROT-001` names the file either way.
+- `JT-SEC-001` is a table of known prefixes and an assignment to a password-like name (any prefix, quoted or not; an unquoted value needs a digit), never entropy, so a digest or a lockfile hash cannot block. The message names the shape and never the value; a quoted value starting like a reference, or holding a template, whitespace, or a placeholder word, is text.
+- `JT-SIZE-001` counts the whole file; `JT-SIZE-002` judges a non-test function that an added line falls in. Spans come from brace counting over code with strings and comments blanked, or from indentation in Python, with no parser: a Rust attribute split across lines and a `where` clause before the brace are followed, a JavaScript regex literal is a string, a line-1 shebang is a comment, and a lone `\r` ends a line as it does for JavaScript and Python. Not seen: a test call split across lines, a Go subtest by name, a nested Rust block comment.
+- `JT-CMT-001` takes the ratio over the whole file, doc comments on neither side, and the position of each added plain comment: at a block's head, at its tail, or directly above the line that opens one is in place; anything else is inside.
+- `JT-ADD-001` is minor, and the count is reported whether or not a budget is set.
 
 The size and comment rules exist because model-written code arrives correct at several times the necessary length, and length is what review cannot keep up with. Defaults: `max_file_lines = 800`, `max_function_lines = 150`, and no `max_added_lines`; the added-line count is reported by `jtac status` either way. The comment ratio is fixed: plain comment lines fewer than code lines, doc comments excluded. Production lines exclude test code by the language's own convention (the `#[cfg(test)] mod` tail in Rust, `*_test.go`, `*.test.ts`, `test_*.py`). The exemption marker is `jtac-loc-exempt: <reason>` in the language's line-comment syntax on line 1, or line 2 after a shebang; a blank reason is no marker. A marker the diff adds is a suppression under `JT-SUP-001`, so an agent cannot waive its own finding: a new marker needs the budget or a waiver, and an existing one is honored.
 
@@ -441,7 +458,7 @@ Subprocess rules: argv arrays only, working directory at the repository root, st
 pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict
 ```
 
-`Facts` is what the caller gathered: the commit under test, its tree, the policy hash, the check ids with their `required` flags in policy order, and `integrity.block_at`. `jtac-policy` builds it from a resolved policy; `jtac-core` cannot take `Policy` itself, since `jtac-policy` depends on `jtac-core`. `now` is the only clock the function knows. `jtac check` passes the instant it records as the root's `ts`; `jtac replay` passes the root's `ts` back.
+`Facts` is what the caller gathered: the commit under test, its tree, the policy hash, the `integrity` check first and then the check ids with their `required` flags in policy order, and `integrity.block_at`. `jtac-policy` builds it from a resolved policy; `jtac-core` cannot take `Policy` itself, since `jtac-policy` depends on `jtac-core`. `now` is the only clock the function knows. `jtac check` passes the instant it records as the root's `ts`; `jtac replay` passes the root's `ts` back.
 
 A check or finding node counts only when its `tree` and `policy` are the facts'. A waiver may be older than the tree. A waiver is in scope when its `ts` is not after `now`, its `expires` is not before `now` and not more than 30 days past its `ts`, and, for a rule waiver, `expires` is present. The verdict judges this itself, so a hand-written lever node is refused the same way on every machine. A rule waiver covers a finding with its rule whose path equals the prefix or sits under it by whole component; a prefix or path with an empty, `.`, or `..` component or a backslash is covered by nothing. A waiver node repeated in the input counts once, and one whose tree uses another hash algorithm than the commit is out of scope, as `Root::validate` would refuse it.
 
@@ -821,13 +838,14 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 26. **No `when` switch on checks, and no policy file refuses.** A required check always runs; `init` writes only the checks that apply; `check` never assumes defaults.
 27. **The verdict takes gathered facts, not the policy, and enforces waiver scope itself.** `jtac-policy` depends on `jtac-core`, so `gate` cannot take `Policy`; and replay must not trust whoever wrote a waiver. A commit waiver passes with `declared_off` and keeps the reasons; a rule waiver covers findings only, never a failed check.
 28. **Checks see an allowlisted environment, only a pass is cached, and the tool version comes from a probe table.** A value scrub cannot recognize every token; a cached failure blocks until a cache nobody sees is cleared; the policy has no version key, and a launcher shim's hash hides a toolchain upgrade.
+29. **Diff-integrity findings point at a reserved `integrity` check, the rules diff lines themselves, and spans come from braces and indentation, not a parser.** A finding must name a check node and the verdict must fail when the rules did not run; a git setting must not move a finding between a machine and CI; a parser per language is a C build on three platforms for a v0.1 heuristic.
 
 ## 22. Open questions
 
 1. **Ref scale.** One ref per tip is contention-free, but very large ref counts slow some git operations and some forges may limit custom refs. Measure with a scripted repository at 10k and 100k roots, and confirm the major forges accept pushes to `refs/jtac/*`. The fallback is periodic compaction into a single notes-style ref.
 2. **Key handling.** Is a dedicated jtac key better than reusing the commit-signing key? Reuse means no enrollment. A dedicated key means a compromise of one does not affect the other.
 3. **Which agents get a tool-call adapter in v0.1** beyond the first.
-4. **Test-integrity precision.** `JT-TEST-003` (assertions removed) is heuristic. Decide per language whether it ships as major or stays advisory until its false block rate is measured.
+4. **Test-integrity precision.** Decided in M5: `JT-TEST-003` ships as major in every language, scoped to a test present on both sides by name. Its false block rate is one of the launch numbers (section 14).
 5. **Windows.** Hooks and `ssh-keygen` behave differently there. Decide whether v0.1 supports it or says so plainly.
 6. **Where the launch numbers come from.** Catch rate and false block rate need outside testers, not one developer's machines.
 7. **CI identity in v0.2.** A long-lived key in CI secrets, or keyless signing bound to the workflow identity.

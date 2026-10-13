@@ -58,6 +58,10 @@ mod tests {
             ("version = 1\n[chekcs.fmt]\nrun = [\"x\"]", "parse"),
             ("version = 1\nshell = true", "parse"),
             ("version = 1\n[integrity]\nmax_new_supressions = 9", "parse"),
+            (
+                "version = 1\n[checks.integrity]\nrun = [\"x\"]",
+                "reserved_id",
+            ),
             ("version = 1\n[fences]\nno_verify = \"warn\"", "parse"),
             (
                 "version = 1\n[fences]\nforce_push_protected = false",

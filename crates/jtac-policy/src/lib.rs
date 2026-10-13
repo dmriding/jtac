@@ -19,8 +19,8 @@ pub use glob::{Matcher, Matchers};
 pub use hash::{policy_hash, to_toml};
 pub use parse::parse;
 pub use schema::{
-    Check, DEFAULT_TIMEOUT_SECS, FenceMode, Fences, Integrity, JTAC_DIR_GLOB, Policy, Protected,
-    Scope, Tier,
+    Check, DEFAULT_TIMEOUT_SECS, FenceMode, Fences, INTEGRITY_CHECK_ID, Integrity, JTAC_DIR_GLOB,
+    Policy, Protected, Scope, Tier,
 };
 pub use validate::validate;
 

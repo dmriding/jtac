@@ -8,6 +8,13 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.8, M5) `jtac-checks::diff`: the eleven diff-integrity rules of DESIGN.md section 10.3 as
+  pure functions over a change set (`report(integrity, matchers, changes)`), with per-language
+  pattern tables for Rust, Python, Go, and JavaScript/TypeScript, and `diff::git` to gather the
+  changes from `git diff --raw -M`. `jtac-policy` reserves the check id `integrity`, which
+  `facts` lists first and required, and protects every CI definition path by default (the
+  design example's hash moves). DESIGN.md 9.2, 10.2, 10.3, 11.2 edited; open question 4 closed;
+  decision 29.
 - (0.0.7, M4) `jtac-checks` runner: `run(spec, ctx)` spawns a policy check from its argv in its
   own process group (job object on Windows), with stdin closed, an allowlisted environment, a
   1 MiB head capture per stream marked when cut, and a group kill at the deadline, whether the

@@ -34,6 +34,12 @@ pub enum PolicyError {
         /// The id as written.
         id: String,
     },
+    /// A check named for the built-in diff-integrity check.
+    #[error("check id `{id}` is reserved for the built-in diff-integrity check")]
+    ReservedId {
+        /// The id as written.
+        id: String,
+    },
     /// A check whose argv has no program.
     #[error("checks.{id}.run names no program")]
     EmptyArgv {
@@ -109,6 +115,11 @@ impl PolicyError {
             Self::CheckId { .. } => {
                 "A check id names node bodies and cache keys, so it has one safe spelling."
             }
+            Self::ReservedId { .. } => {
+                "Diff-integrity findings point at a check node with this id, and the verdict \
+                 requires it, so a policy check under the same name would be two checks with \
+                 one id."
+            }
             Self::EmptyArgv { .. } => {
                 "run is the argv a check spawns, with no shell. With no program the check cannot \
                  run, and a check that did not run must never look like one that passed."
@@ -148,6 +159,11 @@ impl PolicyError {
             Self::CheckId { id } => {
                 format!("rename the check id \"{id}\" in {POLICY_PATH} to {spelling}")
             }
+            Self::ReservedId { id } => {
+                format!(
+                    "rename [checks.{id}] in {POLICY_PATH}; diff-integrity runs without a policy entry"
+                )
+            }
             Self::EmptyArgv { id } => format!(
                 "set run under [checks.{id}] in {POLICY_PATH} to the program and its arguments, \
                  as run = [\"cargo\", \"test\"]"
@@ -181,6 +197,7 @@ pub(crate) mod tests {
             PolicyError::Version { .. } => "version",
             PolicyError::JtacUnprotected => "jtac_unprotected",
             PolicyError::CheckId { .. } => "check_id",
+            PolicyError::ReservedId { .. } => "reserved_id",
             PolicyError::EmptyArgv { .. } => "empty_argv",
             PolicyError::Timeout { .. } => "timeout",
             PolicyError::TooLarge { .. } => "too_large",
@@ -204,6 +221,9 @@ pub(crate) mod tests {
             PolicyError::Version { found: 2 },
             PolicyError::JtacUnprotected,
             PolicyError::CheckId { id: text("Fmt") },
+            PolicyError::ReservedId {
+                id: text("integrity"),
+            },
             PolicyError::EmptyArgv { id: text("test") },
             PolicyError::Timeout { id: text("test") },
             PolicyError::TooLarge {
@@ -222,7 +242,7 @@ pub(crate) mod tests {
     fn every_error_variant_renders_three_parts() {
         let samples = samples();
         let variants: std::collections::BTreeSet<_> = samples.iter().map(kind).collect();
-        assert_eq!(variants.len(), 9, "a variant has no sample");
+        assert_eq!(variants.len(), 10, "a variant has no sample");
         for error in &samples {
             let [what, why, how] = error.three_parts();
             assert_eq!(what, error.to_string());
