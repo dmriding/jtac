@@ -220,15 +220,15 @@ dependencies = [
 
 [[package]]
 name = "jtac"
-version = "0.0.5"
+version = "0.0.6"
 
 [[package]]
 name = "jtac-checks"
-version = "0.0.5"
+version = "0.0.6"
 
 [[package]]
 name = "jtac-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "hex",
  "jiff",
@@ -241,11 +241,11 @@ dependencies = [
 
 [[package]]
 name = "jtac-gate"
-version = "0.0.5"
+version = "0.0.6"
 
 [[package]]
 name = "jtac-policy"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "globset",
  "jtac-core",
@@ -256,11 +256,11 @@ dependencies = [
 
 [[package]]
 name = "jtac-sign"
-version = "0.0.5"
+version = "0.0.6"
 
 [[package]]
 name = "jtac-store"
-version = "0.0.5"
+version = "0.0.6"
 
 [[package]]
 name = "libc"
