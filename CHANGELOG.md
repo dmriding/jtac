@@ -8,6 +8,14 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.7, M4) `jtac-checks` runner: `run(spec, ctx)` spawns a policy check from its argv in its
+  own process group (job object on Windows), with stdin closed, an allowlisted environment, a
+  1 MiB head capture per stream marked when cut, and a group kill at the deadline, whether the
+  check still runs or left a descendant holding its output. Exit 0 is
+  `pass`, a positive code `fail`, a timeout, spawn failure, or negative code `error`.
+  `tool_version` comes from a per-tool probe table (Node-hosted tools probe Node); `cache::store` keeps only a fresh pass with a
+  known version and `cache::lookup` re-issues it with `cached_from`. `specs` maps a policy to
+  runner inputs. DESIGN.md 10.2 and 11.1 edited; decision 28.
 - (0.0.6, M3) `jtac-core` verdict function: `gate(facts, nodes, now)` decides pass, fail, or
   `declared_off` from struct-literal facts and returns ordered reasons plus the waivers it
   applied. Waiver scope (expiry, 30-day cap, written-after-`now`, commit match, path prefix by
