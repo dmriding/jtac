@@ -12,9 +12,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Ts(Timestamp);
 
 impl Ts {
-    /// Truncate `t` to the second. The writer's path; the reader refuses fractions instead.
-    pub fn from_timestamp(t: Timestamp) -> Self {
-        Self(Timestamp::from_second(t.as_second()).unwrap_or(t))
+    /// Truncate `t` to the second. The writer's path. Refuses what the reader would refuse,
+    /// so a written `ts` always reads back: years before 0000 have no four-digit spelling.
+    pub fn from_timestamp(t: Timestamp) -> Result<Self, TsError> {
+        let ts = Self(Timestamp::from_second(t.as_second()).map_err(|_| TsError)?);
+        ts.to_string().parse()
     }
 
     /// The instant.
@@ -99,6 +101,14 @@ mod tests {
             "+002026-10-10T18:30:00Z",
             "20261010T183000Z",
             "2026-10-10T23:59:60Z",
+            "2016-12-31T23:59:60Z",
+            "2026-13-01T00:00:00Z",
+            "2026-00-01T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-10-10T24:00:00Z",
+            "2026-10-10T18:60:00Z",
+            "-0001-10-10T18:30:00Z",
+            "10000-01-01T00:00:00Z",
             "",
         ];
         for input in table {
@@ -107,8 +117,15 @@ mod tests {
     }
 
     #[test]
-    fn from_timestamp_truncates_to_the_second() {
+    fn from_timestamp_truncates_to_the_second_and_writes_only_what_reads_back() {
         let t: Timestamp = "2026-10-10T18:30:00.999999999Z".parse().unwrap();
-        assert_eq!(Ts::from_timestamp(t).to_string(), ONE);
+        assert_eq!(Ts::from_timestamp(t).unwrap().to_string(), ONE);
+        assert_eq!(Ts::from_timestamp(Timestamp::MIN), Err(TsError));
+        let year_zero: Timestamp = "0000-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            Ts::from_timestamp(year_zero).unwrap().to_string(),
+            "0000-01-01T00:00:00Z"
+        );
+        assert!(Ts::from_timestamp(Timestamp::MAX).is_ok());
     }
 }

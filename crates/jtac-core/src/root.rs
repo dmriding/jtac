@@ -57,12 +57,50 @@ impl Root {
     /// Shape rules a reader checks before trusting any field. Signature, Merkle root, and
     /// counts are checked by their own code; this is only what the type cannot express.
     pub fn validate(&self) -> Result<(), RootError> {
+        self.validate_levers()?;
+        // DESIGN.md 11.6: a commit waiver and declared_off imply each other.
+        let commit_waived = self.levers.iter().any(SignedLever::covers_commit);
+        match self.state {
+            State::DeclaredOff if !commit_waived => {
+                return Err(RootError::DeclaredOffWithoutWaiver);
+            }
+            State::Covered if commit_waived => return Err(RootError::CoveredWithCommitWaiver),
+            _ => {}
+        }
+        if self.counts.waivers != self.levers.len() as u64 {
+            return Err(RootError::CountsWaivers);
+        }
+        let tip = match &self.covers {
+            Covers::List(list) => {
+                if (1..list.len()).any(|i| list[i..].contains(&list[i - 1])) {
+                    return Err(RootError::CoversDuplicate);
+                }
+                list.last()
+            }
+            Covers::Range { tip, .. } => Some(tip),
+        };
+        if tip != Some(&self.commit) {
+            return Err(RootError::CoversTip);
+        }
+        if let Some(index) = self.parents.iter().position(|p| p.commit == self.commit) {
+            return Err(RootError::ParentSelf { index });
+        }
+        if matches!(self.commit, GitOid::Sha1(_)) != matches!(self.tree, GitOid::Sha1(_)) {
+            return Err(RootError::OidAlgorithm);
+        }
+        Ok(())
+    }
+
+    fn validate_levers(&self) -> Result<(), RootError> {
         for (index, lever) in self.levers.iter().enumerate() {
             let Body::Lever(body) = &lever.node.body else {
                 return Err(RootError::NotAWaiver { index });
             };
             if body.action != Action::Waive {
                 return Err(RootError::NotAWaiver { index });
+            }
+            if self.levers[..index].iter().any(|l| l.node == lever.node) {
+                return Err(RootError::DuplicateWaiver { index });
             }
             match &body.scope {
                 None => return Err(RootError::WaiverScope { index }),
@@ -74,20 +112,23 @@ impl Root {
                 }
                 Some(_) => {}
             }
-        }
-        if self.state == State::DeclaredOff && !self.levers.iter().any(|l| l.covers_commit()) {
-            return Err(RootError::DeclaredOffWithoutWaiver);
-        }
-        let tip = match &self.covers {
-            Covers::List(list) => list.last(),
-            Covers::Range { tip, .. } => Some(tip),
-        };
-        if tip != Some(&self.commit) {
-            return Err(RootError::CoversTip);
+            if let Some(expires) = body.expires {
+                if expires < self.ts {
+                    return Err(RootError::WaiverExpired { index });
+                }
+                if expires.timestamp().as_second() - self.ts.timestamp().as_second()
+                    > MAX_WAIVER_SECS
+                {
+                    return Err(RootError::WaiverTooLong { index });
+                }
+            }
         }
         Ok(())
     }
 }
+
+/// Longest a waiver may run past the root's `ts` (DESIGN.md decision 12).
+pub const MAX_WAIVER_SECS: i64 = 30 * 86_400;
 
 /// A waiver and the signature over its node, namespace `jtac-lever-v1` (DESIGN.md 11.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,12 +270,48 @@ pub enum RootError {
         /// Where.
         index: usize,
     },
+    /// A waiver that had already expired at the root's `ts`.
+    #[error("levers[{index}] expired before the root's ts")]
+    WaiverExpired {
+        /// Where.
+        index: usize,
+    },
+    /// A waiver running past the 30-day cap.
+    #[error("levers[{index}] expires more than 30 days after the root's ts")]
+    WaiverTooLong {
+        /// Where.
+        index: usize,
+    },
+    /// The same waiver listed twice.
+    #[error("levers[{index}] repeats an earlier lever")]
+    DuplicateWaiver {
+        /// Where.
+        index: usize,
+    },
     /// `declared_off` needs a waiver that covers the whole commit.
     #[error("state is declared_off but no lever waives the whole commit")]
     DeclaredOffWithoutWaiver,
+    /// A commit waiver turns the gate off; the root cannot claim `covered`.
+    #[error("state is covered but a lever waives the whole commit")]
+    CoveredWithCommitWaiver,
+    /// `counts.waivers` is not the length of `levers`.
+    #[error("counts.waivers is not the number of levers")]
+    CountsWaivers,
+    /// `covers` lists a commit twice.
+    #[error("covers lists a commit twice")]
+    CoversDuplicate,
     /// `covers` does not end at the root's commit.
     #[error("covers does not end at the root's commit")]
     CoversTip,
+    /// A parent link to this root's own commit.
+    #[error("parents[{index}] is the root's own commit")]
+    ParentSelf {
+        /// Where.
+        index: usize,
+    },
+    /// `commit` and `tree` from different hash algorithms.
+    #[error("commit and tree use different hash algorithms")]
+    OidAlgorithm,
 }
 
 #[cfg(test)]
@@ -384,36 +461,53 @@ mod tests {
         }
     }
 
+    fn with(levers: Vec<Node>, state: State) -> Root {
+        Root {
+            state,
+            counts: Counts {
+                waivers: levers.len() as u64,
+                ..Counts::default()
+            },
+            levers: levers.into_iter().map(signed).collect(),
+            ..root()
+        }
+    }
+
+    fn rule(expires: Option<&str>) -> Node {
+        waiver(
+            Scope::Rule {
+                rule: "JT-SUP-001".into(),
+                path: "src/".into(),
+            },
+            expires,
+        )
+    }
+
+    fn check(table: Vec<(&str, Root, Result<(), RootError>)>) {
+        for (name, r, want) in table {
+            assert_eq!(r.validate(), want, "{name}");
+        }
+    }
+
     #[test]
-    fn validate_refuses_every_wrong_shape() {
+    fn validate_refuses_wrong_levers() {
         let other_commit = waiver(
             Scope::Commit {
                 commit: COMMIT_ZERO.parse().unwrap(),
             },
             None,
         );
-        let rule_no_expiry = waiver(
-            Scope::Rule {
-                rule: "JT-SUP-001".into(),
-                path: "src/".into(),
-            },
-            None,
-        );
-        let with = |levers: Vec<Node>, state: State| Root {
-            state,
-            levers: levers.into_iter().map(signed).collect(),
-            ..root()
-        };
-        let table = [
+        check(vec![
             ("covered, no levers", root(), Ok(())),
             (
                 "rule waiver keeps covered",
                 with(vec![rule_waiver()], State::Covered),
                 Ok(()),
             ),
+            ("declared_off with commit waiver", declared_off(), Ok(())),
             (
                 "check node as lever",
-                with(vec![commit_waiver(), check_node()], State::Covered),
+                with(vec![commit_waiver(), check_node()], State::DeclaredOff),
                 Err(RootError::NotAWaiver { index: 1 }),
             ),
             (
@@ -422,19 +516,60 @@ mod tests {
                 Err(RootError::NotAWaiver { index: 0 }),
             ),
             (
+                "same waiver twice",
+                with(vec![rule_waiver(), rule_waiver()], State::Covered),
+                Err(RootError::DuplicateWaiver { index: 1 }),
+            ),
+            (
                 "waiver without scope",
-                with(vec![commit_waiver(), lever(Action::Waive)], State::Covered),
+                with(
+                    vec![commit_waiver(), lever(Action::Waive)],
+                    State::DeclaredOff,
+                ),
                 Err(RootError::WaiverScope { index: 1 }),
             ),
             (
                 "waiver for another commit",
-                with(vec![other_commit], State::Covered),
+                with(vec![other_commit], State::DeclaredOff),
                 Err(RootError::WaiverCommit { index: 0 }),
             ),
             (
                 "rule waiver without expiry",
-                with(vec![rule_waiver(), rule_no_expiry], State::Covered),
+                with(vec![rule_waiver(), rule(None)], State::Covered),
                 Err(RootError::WaiverExpiry { index: 1 }),
+            ),
+            (
+                "expired waiver",
+                with(vec![rule(Some("2020-01-01T00:00:00Z"))], State::Covered),
+                Err(RootError::WaiverExpired { index: 0 }),
+            ),
+            (
+                "waiver expiring at ts",
+                with(vec![rule(Some(TS))], State::Covered),
+                Ok(()),
+            ),
+            (
+                "waiver expiring at the cap",
+                with(vec![rule(Some("2026-11-09T18:30:00Z"))], State::Covered),
+                Ok(()),
+            ),
+            (
+                "waiver past the cap",
+                with(
+                    vec![rule_waiver(), rule(Some("2026-11-09T18:30:01Z"))],
+                    State::Covered,
+                ),
+                Err(RootError::WaiverTooLong { index: 1 }),
+            ),
+            (
+                "covered with a commit waiver",
+                with(vec![commit_waiver()], State::Covered),
+                Err(RootError::CoveredWithCommitWaiver),
+            ),
+            (
+                "covered with rule and commit waivers",
+                with(vec![rule_waiver(), commit_waiver()], State::Covered),
+                Err(RootError::CoveredWithCommitWaiver),
             ),
             (
                 "declared_off with rule waiver only",
@@ -446,7 +581,37 @@ mod tests {
                 with(vec![], State::DeclaredOff),
                 Err(RootError::DeclaredOffWithoutWaiver),
             ),
-            ("declared_off with commit waiver", declared_off(), Ok(())),
+        ]);
+    }
+
+    #[test]
+    fn validate_refuses_wrong_root_shape() {
+        let one: GitOid = COMMIT_ONE.parse().unwrap();
+        let zero: GitOid = COMMIT_ZERO.parse().unwrap();
+        let sha256_tree: GitOid =
+            "sha256:6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
+                .parse()
+                .unwrap();
+        check(vec![
+            (
+                "counts.waivers wrong",
+                Root {
+                    counts: Counts {
+                        waivers: 5,
+                        ..Counts::default()
+                    },
+                    ..root()
+                },
+                Err(RootError::CountsWaivers),
+            ),
+            (
+                "covers lists a commit twice",
+                Root {
+                    covers: Covers::List(vec![one, zero, one]),
+                    ..root()
+                },
+                Err(RootError::CoversDuplicate),
+            ),
             (
                 "covers empty",
                 Root {
@@ -458,10 +623,7 @@ mod tests {
             (
                 "covers ends elsewhere",
                 Root {
-                    covers: Covers::List(vec![
-                        COMMIT_ONE.parse().unwrap(),
-                        COMMIT_ZERO.parse().unwrap(),
-                    ]),
+                    covers: Covers::List(vec![one, zero]),
                     ..root()
                 },
                 Err(RootError::CoversTip),
@@ -470,16 +632,32 @@ mod tests {
                 "range tip elsewhere",
                 Root {
                     covers: Covers::Range {
-                        base: COMMIT_ZERO.parse().unwrap(),
-                        tip: COMMIT_ZERO.parse().unwrap(),
+                        base: zero,
+                        tip: zero,
                     },
                     ..root()
                 },
                 Err(RootError::CoversTip),
             ),
-        ];
-        for (name, r, want) in table {
-            assert_eq!(r.validate(), want, "{name}");
-        }
+            (
+                "parent is self",
+                Root {
+                    parents: vec![Parent {
+                        commit: one,
+                        root: EMPTY.parse().unwrap(),
+                    }],
+                    ..root()
+                },
+                Err(RootError::ParentSelf { index: 0 }),
+            ),
+            (
+                "sha1 commit with sha256 tree",
+                Root {
+                    tree: sha256_tree,
+                    ..root()
+                },
+                Err(RootError::OidAlgorithm),
+            ),
+        ]);
     }
 }
