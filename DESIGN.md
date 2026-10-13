@@ -339,7 +339,9 @@ Only roots and signatures are pushed. Applied waivers travel inside the root wit
 
 v0.1 reads policy from `.jtac/policy.toml` in the repository. If there is none, `jtac init` writes a default built from what it detects. From v0.2 a policy can also come from a signed release of an org policy repository (section 18.3).
 
-The policy hash is the SHA-256 of the canonical form of the effective policy, and it goes into every node and root.
+The policy hash is the SHA-256 of the canonical JSON (section 9.1) of the resolved policy: the file as written with every default filled in. A gate release that changes a default changes the hash, because the rules in force changed. The hash goes into every node and root.
+
+No policy file is a refusal that names `jtac init`. Built-in defaults are what `init` writes, never what `check` assumes.
 
 `.jtac/` is always a protected path. A change that touches it escalates, and from v0.2 it cannot be attested by the same run that made it.
 
@@ -350,21 +352,16 @@ version = 1
 
 [checks.fmt]
 run = ["cargo", "fmt", "--all", "--", "--check"]
-when = "Cargo.toml"
-required = true
 
 [checks.lint]
 run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
-when = "Cargo.toml"
-required = true
 
 [checks.test]
 run = ["cargo", "test", "--workspace"]
-when = "Cargo.toml"
-required = true
 timeout_secs = 1200
 
 [integrity]
+block_at = "major"
 max_new_suppressions = 0
 allow_removed_tests = false
 allow_newly_skipped_tests = false
@@ -387,12 +384,16 @@ branches = ["*"]
 paths = ["**"]
 ```
 
-- `run` is an argv array. There is no shell, no interpolation, and no environment passthrough beyond an allowlist.
-- `when` names a file whose presence enables the check.
+- `run` is an argv array. There is no shell, no interpolation, and no environment passthrough beyond an allowlist built into the runner.
+- A check id is `[a-z0-9_-]`, at most 64 bytes, because it names node bodies and cache keys. `required` defaults to true and `timeout_secs` to 600. A required check runs every time; there is no file-presence switch, so `init` writes only the checks that apply.
+- `block_at` is the lowest severity that fails the verdict (section 11.2): `blocker`, `major`, or `minor`. The default `major` leaves minor as the advisory tier.
+- Fence keys take `deny` or `allow`; `deny` is the default and the only value `init` writes.
+- Globs are `globset` syntax, `**` crossing separators, matched against repository-relative paths with `/`. A pattern that can never match such a path (leading `/` or `./`, trailing `/`, a backslash, empty) is refused rather than silently guarding nothing.
+- `[scope]` is the area an agent is cleared to work in: `jtac scope` prints it and the tool-call advisory (section 11.3) names it. It never narrows what the gate checks; the gate judges the whole tree, and `.jtac/**` is protected whatever the file says.
 - A policy file that fails to parse denies. It never falls back to defaults, because a gate that silently stops guarding is worse than none.
 - Unknown keys are an error, so a typo cannot disable a rule.
 
-Built-in defaults exist for Rust, Python, JavaScript and TypeScript, and Go: format check, lint, test, each using the project's own configured commands where a manifest declares them.
+Built-in defaults exist for Rust, Python, JavaScript and TypeScript, and Go: format check, lint, test, each using the project's own configured commands where a manifest declares them. Detection reads the tree and is the CLI's; the mapping from detected facts to a policy is pure and lives in `jtac-policy`. Go gets no format check because `gofmt` exits 0 whether or not files differ, and the defaults never wrap a shell. A JavaScript format check is a `format:check`, `fmt:check`, or `prettier:check` script; `format` and `fmt` rewrite files and are not checks.
 
 ### 10.3 Diff-integrity checks
 
@@ -444,7 +445,7 @@ pub fn gate(tree: &GitOid, policy: &Policy, nodes: &[Node], now: Ts) -> Verdict
 
 - Fails if any required check has no node for this tree and policy.
 - Fails if any required check's outcome is not `pass`.
-- Fails if any finding at or above the policy's blocking severity is present and not covered by a waiver in scope.
+- Fails if any finding at or above `integrity.block_at` is present and not covered by a waiver in scope.
 - Otherwise passes.
 
 `Verdict` carries the ordered list of reasons. It is the only place a pass or fail is decided, and `replay` calls the same function.
@@ -812,6 +813,8 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 22. **`ts` is whole-second UTC in one spelling.**
 23. **The error contract binds at the user surface.** Library errors are structured; the CLI and hooks write the three parts.
 24. **Size and comment discipline is a gate rule, not only a house rule.** Section 10.3 `JT-SIZE`, `JT-CMT`, and `JT-ADD`; this repository runs the same caps in CI.
+25. **The policy hash covers the resolved policy,** defaults filled in, so it names the rules actually applied.
+26. **No `when` switch on checks, and no policy file refuses.** A required check always runs; `init` writes only the checks that apply; `check` never assumes defaults.
 
 ## 22. Open questions
 
