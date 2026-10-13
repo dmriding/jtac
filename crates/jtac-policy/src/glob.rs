@@ -12,6 +12,7 @@ use crate::error::PolicyError;
 use crate::schema::{Policy, with_jtac_dir};
 
 /// A compiled list of globs. Matches when any one does; an empty list matches nothing.
+/// `?` matches one ASCII char; a non-ASCII char in a path is matched with `*`.
 #[derive(Clone, Debug)]
 pub struct Matcher(GlobSet);
 
@@ -53,19 +54,22 @@ const BACKSLASH: &str = "paths are matched with /, never a backslash: write ? fo
 const ALTERNATION: &str = "alternation is not supported: write one pattern per branch";
 const CLASS: &str = "character classes are not supported: the language is literals, ?, * and **";
 const COMPONENT: &str = "a path has no empty, . or .. component";
-const CHARACTER: &str = "only printable ASCII, letters, and digits: no invisible characters";
+const CHARACTER: &str = "printable ASCII only: match other characters with *";
+const NEGATION: &str = "no leading !: there is no negation, write the pattern you want matched";
 const EDGE: &str = "a pattern does not start or end with whitespace";
 
 /// Why `pattern` can never match a repository-relative path or a branch name, if it cannot
 /// (DESIGN.md 10.2). Alternation and classes are refused so neither can smuggle in what the
 /// raw-string checks refuse, as `[/]src/**` would a leading `/`.
 fn unmatchable(pattern: &str) -> Option<&'static str> {
-    let odd = |c: char| !(' '..='~').contains(&c) && !c.is_alphanumeric();
+    let odd = |c: char| !(' '..='~').contains(&c);
     let edge = |c: Option<char>| c.is_some_and(char::is_whitespace);
     if pattern.is_empty() {
         Some(EMPTY)
     } else if pattern.starts_with('/') || pattern.starts_with("./") {
         Some(LEADING)
+    } else if pattern.starts_with('!') {
+        Some(NEGATION)
     } else if pattern.ends_with('/') {
         Some(TRAILING)
     } else if pattern.contains('\\') {
@@ -164,6 +168,8 @@ mod tests {
             ("release/*", "release/1.2/fix", true),
             ("*", "feature/x", true),
             ("**", "a/b/c", true),
+            ("docs/*.md", "docs/\u{e9}.md", true),
+            ("docs/?.md", "docs/\u{e9}.md", false),
             ("main", "main", true),
             ("[*]", "*", true),
         ];
@@ -198,6 +204,13 @@ mod tests {
             ("\u{feff}.github/**", CHARACTER),
             (".github/**\u{a0}", CHARACTER),
             ("\u{3000}", CHARACTER),
+            (".github/**\u{3164}", CHARACTER),
+            ("src/auth\u{115f}/**", CHARACTER),
+            ("src/\u{430}uth/**", CHARACTER),
+            ("\u{ff53}rc/**", CHARACTER),
+            ("docs/\u{e9}t\u{e9}/**", CHARACTER),
+            ("\u{6587}\u{6863}/**", CHARACTER),
+            ("!docs/**", NEGATION),
             (".github\u{ff0f}**", CHARACTER),
             (" src/**", EDGE),
             ("src/** ", EDGE),
@@ -233,16 +246,8 @@ mod tests {
     }
 
     #[test]
-    fn letters_digits_and_printable_ascii_are_accepted() {
-        let table = [
-            "docs/\u{e9}t\u{e9}/**",
-            "\u{6587}\u{6863}/**",
-            "**/*.rs",
-            "release/*",
-            "a~b",
-            "docs/my file.md",
-            "v1..2",
-        ];
+    fn printable_ascii_patterns_are_accepted() {
+        let table = ["**/*.rs", "release/*", "a~b", "docs/my file.md", "v1..2"];
         for pattern in table {
             assert_eq!(unmatchable(pattern), None, "{pattern}");
             let text = format!("version = 1\n[protected]\npaths = ['{pattern}']");

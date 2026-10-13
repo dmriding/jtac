@@ -9,7 +9,8 @@ request moves them under a dated heading and bumps nothing.
 ### Added
 
 - (0.0.4, M2) `jtac-policy`: parse `.jtac/policy.toml`, refuse unknown keys, floats, and
-  integers past 2^53, validate check ids, argv, timeouts, and globs, hash the resolved policy
+  integers past 2^53, validate check ids, argv, timeouts, and globs (literals, `?`, `*`, `**` only; a pattern that
+  can match no repository path is refused), hash the resolved policy
   (defaults filled in, `.jtac/**` always protected), and build per-language default policies
   from detected facts. `design_example_parses_validates_and_hashes` pins DESIGN.md 10.2 to the
   code. DESIGN.md decisions 25 and 26: the hash covers the resolved policy; `when` is gone and
