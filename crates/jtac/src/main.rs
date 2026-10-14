@@ -4,7 +4,9 @@
 mod chain;
 mod check;
 mod cli;
+mod hook;
 mod identity;
+mod init;
 mod judge;
 mod output;
 mod policy;
@@ -23,7 +25,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, Hook};
 use crate::refuse::Refusal;
 
 /// A verdict a command rendered, with a warning that does not change the exit code: the
@@ -90,7 +92,7 @@ fn version() -> String {
     format!("jtac {}", env!("CARGO_PKG_VERSION"))
 }
 
-fn run(args: &[String], cwd: &Path) -> Run {
+fn run(args: &[String], cwd: &Path, stdin: &str) -> Run {
     let json = args.iter().any(|a| a == "--json");
     let cli =
         match Cli::try_parse_from(std::iter::once("jtac").chain(args.iter().map(String::as_str))) {
@@ -104,7 +106,16 @@ fn run(args: &[String], cwd: &Path) -> Run {
             let first = words.first().map_or("", String::as_str);
             Run::refused(&Refusal::not_built(first), json)
         }
+        Some(Command::Init(a)) => Run::verdict(init::init(&a, cwd), a.json),
         Some(Command::Check(a)) => Run::verdict(check::check(&a, cwd), a.json),
+        Some(Command::Hook(Hook::PrePush { remote, url })) => {
+            let (stderr, code) = hook::pre_push(cwd, &remote, &url, stdin);
+            Run {
+                stdout: String::new(),
+                stderr,
+                code,
+            }
+        }
         Some(Command::Status(a)) => Run::verdict(status::status(cwd, a.json), a.json),
         Some(Command::Why(a)) => Run::verdict(why::why(cwd, a.json), a.json),
     }
@@ -113,7 +124,11 @@ fn run(args: &[String], cwd: &Path) -> Run {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let ran = run(&args, &cwd);
+    let mut stdin = String::new();
+    if args.first().is_some_and(|a| a == "hook") {
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+    }
+    let ran = run(&args, &cwd, &stdin);
     print!("{}", ran.stdout);
     eprint!("{}", ran.stderr);
     ExitCode::from(ran.code)
@@ -130,21 +145,23 @@ mod tests {
     #[test]
     fn no_args_and_version_flags_print_the_version() {
         for args in [&[][..], &["--version"], &["-V"]] {
-            let ran = run(&words(args), Path::new("."));
+            let ran = run(&words(args), Path::new("."), "");
             assert_eq!(ran, Run::out(format!("{}\n", version()), 0), "{args:?}");
         }
     }
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 4] = [
+        let rows: [(&[&str], &str); 6] = [
             (&["--help"], "check"),
             (&["--help"], "status"),
             (&["-h"], "why"),
+            (&["--help"], "init"),
+            (&["hook", "--help"], "pre-push"),
             (&["check", "--help"], "--preview"),
         ];
         for (args, want) in rows {
-            let ran = run(&words(args), Path::new("."));
+            let ran = run(&words(args), Path::new("."), "");
             assert_eq!((ran.code, ran.stderr.as_str()), (0, ""), "{args:?}");
             assert!(ran.stdout.contains(want), "{args:?}: {}", ran.stdout);
         }
@@ -158,7 +175,7 @@ mod tests {
             (&["check", "--nope", "--json"], "\"error\""),
         ];
         for (args, want) in rows {
-            let ran = run(&words(args), Path::new("."));
+            let ran = run(&words(args), Path::new("."), "");
             assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{args:?}");
             assert!(ran.stderr.contains(want), "{args:?}: {}", ran.stderr);
         }

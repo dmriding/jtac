@@ -26,9 +26,9 @@ pub struct StoredRoot {
 }
 
 impl Store {
-    /// Point the root's ref at a commit holding `root.json` and `root.sig`, then keep the
+    /// Create the root's ref at a commit holding `root.json` and `root.sig`, then keep the
     /// local copy with the ids of its nodes. Returns the root id. The ref goes first so a
-    /// refused root leaves no local copy behind.
+    /// refused root, or one that lost the race to the same tip, leaves no local copy behind.
     pub fn put_root(
         &self,
         root: &Root,

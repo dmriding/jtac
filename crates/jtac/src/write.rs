@@ -4,7 +4,7 @@
 use jtac_checks::Cache;
 use jtac_core::{Root, Sha256Digest};
 use jtac_sign::{Identity, Namespace, sign};
-use jtac_store::Store;
+use jtac_store::{Store, StoreError};
 
 use crate::judge::Judged;
 use crate::refuse::Refusal;
@@ -24,16 +24,19 @@ pub fn evidence(store: &Store, j: &Judged, cache: &mut dyn Cache) -> Result<(), 
     Ok(())
 }
 
-/// Sign `root` over its canonical bytes and point its ref at it. Returns the root id.
+/// Sign `root` over its canonical bytes and create its ref. Returns the root id, or `None`
+/// when another run created the tip's ref first (issue 27): the caller reports that root.
 pub fn root(
     store: &Store,
     id: &Identity,
     root: &Root,
     leaves: &[Sha256Digest],
-) -> Result<Sha256Digest, Refusal> {
+) -> Result<Option<Sha256Digest>, Refusal> {
     let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
     let sig = sign(id, Namespace::Root, &bytes).map_err(|e| Refusal::sign(&e))?;
-    store
-        .put_root(root, sig.as_bytes(), leaves)
-        .map_err(Refusal::store)
+    match store.put_root(root, sig.as_bytes(), leaves) {
+        Ok(id) => Ok(Some(id)),
+        Err(StoreError::Exists { .. }) => Ok(None),
+        Err(e) => Err(Refusal::store(e)),
+    }
 }

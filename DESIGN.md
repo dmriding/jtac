@@ -447,7 +447,7 @@ The reason a blocker can still be legitimate (a test really was obsolete) is why
 3. **Run diff-integrity checks** first. They are fast and their failures are the most informative.
 4. **Run configured checks**, consulting the cache. Cache key: tree id, policy hash, check id, tool version. Only a `pass` is cached; a failure reruns, because a cached failure would block until a cache nobody sees is cleared. A hit is a new node whose `cached_from` names the original. Only `jtac check` reads or writes the cache; `--preview` runs every check, since a pass computed on a dirty tree would be cached under HEAD's tree id.
 5. **Compute the verdict** with the pure function.
-6. **On pass:** build the Merkle tree, write and sign the root, print `CLEARED HOT`.
+6. **On pass:** build the Merkle tree, write and sign the root, print `CLEARED HOT`. The root's ref is created, never replaced: a run that loses the race to another on the same tip reports the root that won, since decision 33 left nothing that legitimately rewrites one.
 7. **On fail:** write nodes and the verdict to the local store, write no root, print `ABORT` with each reason and the fix.
 
 Subprocess rules: argv arrays only, working directory at the repository root, stdin closed, a timeout that bounds the whole run: at the deadline the process group (a job object on Windows) is killed, whether the check still runs or has exited leaving a descendant that holds its output, and stdout and stderr captured with a 1 MiB cap per stream that keeps the head and marks the cut. The environment is the allowlist of names in section 10.2 plus `JTAC_CHECK=1`, which the runner sets so a check that runs `jtac check` refuses instead of recursing until the timeout, and nothing else; a value is never inspected, because a token with no recognizable shape is still a token. Exit 0 is `pass` and a positive code is `fail`; a timeout, a spawn failure, and a negative code (a signal, a crash) are `error`, never `skipped`. `tool_version` is the first line of a version probe chosen by the tool's file name from a table built into the runner (`cargo --version`, `go version`, and peers), a rustup `+toolchain` selector carried along, and a tool that runs on Node probing `node --version` (the `node` beside it when the tool is given by path, as the npm launcher prefers) because its own version is in the lockfile and the runtime's is not; the probe spends from the check's own timeout; a tool the table does not know has an empty `tool_version` and is never cached. Project-pinned tools are already in the tree id through their lockfile, so the probe covers the global toolchain.
@@ -476,9 +476,10 @@ A check or finding node counts only when its `tree` and `policy` are the facts'.
 **git `pre-push`** is the gate. For each ref being pushed:
 
 - Deleting a ref, or pushing a tag, passes without checks.
-- A force push to a protected branch is a fence.
-- For the tip commit, there must be a valid root (state `covered` or `declared_off`), or a root for an identical tree. If not, the push is refused with the exact command: `jtac check`.
-- The hook never runs the checks itself by default, so a push is never slow or surprising. `jtac check` is the explicit step. A config option runs it inline.
+- A non-fast-forward update of a protected branch is the force fence: the hook sees the remote's old oid and the new one, never `--force`. An old oid this clone does not hold cannot be judged and refuses, naming `git fetch`. Protected branches and the fence's `deny` come from the tip's own `.jtac/policy.toml`, the tree its root was judged under; a tip without one is refused naming `jtac init`.
+- For the tip commit, there must be a valid root (state `covered` or `declared_off`), or a root for an identical tree: one that parses, names the tip's commit and tree, and whose signature holds. Who signed it is `verify`'s question. If not, the push is refused with the exact command: `jtac check`. `jtac status` asks the same decision function, so the two never disagree.
+- The hook never runs the checks itself by default, so a push is never slow or surprising. `jtac check` is the explicit step. A later release adds a config option that runs it inline.
+- Before the code push it pushes the root refs of the commits being pushed, in its own `git push` with `JTAC_HOOK=1` set, which the hook reads as "run nothing". A root push that fails warns and lets the code push proceed (decision 8).
 
 **git `commit-msg`** is reserved for policy rules on commit text. It ships empty in v0.1.
 
@@ -488,8 +489,8 @@ Hook rules:
 
 - A hook's stdout is a protocol wire. Nothing prints to stdout except the protocol. Diagnostics go to stderr.
 - A hook that errors internally fails closed for push and open for the advisory.
-- `jtac init` refuses to overwrite a hook file it did not write, and reports it.
-- Hook commands are written with absolute paths and single quotes.
+- `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it.
+- A hook file is `#!/bin/sh`, a marker line that names its version, and `exec '<absolute jtac>' hook pre-push "$@"`: absolute path, single quotes. `jtac hook pre-push` is the entry point and reads what git writes to its stdin.
 
 ### 11.4 Command classification
 
@@ -523,15 +524,15 @@ jtac waive --rule JT-SUP-001 --path src/ffi/ --reason "..." --expires 14d
 
 ### 11.7 `jtac init`
 
-1. Confirms it is in a git repository and finds the remote.
-2. Finds a signing key: `jtac.signingkey`, else `user.signingkey` when `gpg.format` is `ssh`, else generates a dedicated ed25519 key with no passphrase under the user config directory and sets `jtac.signingkey` (section 11.8).
+1. Confirms it is in a git repository and finds the remote: `origin`, else the only one. Several without `origin` refuse naming `--remote`; none is noted, and the refspec lands on the next run.
+2. Finds a signing key: `jtac.signingkey`, else `user.signingkey` when `gpg.format` is `ssh`, else generates a dedicated ed25519 key with no passphrase at `jtac/id_ed25519` under the user config directory (XDG on Linux, Application Support on macOS, `APPDATA` on Windows) and sets `jtac.signingkey` in the global git config: one identity per person, as git's `user.signingkey` is (section 11.8). `user.email` is the principal; without it `init` refuses naming the command that sets it.
 3. Creates `.git/jtac/`.
 4. Writes `.jtac/policy.toml` from detection if none exists, and prints it.
-5. Installs the git hooks and, where an agent is detected, its tool-call hook. Prints exactly what it wrote and where.
+5. Installs the `pre-push` hook in the directory git names, `core.hooksPath` honoured, and, where an agent is detected, its tool-call hook (M13). Prints exactly what it wrote and where.
 6. Adds the fetch refspec for `refs/jtac/*`.
 7. Writes a `lever` node with action `init`.
 
-`--dry-run` prints everything and writes nothing. Running `init` twice is a no-op. It never touches PATH, shell rc files, or any config file it cannot parse.
+It does not write `.jtac/signers`; it prints the allowed-signers line for the key, so a repository that wants `verify` to know the signer commits it (M11). `--dry-run` prints everything and writes nothing. Running `init` twice is a no-op. It never touches PATH, shell rc files, or any config file it cannot parse.
 
 Target: a working gate on any repository in under five minutes, with no account and no network beyond the user's own git remote.
 
@@ -554,7 +555,7 @@ Target: a working gate on any repository in under five minutes, with no account 
 - **`jtac replay <commit>`** loads the root and its nodes from the local store, recomputes the Merkle root, the counts, and the verdict with the root's `ts` as `now`, and compares. Any mismatch invalidates the root. On another person's machine the nodes are not present, so replay reports that the root verifies and the detail is not available locally.
 - **`jtac audit [range]`** prints one row per commit with its coverage state, signer, policy version, and gate version, then the totals and the percentage in each state.
 - **`jtac show [range]`** prints the roots and signatures that a push of this range would send, exactly as they would be sent.
-- **`jtac status`** says whether a push would pass from HEAD's own root, lists the commits ahead of the upstream with and without roots, and shows the last verdict. A tree match counts once the hook reads it (M10). Exit 0 when a push would pass, 1 when it would be refused.
+- **`jtac status`** says whether a push would pass from HEAD's own root, lists the commits ahead of the upstream with and without roots, and shows the last verdict. A tree match counts, read by the decision function the hook uses. Exit 0 when a push would pass, 1 when it would be refused.
 - **`jtac why`** prints the last verdict's reasons as `check` printed them, each with its rule, why the rule exists, and the next command, with a note when HEAD has moved since. Before any check it refuses.
 
 ---
@@ -621,7 +622,8 @@ Each milestone is one branch and ends with the quality bars green.
 | M7 | `jtac-store`: local store and git ref layer | A root written on one clone is fetched and read on another |
 | M8 | `jtac-sign`: sign, verify, namespaces, trust file | A rewritten body and a wrong namespace both fail verification |
 | M9 | `jtac check`, `status`, `why` | A passing repository prints `CLEARED HOT` and writes a signed root. A failing one explains itself |
-| M10 | `jtac-gate` classifier, `pre-push` hook, `jtac init` | A push without a root is refused with the exact command. Every bypass spelling is in the table |
+| M10 | `jtac-gate` push decision, `pre-push` hook, `jtac init` | A push without a root is refused with the exact command. The hook and `status` agree, tree fallback included |
+| M10b | `jtac-gate` shell classifier | Every bypass spelling is in the table |
 | M11 | `verify`, `replay`, `audit`, `show` | Coverage states including tree fallback are reported correctly on a scripted history |
 | M12 | `waive` | Waivers are signed, scoped, expiring, and shown everywhere they apply |
 | M13 | Agent tool-call hook for the first agent | The advisory names the fence and the clearing command |
@@ -849,6 +851,7 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 31. **The store is the git common dir's `jtac/`, a root's leaves live in a local `nodes.json`, the root commit is plumbing-written, git-unsigned, and fixed-author at the root's `ts`, and a same-tip push collision is reported, not forced.** Linked worktrees must see one store; the root carries only the Merkle root and replay needs the leaves; `commit-tree` honours `commit.gpgsign` and a gpg prompt would hang every root write; one root and signature then give one commit id everywhere; and a second root for a tip already covered on the remote is evidence the remote has, not a reason to overwrite it. Open question 1 measured and closed.
 32. **The signing key is `jtac.signingkey`, else git's SSH `user.signingkey`, else a dedicated key `init` generates; the principal is `user.email`; jtac never prompts for a passphrase; the trust file is `.jtac/signers` alone, judged at the document's `ts` with ssh-keygen run in UTC; the key ssh-keygen prints on a good signature is the one the document must name.** A developer already signing with SSH enrolls nothing, and everyone else gets a key whose compromise touches evidence only; one identity rule shared with git means no new knob; a hook that blocks on a passphrase prompt is a gate that hangs; two trust sources would leave a reader unsure which one said yes; a root's validity must not change when a key is later retired, nor with the verifier's time zone; and only ssh-keygen's own reading of a key gives the fingerprint `ssh-keygen -l` prints. Open question 2 closed.
 33. **A root covers from the diff base, the ancestor walk is by commit, a covered HEAD is checked again and keeps its root, and `--preview` never touches the cache.** The first root vouches only for what its rules judged, so adopting jtac does not mark history as covered; a tree match is a reader's rule, since the writer would need every root's tree; evidence is never rewritten and a toolchain change must stay visible; a pass computed on a dirty tree under HEAD's tree id would poison the cache.
+34. **The `pre-push` force fence is a non-fast-forward update of a protected branch, judged from the pushed tip's policy; a valid root parses, names the tip, and its signature holds; the dedicated key lives under the user config directory and the global `jtac.signingkey` names it; a root ref is created, never replaced; the shell classifier is its own milestone.** A hook sees old and new oids, never flags; the tip's tree is the one the root judged; who signed is for `verify`; one identity per person is git's own rule; decision 33 removed every legitimate rewrite, so the loser of a race reports the winner; and nothing consumes the classifier before the advisory hook.
 
 ## 22. Open questions
 

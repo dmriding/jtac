@@ -90,6 +90,13 @@ pub enum StoreError {
         /// What was wrong.
         what: String,
     },
+    /// The commit already has a root ref: another run wrote it first (DESIGN.md section
+    /// 11.1 step 6). Nothing was written.
+    #[error("{name} already holds a root")]
+    Exists {
+        /// The ref.
+        name: String,
+    },
     /// A root the caller handed over that would not read back, refused before anything is
     /// written.
     #[error("the root is not storable: {what}")]

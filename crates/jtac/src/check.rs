@@ -35,6 +35,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         Some((identity::identity(&repo)?, identity::gate_ref()?))
     };
     let store = Store::open(&repo).map_err(Refusal::store)?;
+    let existing = store.root(&head.commit).map_err(Refusal::store)?;
     let covered = chain::covered(&repo, &store, &head)?;
     let nearest = chain::nearest(&repo, &covered, &head)?;
     let base =
@@ -72,7 +73,6 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         return Err(Refusal::moved(Some(&why)));
     }
     write::evidence(&store, &j, cache)?;
-    let existing = store.root(&head.commit).map_err(Refusal::store)?;
     let root_id = match (&existing, j.verdict.pass) {
         (Some(stored), true) => {
             notes.push("HEAD already has a root; it stands, and this run wrote none".to_owned());
@@ -88,7 +88,20 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
                 identity.signer.clone(),
             )
             .map_err(Refusal::internal)?;
-            Some(write::root(&store, &identity, &root, &leaves)?)
+            match write::root(&store, &identity, &root, &leaves)? {
+                Some(id) => Some(id),
+                None => {
+                    notes.push(
+                        "another run wrote HEAD's root first; it stands, and this run wrote none"
+                            .to_owned(),
+                    );
+                    let won = store
+                        .root(&head.commit)
+                        .map_err(Refusal::store)?
+                        .ok_or_else(|| Refusal::internal("HEAD's root ref vanished"))?;
+                    Some(won.root.id().map_err(Refusal::internal)?)
+                }
+            }
         }
         (_, false) => None,
     };

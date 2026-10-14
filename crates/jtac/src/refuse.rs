@@ -1,6 +1,6 @@
 //! What the CLI refuses and how it says so: what, why, how (DESIGN.md section 12), on stderr
 //! with exit 2. A refusal is never a verdict: the gate could not answer. Every refusal here
-//! is a negotiation; fences arrive with the hooks.
+//! is a negotiation; the hooks build the fences with `fence`.
 
 use jtac_checks::diff::git::GitError;
 use jtac_policy::{POLICY_PATH, PolicyError};
@@ -31,6 +31,14 @@ impl Refusal {
             what: what.into(),
             why: why.into(),
             how: how.into(),
+        }
+    }
+
+    /// A fence: no command clears it from here. `how` says what would, elsewhere.
+    pub fn fence(what: impl Into<String>, why: impl Into<String>, how: impl Into<String>) -> Self {
+        Self {
+            kind: "fence",
+            ..Self::new(what, why, how)
         }
     }
 

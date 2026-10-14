@@ -17,9 +17,13 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-/// Every command the parser accepts; `check`, `status`, and `why` run in this release.
+/// Every command the parser accepts; `init`, `check`, `status`, `why`, and `hook` run in
+/// this release.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Set this repository up: signing key, local store, policy, the pre-push hook, the
+    /// fetch refspec for evidence
+    Init(InitArgs),
     /// Run the gate on HEAD: diff-integrity rules, the policy's checks, then the verdict;
     /// a pass writes a signed root
     Check(CheckArgs),
@@ -27,9 +31,40 @@ pub enum Command {
     Status(JsonArg),
     /// The last verdict's reasons, each with its rule, why it exists, and the next command
     Why(JsonArg),
+    /// A git hook entry point; git runs it, `jtac init` installs it
+    #[command(subcommand)]
+    Hook(Hook),
     /// A command a later release ships.
     #[command(external_subcommand)]
     Other(Vec<String>),
+}
+
+/// `jtac init` flags.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct InitArgs {
+    /// Print everything init would write and write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// The remote that gets the evidence refspec, when there is more than one and none is
+    /// `origin`
+    #[arg(long, value_name = "NAME")]
+    pub remote: Option<String>,
+    /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The hooks git can call. Stdout is the protocol wire; diagnostics go to stderr.
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// The push gate: git writes one `<local ref> <local oid> <remote ref> <remote oid>`
+    /// line per ref to stdin
+    PrePush {
+        /// The remote's name, or its URL when it has none
+        remote: String,
+        /// The remote's URL
+        url: String,
+    },
 }
 
 /// `jtac check` flags.
@@ -76,6 +111,24 @@ mod tests {
         assert_eq!(cli.command, Some(Command::Status(JsonArg { json: true })));
         let cli = Cli::try_parse_from(["jtac", "why"]).unwrap();
         assert_eq!(cli.command, Some(Command::Why(JsonArg { json: false })));
+        let cli = Cli::try_parse_from(["jtac", "init", "--dry-run", "--remote", "up"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Init(InitArgs {
+                dry_run: true,
+                remote: Some("up".into()),
+                json: false,
+            }))
+        );
+        let cli = Cli::try_parse_from(["jtac", "hook", "pre-push", "origin", "x.git"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Hook(Hook::PrePush {
+                remote: "origin".into(),
+                url: "x.git".into(),
+            }))
+        );
+        assert!(Cli::try_parse_from(["jtac", "hook", "pre-push"]).is_err());
         let cli = Cli::try_parse_from(["jtac", "verify", "--range", "x"]).unwrap();
         assert_eq!(
             cli.command,

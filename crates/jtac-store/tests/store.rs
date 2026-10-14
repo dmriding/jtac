@@ -198,15 +198,6 @@ fn the_root_commit_is_parentless_unsigned_and_the_same_for_the_same_root() {
         repo.git(&["ls-tree", "--name-only", &first]),
         "root.json\nroot.sig"
     );
-    s.put_root(&r, SIG, &[]).unwrap();
-    assert_eq!(repo.git(&["rev-parse", &name]), first);
-    let later = Root {
-        ts: "2026-10-11T18:30:00Z".parse().unwrap(),
-        ..r.clone()
-    };
-    s.put_root(&later, SIG, &[]).unwrap();
-    assert_ne!(repo.git(&["rev-parse", &name]), first);
-
     let other = Repo::clone_of(&repo);
     other.git(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
     Store::open(other.path())
@@ -214,6 +205,32 @@ fn the_root_commit_is_parentless_unsigned_and_the_same_for_the_same_root() {
         .put_root(&r, SIG, &[])
         .unwrap();
     assert_eq!(other.git(&["rev-parse", &name]), first);
+}
+
+/// Issue 27: two checks on one tip raced and the second `update-ref` replaced the first,
+/// so one run's printed root was not the ref's. The ref is created with an empty old value.
+#[test]
+fn a_root_ref_is_created_never_replaced() {
+    let repo = with_commit(&[]);
+    let s = Store::open(repo.path()).unwrap();
+    let r = root(&repo, TS);
+    let id = s.put_root(&r, SIG, &[]).unwrap();
+    let name = ref_name(&r.commit);
+    let first = repo.git(&["rev-parse", &name]);
+    let later = Root {
+        ts: "2026-10-11T18:30:00Z".parse().unwrap(),
+        ..r.clone()
+    };
+    for again in [&r, &later] {
+        let err = s.put_root(again, SIG, &[]).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Exists { name: n } if *n == name),
+            "{err}"
+        );
+        assert_eq!(repo.git(&["rev-parse", &name]), first);
+        let again = again.id().unwrap();
+        assert_eq!(s.local_root(&again).unwrap().is_some(), again == id);
+    }
 }
 
 #[test]
