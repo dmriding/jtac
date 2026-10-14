@@ -17,7 +17,7 @@ pub fn sign(id: &Identity, ns: Namespace, msg: &[u8]) -> Result<String, SignErro
     };
     let key: &OsStr = match (&id.key, &literal) {
         (KeyRef::File(path), _) => path.as_os_str(),
-        (_, Some(file)) => file.path().as_os_str(),
+        (_, Some(file)) => file.as_os_str(),
         (KeyRef::Literal(_), None) => unreachable!("a literal key was written to a file"),
     };
     let args: [&OsStr; 9] = [
@@ -37,7 +37,7 @@ pub fn sign(id: &Identity, ns: Namespace, msg: &[u8]) -> Result<String, SignErro
         found: "a signature that is not UTF-8".into(),
     })?;
     let sig_file = crate::verify::temp("jtac-sig-", sig.as_bytes())?;
-    let check = crate::verify::novalidate(&id.tool, ns, sig_file.path(), msg)?;
+    let check = crate::verify::novalidate(&id.tool, ns, &sig_file, msg)?;
     let found = printed(&check.stdout).unwrap_or_else(|| "no key".to_owned());
     if !check.status.success() || found != id.signer.fingerprint {
         return Err(SignError::KeyMismatch {
@@ -49,7 +49,7 @@ pub fn sign(id: &Identity, ns: Namespace, msg: &[u8]) -> Result<String, SignErro
 }
 
 /// ssh-keygen reads a public key from a file; the agent holds the private half.
-pub(crate) fn literal_file(line: &str) -> Result<tempfile::NamedTempFile, SignError> {
+pub(crate) fn literal_file(line: &str) -> Result<tempfile::TempPath, SignError> {
     use std::io::Write as _;
     let io = |source| SignError::Io {
         path: std::env::temp_dir(),
@@ -61,5 +61,5 @@ pub(crate) fn literal_file(line: &str) -> Result<tempfile::NamedTempFile, SignEr
         .tempfile()
         .map_err(io)?;
     writeln!(file, "{line}").map_err(io)?;
-    Ok(file)
+    Ok(file.into_temp_path())
 }

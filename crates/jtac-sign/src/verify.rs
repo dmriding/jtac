@@ -49,7 +49,7 @@ pub fn verify(
         None => None,
     };
     let sig_file = temp("jtac-sig-", sig.as_bytes())?;
-    let out = novalidate(tool, ns, sig_file.path(), msg)?;
+    let out = novalidate(tool, ns, &sig_file, msg)?;
     if !out.status.success() {
         return Ok(invalid(&first_line(&out.stderr)));
     }
@@ -68,13 +68,13 @@ pub fn verify(
         "-Y".as_ref(),
         "verify".as_ref(),
         "-f".as_ref(),
-        trust.path().as_os_str(),
+        trust.as_os_str(),
         "-I".as_ref(),
         signer.principal.as_ref(),
         "-n".as_ref(),
         ns.as_str().as_ref(),
         "-s".as_ref(),
-        sig_file.path().as_os_str(),
+        sig_file.as_os_str(),
         "-O".as_ref(),
         time.as_ref(),
     ];
@@ -114,7 +114,9 @@ pub(crate) fn novalidate(
     tool.run(&args, msg)
 }
 
-pub(crate) fn temp(prefix: &str, bytes: &[u8]) -> Result<tempfile::NamedTempFile, SignError> {
+/// Written, then closed before ssh-keygen opens it: on Windows an open handle makes that
+/// open a sharing violation. The path is deleted on drop.
+pub(crate) fn temp(prefix: &str, bytes: &[u8]) -> Result<tempfile::TempPath, SignError> {
     use std::io::Write as _;
     let io = |source| SignError::Io {
         path: std::env::temp_dir(),
@@ -125,7 +127,7 @@ pub(crate) fn temp(prefix: &str, bytes: &[u8]) -> Result<tempfile::NamedTempFile
         .tempfile()
         .map_err(io)?;
     file.write_all(bytes).map_err(io)?;
-    Ok(file)
+    Ok(file.into_temp_path())
 }
 
 /// A symlink, a device or a FIFO in the tree must not be followed or read without end, and

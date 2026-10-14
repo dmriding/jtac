@@ -36,7 +36,7 @@ pub fn identity(r: Resolved) -> Result<Identity, SignError> {
     };
     let (path, named): (&Path, PathBuf) = match (&key, &literal) {
         (KeyRef::File(path), _) => (path, path.clone()),
-        (_, Some(file)) => (file.path(), PathBuf::from("jtac.signingkey")),
+        (_, Some(file)) => (file.as_ref(), PathBuf::from("jtac.signingkey")),
         (KeyRef::Literal(_), None) => unreachable!("a literal key was written to a file"),
     };
     let args: [&OsStr; 3] = ["-l".as_ref(), "-f".as_ref(), path.as_os_str()];
