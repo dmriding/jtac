@@ -493,7 +493,7 @@ fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     for name in rows {
         repo.git(&["update-ref", name, &head]);
         let roots = s.roots().unwrap();
-        assert_eq!(roots.skipped, vec![name.to_owned()]);
+        assert_eq!(roots.skipped, vec![name.as_bytes().to_vec()]);
         assert_eq!(roots.listed.len(), 1, "{name}");
         let note = roots.notes().next().unwrap();
         assert!(
@@ -504,24 +504,29 @@ fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     }
     let roots = s.roots().unwrap();
     assert!(roots.skipped.is_empty() && roots.listed.len() == 1);
-    let hostile = "refs/jtac/roots/zz/$(touch${IFS}PWNED)/it's";
-    repo.git(&["update-ref", hostile, &head]);
+    let plain = "refs/jtac/roots/zz/junk";
+    repo.git(&["update-ref", plain, &head]);
     let note = s.roots().unwrap().notes().next().unwrap();
-    let cmd = note.split('`').nth(1).unwrap();
     assert_eq!(
-        cmd, "git update-ref -d 'refs/jtac/roots/zz/$(touch${IFS}PWNED)/it'\\''s'",
+        note.split('`').nth(1).unwrap(),
+        "git update-ref -d refs/jtac/roots/zz/junk",
         "{note}"
     );
+    repo.git(&["update-ref", "-d", plain]);
+    for hostile in [
+        "refs/jtac/roots/zz/$(touch${IFS}PWNED)/it's",
+        "refs/jtac/roots/zz/x`touch${IFS}PWNED`y",
+    ] {
+        repo.git(&["update-ref", hostile, &head]);
+        let note = s.roots().unwrap().notes().next().unwrap();
+        assert!(
+            !note.contains("touch") && !note.contains("zz/") && note.contains("for-each-ref"),
+            "{note}"
+        );
+        repo.git(&["update-ref", "-d", hostile]);
+    }
     #[cfg(unix)]
     {
-        let out = repo.command("sh", &["-c", cmd]);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert!(!repo.path().join("PWNED").exists(), "the note ran the name");
-        assert!(s.roots().unwrap().skipped.is_empty());
         use std::os::unix::ffi::OsStrExt as _;
         let raw = std::ffi::OsStr::from_bytes(b"refs/jtac/roots/zz/\xff");
         let ok = std::process::Command::new("git")
@@ -535,10 +540,12 @@ fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
             .unwrap();
         assert!(ok.success());
         let roots = s.roots().unwrap();
-        assert_eq!(
-            roots.skipped,
-            vec!["refs/jtac/roots/zz/\u{fffd}".to_owned()]
-        );
+        assert_eq!(roots.skipped, vec![b"refs/jtac/roots/zz/\xff".to_vec()]);
         assert_eq!(roots.listed.len(), 1);
+        let note = roots.notes().next().unwrap();
+        assert!(
+            note.contains("git for-each-ref refs/jtac/roots/") && !note.contains("zz/"),
+            "{note}"
+        );
     }
 }

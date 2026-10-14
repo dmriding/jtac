@@ -144,27 +144,32 @@ pub struct Listed {
 /// The namespace as read: the root refs, and the names under it that are not
 /// `<xx>/<commit>`, a name that is not UTF-8 included. Nobody writes those through jtac, so
 /// they are a note, never a reason to stop judging the tip; anyone with push access chooses
-/// them, so the note quotes them for `sh`
+/// them, so a note shows a name only when every character is plain, and names no command
+/// with a lossy name, which would delete another ref
 /// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roots {
     /// In ref order.
     pub listed: Vec<Listed>,
-    /// Full ref names, in ref order, lossy where not UTF-8.
-    pub skipped: Vec<String>,
+    /// Full ref names as git printed them, in ref order.
+    pub skipped: Vec<Vec<u8>>,
 }
 
 impl Roots {
     /// One note per skipped ref, for whichever command prints notes.
     pub fn notes(&self) -> impl Iterator<Item = String> + '_ {
-        self.skipped.iter().map(|name| {
-            let q = quoted(name);
-            format!(
-                "skipped {q}: not <xx>/<commit> under refs/jtac/roots/; `git update-ref -d {q}` \
-                 removes it here and `git push <remote> {}` on the remote",
-                quoted(&format!(":{name}"))
-            )
-        })
+        self.skipped
+            .iter()
+            .map(|raw| match std::str::from_utf8(raw) {
+                Ok(name) if quoted(name, "") == name => format!(
+                    "skipped {name}: not <xx>/<commit> under refs/jtac/roots/; `git update-ref -d \
+                 {name}` removes it here and `git push <remote> :{name}` on the remote"
+                ),
+                _ => "skipped a ref under refs/jtac/roots/ whose name this note cannot show; `git \
+                  for-each-ref refs/jtac/roots/` prints it, `git update-ref -d <ref>` removes \
+                  it here and `git push <remote> :<ref>` on the remote"
+                    .to_owned(),
+            })
     }
 }
 
@@ -192,9 +197,7 @@ impl Store {
         for raw in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let Ok(line) = std::str::from_utf8(raw) else {
                 let name = raw.split(|b| *b == b' ').next().unwrap_or_default();
-                roots
-                    .skipped
-                    .push(String::from_utf8_lossy(name).into_owned());
+                roots.skipped.push(name.to_vec());
                 continue;
             };
             let (name, object) = line.split_once(' ').ok_or_else(|| StoreError::Output {
@@ -212,7 +215,7 @@ impl Store {
                     commit,
                     root_commit: oid(object)?,
                 }),
-                None => roots.skipped.push(name.to_owned()),
+                None => roots.skipped.push(name.as_bytes().to_vec()),
             }
         }
         Ok(roots)

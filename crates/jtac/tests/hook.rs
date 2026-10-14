@@ -152,32 +152,64 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
         "GIT_CONFIG hid the mirror: keep was deleted"
     );
     repo.git(&["config", "--add", "remote.origin.mirror", "yes"]);
-    let clears = |ran: Ran, file: &str, env: &[(&str, &str)]| {
-        let want =
-            format!("Clear it: run `git config --file '{file}' --unset-all remote.origin.mirror`.");
+    let clears = |ran: Ran, ends: &str, env: &[(&str, &str)]| {
+        let (_, rest) = ran
+            .stderr
+            .split_once("Clear it: run `git config --file ")
+            .unwrap();
+        let (file, rest) = rest
+            .split_once(" --unset-all remote.origin.mirror`.")
+            .unwrap();
+        let file = file.trim_matches('\'').replace("'\\''", "'");
         assert!(
-            ran.code == 2 && ran.stderr.contains(&want),
+            ran.code == 2 && rest.contains("`git push origin <branch>`"),
             "{}",
             ran.stderr
         );
-        repo.git(&[
+        assert!(
+            std::path::Path::new(&file).is_absolute() && file.ends_with(ends),
+            "{file}"
+        );
+        let unset = [
+            "-C",
+            "sub",
             "config",
             "--file",
-            file,
+            &file,
             "--unset-all",
             "remote.origin.mirror",
-        ]);
+        ];
+        let out = repo.command("git", &unset);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(hook(&repo, "", env).code, 0);
     };
-    clears(hook(&repo, "", &[]), ".git/config", &[]);
+    std::fs::create_dir_all(repo.path().join("sub")).unwrap();
+    clears(hook(&repo, "", &[]), "/.git/config", &[]);
     let mirrored = b"[remote \"origin\"]\n\tmirror = true\n";
     let global = elsewhere.write("gitconfig", mirrored);
     let env = [("GIT_CONFIG_GLOBAL", global.to_str().unwrap())];
-    clears(hook(&repo, "", &env), global.to_str().unwrap(), &env);
+    clears(hook(&repo, "", &env), "gitconfig", &env);
     let included = elsewhere.write("included", mirrored);
     repo.git(&["config", "include.path", included.to_str().unwrap()]);
-    clears(hook(&repo, "", &[]), included.to_str().unwrap(), &[]);
+    clears(hook(&repo, "", &[]), "included", &[]);
+    #[cfg(unix)]
+    {
+        let odd = elsewhere.write("tab\thé'x", mirrored);
+        repo.git(&["config", "include.path", odd.to_str().unwrap()]);
+        clears(hook(&repo, "", &[]), "tab\thé'x", &[]);
+    }
     repo.git(&["config", "--unset", "include.path"]);
+    let url = repo.git(&["remote", "get-url", "origin"]);
+    repo.git(&["remote", "add", "x;id;#", &url]);
+    repo.git(&["config", "remote.x;id;#.mirror", "true"]);
+    let ran = hook_to(&repo, "x;id;#", b"", &[]);
+    let want = "--unset-all 'remote.x;id;#.mirror'`. Then push branches by name, `git push \
+                'x;id;#' <branch>`";
+    assert!(ran.code == 2 && ran.stderr.contains(want), "{}", ran.stderr);
     let out = repo.command(
         "git",
         &["-c", "remote.origin.mirror=true", "push", "origin"],
@@ -205,7 +237,7 @@ fn a_malformed_root_ref_is_skipped_with_a_note_not_a_refusal() {
     } = checked();
     let junk = "refs/jtac/roots/zz/junk";
     repo.git(&["update-ref", junk, &base]);
-    let note = format!("skipped '{junk}'");
+    let note = format!("skipped {junk}:");
     let ran = hook(
         &repo,
         &format!(
