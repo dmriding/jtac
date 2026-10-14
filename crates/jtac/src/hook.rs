@@ -314,7 +314,8 @@ impl Refusal {
 
     /// A ref the decision refused.
     fn push(r: &Refuse, at: &At) -> Self {
-        let branch = quoted(at.remote_ref.trim_start_matches("refs/heads/"), "<branch>");
+        let raw = at.remote_ref.trim_start_matches("refs/heads/");
+        let branch = if raw.contains('`') { "<branch>" } else { raw };
         let remote_ref = quoted(at.remote_ref, "<ref>");
         let (what, why, how) = match r {
             Refuse::Absent => (
@@ -396,7 +397,7 @@ impl Refusal {
                      work, push it to a branch of its own: `git push {} {}`.",
                     quoted(at.remote, "<remote>"),
                     quoted(
-                        &format!("{}:refs/heads/{branch}-rework", at.tip),
+                        &format!("{}:refs/heads/{raw}-rework", at.tip),
                         "<tip>:refs/heads/<branch>-rework"
                     )
                 ),
@@ -518,7 +519,15 @@ mod tests {
             old: &old,
             stale: None,
         };
-        let unknown = Refusal::push(&Refuse::Unknown, &at).how;
+        let unknown = Refusal::push(&Refuse::Unknown, &at);
+        assert!(
+            unknown
+                .what
+                .starts_with("`'refs/heads/--upload-pack=printf${IFS}X>&2;false;#'`: "),
+            "{}",
+            unknown.what
+        );
+        let unknown = unknown.how;
         assert!(
             unknown.contains(
                 "`git fetch 'x;id;#' 'refs/heads/--upload-pack=printf${IFS}X>&2;false;#'`"
@@ -557,6 +566,20 @@ mod tests {
                 .how
                 .contains("`git push <remote> <branch>`")
         );
+        let tick = Refusal::mirror("a`b", "run `x`").what;
+        assert!(
+            tick.starts_with("`<key>` is set: every push to `<remote>`"),
+            "{tick}"
+        );
+        let quote = At {
+            remote: "origin",
+            remote_ref: "refs/heads/release/it's",
+            stale: None,
+            ..at
+        };
+        let rewind = Refusal::push(&Refuse::Rewind, &quote).how;
+        let want = format!("`git push origin '{tip}:refs/heads/release/it'\\''s-rework'`");
+        assert!(rewind.contains(&want), "{rewind}");
     }
 
     #[test]
