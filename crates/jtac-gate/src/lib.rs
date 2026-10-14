@@ -3,4 +3,4 @@
 
 pub mod push;
 
-pub use push::{Coverage, Decision, History, Pass, RefUpdate, Refuse, decide};
+pub use push::{Coverage, Decision, History, Pass, RefUpdate, Refuse, decide, exempt};

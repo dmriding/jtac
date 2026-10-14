@@ -185,10 +185,16 @@ impl Store {
             .collect()
     }
 
-    /// Push the root refs for `commits` to `remote`, never forced. Each ref's outcome is
-    /// reported; a rejection means the remote already holds a root for that commit. An empty
-    /// list pushes nothing: a bare `git push` would send the current branch.
-    pub fn push(&self, remote: &str, commits: &[GitOid]) -> Result<Vec<Pushed>, StoreError> {
+    /// Push the root refs for `commits` to `remote`, never forced, with `env` on the child git
+    /// (the `pre-push` hook's `JTAC_HOOK=1`). Each ref's outcome is reported; a rejection means
+    /// the remote already holds a root for that commit. An empty list pushes nothing: a bare
+    /// `git push` would send the current branch.
+    pub fn push(
+        &self,
+        remote: &str,
+        commits: &[GitOid],
+        env: &[(&str, &str)],
+    ) -> Result<Vec<Pushed>, StoreError> {
         let mut distinct: Vec<&GitOid> = Vec::new();
         for c in commits {
             if !distinct.contains(&c) {
@@ -207,7 +213,7 @@ impl Store {
             .collect();
         let mut args = vec!["push", "--porcelain", "--", remote];
         args.extend(specs.iter().map(String::as_str));
-        let out = git_output(self.repo(), &args, None, &[])?;
+        let out = git_output(self.repo(), &args, None, env)?;
         let text = String::from_utf8_lossy(&out.stdout);
         let pushed: Vec<Pushed> = text.lines().filter_map(porcelain).collect();
         if pushed.len() != distinct.len() {

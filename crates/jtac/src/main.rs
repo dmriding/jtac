@@ -4,19 +4,27 @@
 mod chain;
 mod check;
 mod cli;
+mod coverage;
+mod detect;
 mod hook;
+mod hookfile;
 mod identity;
 mod init;
+mod initout;
 mod judge;
+mod keydir;
 mod output;
 mod policy;
 mod reason;
+mod refspec;
 mod refuse;
 mod render;
 mod repo;
 mod root;
+mod rootpush;
 mod state;
 mod status;
+mod update;
 mod why;
 mod write;
 

@@ -490,11 +490,7 @@ fn no_key_and_no_principal_are_refused_before_any_check_runs() {
         "{}",
         ran.stderr
     );
-    assert!(
-        ran.stderr.contains("git config jtac.signingkey"),
-        "{}",
-        ran.stderr
-    );
+    assert!(ran.stderr.contains("Run `jtac init`"), "{}", ran.stderr);
     repo.git(&["config", "gpg.format", "ssh"]);
     repo.git(&["config", "user.signingkey", "/nowhere/key"]);
     let ran = jtac(&repo, &["check"]);

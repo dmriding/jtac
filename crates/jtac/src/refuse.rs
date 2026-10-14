@@ -47,7 +47,7 @@ impl Refusal {
         Self::new(
             format!("`{command}` is not a command in this release."),
             format!(
-                "jtac {} ships `check`, `status`, and `why`; exiting zero on anything else \
+                "jtac {} ships `init`, `check`, `status`, `why`, and `hook`; exiting zero on anything else \
                  would let a hook treat \"not built\" as \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),
@@ -124,9 +124,8 @@ impl Refusal {
              that judged by rules nobody chose would be a gate nobody can answer for. The tree \
              under test carries its own rules, so an uncommitted file does not count.",
             format!(
-                "Write `{POLICY_PATH}` in the shape DESIGN.md section 10.2 shows, commit it, and \
-                 run `jtac check` again. `jtac init` writes one from detection in a \
-                 later release."
+                "Run `jtac init` to write `{POLICY_PATH}` from what the tree holds, commit it, \
+                 and run `jtac check` again."
             ),
         )
     }
@@ -208,9 +207,8 @@ impl Refusal {
     pub fn no_identity(err: &jtac_sign::ResolveError) -> Self {
         let how = match err {
             jtac_sign::ResolveError::NoKey => {
-                "Run `git config jtac.signingkey <path to an SSH private key>` (or sign commits \
-                 with SSH: `git config gpg.format ssh` and `user.signingkey`), then `jtac check`; \
-                 `jtac init` generates a key in a later release."
+                "Run `jtac init`, which keeps an SSH `user.signingkey` or generates a dedicated \
+                 key and names it in `jtac.signingkey`, then `jtac check`."
             }
             jtac_sign::ResolveError::NoPrincipal => {
                 "Run `git config user.email <you@example.com>`, then `jtac check`."

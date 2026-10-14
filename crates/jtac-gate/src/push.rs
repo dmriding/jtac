@@ -93,17 +93,26 @@ pub enum Decision {
     Refuse(Refuse),
 }
 
+/// The refs that pass on their name alone: a deletion, a tag, evidence. `decide` asks this
+/// first, so a gatherer that reads no tip for these agrees with it
+/// (`exempt_refs_pass_before_any_fact_about_the_tip`).
+pub fn exempt(remote_ref: &str, delete: bool) -> Option<Pass> {
+    if delete {
+        Some(Pass::Delete)
+    } else if remote_ref.starts_with("refs/tags/") {
+        Some(Pass::Tag)
+    } else if remote_ref.starts_with("refs/jtac/") {
+        Some(Pass::Evidence)
+    } else {
+        None
+    }
+}
+
 /// Decide one ref. Order: delete, tag, evidence, fence, coverage. The fence is judged before the root,
 /// because a root on a rewound tip would otherwise read as a pass.
 pub fn decide(u: &RefUpdate) -> Decision {
-    if u.delete {
-        return Decision::Pass(Pass::Delete);
-    }
-    if u.remote_ref.starts_with("refs/tags/") {
-        return Decision::Pass(Pass::Tag);
-    }
-    if u.remote_ref.starts_with("refs/jtac/") {
-        return Decision::Pass(Pass::Evidence);
+    if let Some(pass) = exempt(&u.remote_ref, u.delete) {
+        return Decision::Pass(pass);
     }
     if u.protected && u.deny_force {
         match u.history {
@@ -229,5 +238,30 @@ mod tests {
         }
         assert!(Refuse::Rewind.is_fence());
         assert!(!Refuse::Unknown.is_fence() && !Refuse::Absent.is_fence());
+    }
+
+    #[test]
+    fn exempt_refs_pass_before_any_fact_about_the_tip() {
+        let rows = [
+            ("refs/heads/main", true, Some(Pass::Delete)),
+            ("refs/tags/v1", true, Some(Pass::Delete)),
+            ("refs/tags/v1", false, Some(Pass::Tag)),
+            ("refs/jtac/roots/ab/abc", false, Some(Pass::Evidence)),
+            ("refs/heads/main", false, None),
+            ("refs/heads/refs/tags/v1", false, None),
+            ("refs/tagsv1", false, None),
+            ("refs/jtacx/roots", false, None),
+            ("HEAD", false, None),
+        ];
+        for (remote_ref, delete, want) in rows {
+            assert_eq!(exempt(remote_ref, delete), want, "{remote_ref} {delete}");
+            let u = RefUpdate {
+                delete,
+                ..update(remote_ref, History::Rewinds, Coverage::Absent)
+            };
+            if let Some(pass) = want {
+                assert_eq!(decide(&u), Decision::Pass(pass), "{remote_ref}");
+            }
+        }
     }
 }

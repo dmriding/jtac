@@ -1,16 +1,17 @@
-//! `jtac status` (DESIGN.md section 7.1): whether a push would pass, read the way the
-//! `pre-push` hook will read it, the unpushed commits with their coverage, and the last
-//! verdict. Waivers arrive with `jtac waive`.
+//! `jtac status` (DESIGN.md sections 7.1, 11.9): whether a push of HEAD to its upstream
+//! would pass, asked of the decision the `pre-push` hook asks, the unpushed commits with their
+//! coverage, and the last verdict. Waivers arrive with `jtac waive`.
 
 use std::fmt::Write;
 use std::path::Path;
 
 use jtac_core::{GitOid, Sha256Digest, Ts};
+use jtac_gate::{Decision, Refuse};
 use jtac_store::Store;
 use serde::Serialize;
 
 use crate::refuse::Refusal;
-use crate::{Printed, chain, repo, state};
+use crate::{Printed, chain, coverage, repo, state, update};
 
 /// What `jtac status` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -19,12 +20,14 @@ pub struct StatusOut {
     pub v: u32,
     /// The command.
     pub command: &'static str,
-    /// Whether HEAD has a root, so a push would pass.
+    /// Whether a push of HEAD to its upstream would pass.
     pub pass: bool,
     /// HEAD.
     pub commit: GitOid,
-    /// HEAD's root, when it has one.
+    /// HEAD's root, when it has one that counts.
     pub root: Option<Sha256Digest>,
+    /// The commit whose root judged HEAD's tree, when HEAD has none of its own.
+    pub tree_match: Option<GitOid>,
     /// The branch the unpushed commits are counted against, when there is one.
     pub upstream: Option<String>,
     /// Commits on HEAD and not on the upstream, oldest first.
@@ -33,6 +36,11 @@ pub struct StatusOut {
     pub last: Option<Last>,
     /// What could not be read, such as a `state.json` another version wrote.
     pub notes: Vec<String>,
+    /// Why a push would be refused: `rewind` (the fence), `unknown`, or `absent`.
+    pub refused: Option<&'static str>,
+    /// The decision, which the text renders.
+    #[serde(skip)]
+    pub decision: Decision,
 }
 
 /// One commit the upstream does not have.
@@ -57,19 +65,34 @@ pub struct Last {
     pub root: Option<Sha256Digest>,
 }
 
-/// Gather and render. Exit 0 when a push would pass, 1 when it would be refused.
+/// Gather and render. Exit 0 when a push would pass, 1 when it would be refused. HEAD goes
+/// to the branch it is on, over the upstream's tip; with no upstream it creates the branch.
 pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
-    let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
+    let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
+    let head = repo::peel(&repo, &format, "HEAD").map_err(|e| Refusal::no_head(&e))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
-    let root = store
-        .root(&head.commit)
-        .map_err(Refusal::store)?
-        .map(|s| s.root.id())
-        .transpose()
-        .map_err(Refusal::internal)?;
-    let covered = chain::covered(&repo, &store, &head)?;
     let upstream = repo::upstream(&repo).map_err(|e| Refusal::repository(&e))?;
+    let old = match &upstream {
+        Some(full) => Some(
+            repo::peel(&repo, &format, full)
+                .map_err(|e| Refusal::repository(&e))?
+                .commit,
+        ),
+        None => None,
+    };
+    let branch = repo::probe(&repo, &["symbolic-ref", "--quiet", "HEAD"], 1)
+        .map_err(|e| Refusal::repository(&e))?
+        .unwrap_or_else(|| "HEAD".to_owned());
+    let tool = coverage::verifier(&repo)?;
+    let g = update::gather(&repo, &store, &tool, &format, &head, &branch, old.as_ref())?;
+    let decision = jtac_gate::decide(&g.update);
+    let (root, tree_match) = match g.tip.counted {
+        Some((commit, id)) if commit == head.commit => (Some(id), None),
+        Some((commit, _)) => (None, Some(commit)),
+        None => (None, None),
+    };
+    let covered = chain::covered(&repo, &store, &head)?;
     let unpushed = match &upstream {
         Some(full) => repo::ahead(&repo, &head, full)
             .map_err(|e| Refusal::repository(&e))?
@@ -81,7 +104,7 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
             .collect(),
         None => Vec::new(),
     };
-    let mut notes = Vec::new();
+    let mut notes = g.tip.notes;
     let last = match state::read(&store) {
         Ok(last) => last.map(|o| Last {
             commit: o.commit,
@@ -97,13 +120,21 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let out = StatusOut {
         v: 1,
         command: "status",
-        pass: root.is_some(),
+        pass: matches!(decision, Decision::Pass(_)),
         commit: head.commit,
         root,
+        tree_match,
         upstream: upstream.map(|u| u.trim_start_matches("refs/remotes/").to_owned()),
         unpushed,
         last,
         notes,
+        refused: match &decision {
+            Decision::Pass(_) => None,
+            Decision::Refuse(Refuse::Rewind) => Some("rewind"),
+            Decision::Refuse(Refuse::Unknown) => Some("unknown"),
+            Decision::Refuse(Refuse::Absent) => Some("absent"),
+        },
+        decision,
     };
     let text = if json {
         crate::render::json(&out)?
@@ -115,20 +146,39 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
 
 fn render(o: &StatusOut) -> String {
     let mut s = String::new();
-    match &o.root {
-        Some(root) => {
+    let head = o.commit.hex();
+    match (&o.decision, &o.root, &o.tree_match) {
+        (Decision::Pass(_), Some(root), _) => {
+            let _ = writeln!(s, "PUSH WOULD PASS: HEAD {head} has root {root}");
+        }
+        (Decision::Pass(_), None, Some(other)) => {
             let _ = writeln!(
                 s,
-                "PUSH WOULD PASS: HEAD {} has root {root}",
-                o.commit.hex()
+                "PUSH WOULD PASS: HEAD {head} has no root of its own; {}'s root judged the \
+                 same tree",
+                other.hex()
             );
         }
-        None => {
+        (Decision::Refuse(Refuse::Rewind), ..) => {
             let _ = writeln!(
                 s,
-                "PUSH WOULD BE REFUSED: HEAD {} has no root",
-                o.commit.hex()
+                "PUSH WOULD BE REFUSED: HEAD {head} rewinds its upstream, a protected branch"
             );
+            let _ = writeln!(
+                s,
+                "  fence   `[fences].force_push_protected` is `deny`; no command clears it from \
+                 here, and a bigger `--force` does not either"
+            );
+        }
+        (Decision::Refuse(Refuse::Unknown), ..) => {
+            let _ = writeln!(
+                s,
+                "PUSH WOULD BE REFUSED: the upstream's tip is not in this clone"
+            );
+            let _ = writeln!(s, "  fix     run `git fetch`");
+        }
+        _ => {
+            let _ = writeln!(s, "PUSH WOULD BE REFUSED: HEAD {head} has no root");
             let _ = writeln!(s, "  fix     run `jtac check`");
         }
     }

@@ -13,7 +13,7 @@ mod verify;
 
 use std::path::PathBuf;
 
-pub use identity::{Identity, identity};
+pub use identity::{Identity, identity, verifier};
 pub use key::{GitConfig, KeyRef, ResolveError, Resolved, resolve};
 pub use namespace::Namespace;
 pub use sign::sign;
