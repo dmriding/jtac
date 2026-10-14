@@ -90,10 +90,15 @@ pub fn create(
         generate(program, email, path)?;
     }
     let value = slashes(path);
+    let cfg = jtac_sign::GitConfig {
+        jtac_signingkey: Some(value.clone()),
+        ..git_config(repo)?
+    };
+    let r = resolved(repo, &cfg).map_err(|e| Refusal::no_identity(&e))?;
+    let id = jtac_sign::identity(r).map_err(|e| Refusal::init_key_file(path, &e))?;
     git(repo, &["config", "--global", "jtac.signingkey", &value])
         .map_err(|e| Refusal::init_config_write(&value, &e))?;
-    let r = resolved(repo, &git_config(repo)?).map_err(|e| Refusal::no_identity(&e))?;
-    jtac_sign::identity(r).map_err(|e| Refusal::init_key(&e))
+    Ok(id)
 }
 
 /// `ssh-keygen` with no passphrase and stdin closed, into a directory only the user reads.
@@ -201,6 +206,21 @@ impl Refusal {
             "Fix the key the config names (`git config --get jtac.signingkey`, or `git config \
              --get user.signingkey`), or unset it to let init generate one: `git config \
              --global --unset jtac.signingkey`; then `jtac init` again.",
+        )
+    }
+
+    /// The file at the default key path cannot be read by ssh-keygen; nothing was named.
+    pub fn init_key_file(path: &Path, err: &SignError) -> Self {
+        let path = slashes(path);
+        ask(
+            format!("the key file `{path}` does not work: {err}."),
+            "init names a key in the global config only after ssh-keygen has read it, so a \
+             broken file is never the key every repository signs with.",
+            format!(
+                "Move the file aside, `mv '{path}' '{path}.bad'`, so init generates a fresh \
+                 key there; or name a key you have: `git config --global jtac.signingkey <path \
+                 to an SSH private key>`; then `jtac init` again."
+            ),
         )
     }
 

@@ -226,10 +226,25 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
     vec![
         row("nothing to push", String::new(), 0, &[]),
         row(
-            "a deletion passes without evidence",
+            "deleting an unprotected branch passes without evidence",
             format!("(delete) {z} refs/heads/side {bare}\n"),
             0,
             &["jtac: refs/heads/side: a deletion needs no evidence"],
+        ),
+        row(
+            "deleting a protected branch is the fence: recreating it would rewind it",
+            format!("(delete) {z} refs/heads/main {base}\n"),
+            1,
+            &[
+                "deletes a protected branch",
+                "fence: No command clears this",
+            ],
+        ),
+        row(
+            "deleting a branch whose tip this clone lacks refuses, naming git fetch",
+            format!("(delete) {z} refs/heads/side {unseen}\n"),
+            1,
+            &["negotiation: Run `git fetch origin side`"],
         ),
         row(
             "a tag passes without evidence",
@@ -262,6 +277,12 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             ],
         ),
         row(
+            "a local ref with a space in it is read from the right",
+            format!("main@{{0 days ago}} {covered} refs/heads/main {base}\n"),
+            0,
+            &[&format!("{covered} has a root, covered")],
+        ),
+        row(
             "a root for the same tree on another commit passes and is named",
             format!("refs/heads/topic {twin} refs/heads/topic {z}\n"),
             0,
@@ -278,6 +299,12 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             main(covered, &unseen),
             1,
             &["negotiation: Run `git fetch origin main`"],
+        ),
+        row(
+            "an old oid this clone lacks refuses on an unprotected branch too",
+            format!("refs/heads/side {covered} refs/heads/side {unseen}\n"),
+            1,
+            &["half the fence", "negotiation: Run `git fetch origin side`"],
         ),
         row(
             "an orphan whose policy allows the rewind is still fenced by the branch",
@@ -436,6 +463,44 @@ fn a_root_whose_signature_was_replaced_is_absent_with_a_note() {
         ran.stderr
     );
     assert!(ran.stderr.contains("has no root"), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains(&format!(
+            "run `git update-ref -d {name}`, then `jtac check`"
+        )),
+        "{}",
+        ran.stderr
+    );
+}
+
+/// A graft rewrites the parents git shows, so a rewind reads as a fast-forward; the hook and
+/// `status` refuse it as `check` does.
+#[test]
+fn a_grafts_file_refuses_the_hook_and_status() {
+    let Checked {
+        origin: _origin,
+        repo,
+        base,
+        covered,
+    } = checked();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["reset", "-q", "--hard", &base]);
+    repo.write("c.txt", b"c\n");
+    let rework = repo.commit("rework");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.write(
+        ".git/info/grafts",
+        format!("{rework} {covered}\n").as_bytes(),
+    );
+    let ran = hook(
+        &repo,
+        &format!("refs/heads/main {rework} refs/heads/main {covered}\n"),
+        &[],
+    );
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.contains("grafts"), "{}", ran.stderr);
+    let ran = jtac(&repo, &["status"]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.contains("grafts"), "{}", ran.stderr);
 }
 
 #[test]
@@ -564,5 +629,27 @@ fn status_reads_a_rewind_of_a_protected_upstream_as_the_fence() {
     );
     assert!(ran.stdout.contains("  fence   "), "{}", ran.stdout);
     assert_eq!(v["pass"], false);
+    assert_eq!(v["refused"], "rewind");
     assert!(v["root"].as_str().unwrap().starts_with("sha256:"), "{v}");
+}
+
+/// The push goes where `branch.<name>.merge` points, not to a branch named like the local
+/// one: `fix` tracking `main` rewinds a protected branch.
+#[test]
+fn status_judges_the_branch_head_merges_with_not_the_local_name() {
+    let Checked {
+        origin: _origin,
+        repo,
+        base,
+        ..
+    } = checked();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["switch", "-q", "-c", "fix", &base]);
+    repo.git(&["branch", "-q", "--set-upstream-to=origin/main"]);
+    repo.write("c.txt", b"c\n");
+    repo.commit("rework");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let (ran, v) = status(&repo);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(v["refused"], "rewind", "{v}");
 }

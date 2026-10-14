@@ -21,6 +21,18 @@ pub struct Tip {
     pub counted: Option<(GitOid, Sha256Digest)>,
     /// Each root that exists and does not count, with why.
     pub notes: Vec<String>,
+    /// The tip's own root ref exists and did not count, so `jtac check` would keep it.
+    pub own_stale: bool,
+}
+
+/// Nothing: what a deletion has.
+pub fn none() -> Tip {
+    Tip {
+        coverage: Coverage::Absent,
+        counted: None,
+        notes: Vec::new(),
+        own_stale: false,
+    }
 }
 
 /// ssh-keygen as git config names it.
@@ -33,6 +45,7 @@ pub fn verifier(repo: &Path) -> Result<Tool, Refusal> {
 pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
     let mut notes = Vec::new();
     let mut found = counted(store, tool, tip, &tip.commit, &mut notes)?.map(|r| (tip.commit, r));
+    let own_stale = found.is_none() && !notes.is_empty();
     if found.is_none() {
         for listed in store.roots().map_err(Refusal::store)? {
             if listed.commit == tip.commit {
@@ -49,6 +62,7 @@ pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
             coverage: Coverage::Absent,
             counted: None,
             notes,
+            own_stale,
         });
     };
     let coverage = if commit == tip.commit {
@@ -62,6 +76,7 @@ pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
         coverage,
         counted: Some((commit, root.id().map_err(Refusal::internal)?)),
         notes,
+        own_stale,
     })
 }
 

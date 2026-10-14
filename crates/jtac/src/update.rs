@@ -25,18 +25,22 @@ pub struct Gathered {
     pub tip: Tip,
 }
 
-/// `tip` pushed to `remote_ref` over `old`, the remote's oid when it has the ref.
+/// `tip` pushed to `remote_ref` over `old`, the remote's oid when it has the ref; no tip is
+/// a deletion, whose only policy is the old tip's.
 pub fn gather(
     repo: &Path,
     store: &Store,
     tool: &Tool,
     format: &str,
-    tip: &Head,
+    tip: Option<&Head>,
     remote_ref: &str,
     old: Option<&GitOid>,
 ) -> Result<Gathered, Refusal> {
-    let (mut protected, mut deny_force) = fence(&policy::load(repo, tip)?, remote_ref);
-    let history = history(repo, old, &tip.commit)?;
+    let (mut protected, mut deny_force) = match tip {
+        Some(tip) => fence(&policy::load(repo, tip)?, remote_ref),
+        None => (false, false),
+    };
+    let history = history(repo, old, tip.map(|t| &t.commit))?;
     if let (Some(old), History::FastForward | History::Rewinds) = (old, history) {
         let was =
             crate::repo::peel(repo, format, &old.hex()).map_err(|e| Refusal::repository(&e))?;
@@ -46,11 +50,14 @@ pub fn gather(
             deny_force |= d;
         }
     }
-    let covered = coverage::tip(store, tool, tip)?;
+    let covered = match tip {
+        Some(tip) => coverage::tip(store, tool, tip)?,
+        None => coverage::none(),
+    };
     Ok(Gathered {
         update: RefUpdate {
             remote_ref: remote_ref.to_owned(),
-            delete: false,
+            delete: tip.is_none(),
             protected,
             deny_force,
             history,
@@ -73,8 +80,10 @@ fn fence(loaded: &Loaded, remote_ref: &str) -> (bool, bool) {
     )
 }
 
-/// No old oid creates the ref; one this clone lacks cannot be judged, so it is `Unknown`.
-fn history(repo: &Path, old: Option<&GitOid>, new: &GitOid) -> Result<History, Refusal> {
+/// No old oid creates the ref; one this clone lacks cannot be judged, so it is `Unknown`; a
+/// deletion of a held tip has no new side and reads as a fast-forward, which the decision
+/// never consults for one.
+fn history(repo: &Path, old: Option<&GitOid>, new: Option<&GitOid>) -> Result<History, Refusal> {
     let Some(old) = old else {
         return Ok(History::Creates);
     };
@@ -84,6 +93,9 @@ fn history(repo: &Path, old: Option<&GitOid>, new: &GitOid) -> Result<History, R
         Err(GitError::Failed { .. }) => return Ok(History::Unknown),
         Err(e) => return Err(Refusal::repository(&RepoError::Git(e))),
     }
+    let Some(new) = new else {
+        return Ok(History::FastForward);
+    };
     let ancestor = probe(repo, &["merge-base", "--is-ancestor", &old, &new.hex()], 1)
         .map_err(|e| Refusal::repository(&e))?;
     Ok(match ancestor {

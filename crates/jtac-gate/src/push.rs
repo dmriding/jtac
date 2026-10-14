@@ -66,12 +66,16 @@ pub enum Pass {
     },
 }
 
-/// Why a ref is refused. `Rewind` is the fence; the others name a command.
+/// Why a ref is refused. `Rewind` and `Delete` are the fence; the others name a command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refuse {
     /// A non-fast-forward update of a protected branch.
     Rewind,
-    /// The old oid is not in this clone, so a rewind cannot be ruled out.
+    /// A deletion of a protected branch: a rewind to nothing, and recreating it would be a
+    /// creation.
+    Delete,
+    /// The old oid is not in this clone, so neither a rewind nor the branch's own policy can
+    /// be judged.
     Unknown,
     /// The tip has no root.
     Absent,
@@ -80,7 +84,7 @@ pub enum Refuse {
 impl Refuse {
     /// A fence has no path to yes; a negotiation names the command.
     pub fn is_fence(&self) -> bool {
-        matches!(self, Self::Rewind)
+        matches!(self, Self::Rewind | Self::Delete)
     }
 }
 
@@ -93,33 +97,41 @@ pub enum Decision {
     Refuse(Refuse),
 }
 
-/// The refs that pass on their name alone: a deletion, a tag, evidence. `decide` asks this
-/// first, so a gatherer that reads no tip for these agrees with it
+/// The refs that pass on their name alone: a tag, evidence, and a deletion of either. A
+/// branch deletion is judged, since deleting and recreating would otherwise rewind it. `decide`
+/// asks this first, so a gatherer that reads no tip for these agrees with it
 /// (`exempt_refs_pass_before_any_fact_about_the_tip`).
 pub fn exempt(remote_ref: &str, delete: bool) -> Option<Pass> {
-    if delete {
-        Some(Pass::Delete)
-    } else if remote_ref.starts_with("refs/tags/") {
-        Some(Pass::Tag)
+    let named = if remote_ref.starts_with("refs/tags/") {
+        Pass::Tag
     } else if remote_ref.starts_with("refs/jtac/") {
-        Some(Pass::Evidence)
+        Pass::Evidence
     } else {
-        None
-    }
+        return None;
+    };
+    Some(if delete { Pass::Delete } else { named })
 }
 
-/// Decide one ref. Order: delete, tag, evidence, fence, coverage. The fence is judged before the root,
-/// because a root on a rewound tip would otherwise read as a pass.
+/// Decide one ref. Order: exempt names, the old tip this clone must hold, the fence, then
+/// coverage. The fence is judged before the root, because a root on a rewound tip would
+/// otherwise read as a pass; the old tip comes first because its policy is half the fence.
 pub fn decide(u: &RefUpdate) -> Decision {
     if let Some(pass) = exempt(&u.remote_ref, u.delete) {
         return Decision::Pass(pass);
     }
+    if u.history == History::Unknown {
+        return Decision::Refuse(Refuse::Unknown);
+    }
     if u.protected && u.deny_force {
-        match u.history {
-            History::Rewinds => return Decision::Refuse(Refuse::Rewind),
-            History::Unknown => return Decision::Refuse(Refuse::Unknown),
-            History::Creates | History::FastForward => {}
+        if u.delete {
+            return Decision::Refuse(Refuse::Delete);
         }
+        if u.history == History::Rewinds {
+            return Decision::Refuse(Refuse::Rewind);
+        }
+    }
+    if u.delete {
+        return Decision::Pass(Pass::Delete);
     }
     match &u.tip {
         Coverage::Root(state) => Decision::Pass(Pass::Root(*state)),
@@ -152,10 +164,34 @@ mod tests {
         };
         let rows: Vec<(&str, RefUpdate, Decision)> = vec![
             (
-                "a deletion passes without evidence, even of a protected branch",
+                "deleting an unprotected branch passes without evidence",
                 RefUpdate {
                     delete: true,
-                    ..update("refs/heads/main", History::Rewinds, Coverage::Absent)
+                    ..update("refs/heads/topic", History::FastForward, Coverage::Absent)
+                },
+                Decision::Pass(Pass::Delete),
+            ),
+            (
+                "deleting a protected branch is the fence: recreating it would rewind it",
+                RefUpdate {
+                    delete: true,
+                    ..update("refs/heads/main", History::FastForward, Coverage::Absent)
+                },
+                Decision::Refuse(Refuse::Delete),
+            ),
+            (
+                "deleting a branch whose tip this clone lacks cannot read its policy",
+                RefUpdate {
+                    delete: true,
+                    ..update("refs/heads/topic", History::Unknown, Coverage::Absent)
+                },
+                Decision::Refuse(Refuse::Unknown),
+            ),
+            (
+                "deleting a tag passes",
+                RefUpdate {
+                    delete: true,
+                    ..update("refs/tags/v1", History::FastForward, Coverage::Absent)
                 },
                 Decision::Pass(Pass::Delete),
             ),
@@ -193,11 +229,9 @@ mod tests {
                 Decision::Refuse(Refuse::Absent),
             ),
             (
-                "an unknown old oid on an unprotected branch is judged on its root",
+                "an unknown old oid refuses on any branch: its policy is half the fence",
                 update("refs/heads/topic", History::Unknown, tree.clone()),
-                Decision::Pass(Pass::Tree {
-                    commit: "abc".into(),
-                }),
+                Decision::Refuse(Refuse::Unknown),
             ),
             (
                 "the fence is policy: allow lets a rewind through to the root",
@@ -236,15 +270,16 @@ mod tests {
         for (claim, u, want) in rows {
             assert_eq!(decide(&u), want, "{claim}");
         }
-        assert!(Refuse::Rewind.is_fence());
+        assert!(Refuse::Rewind.is_fence() && Refuse::Delete.is_fence());
         assert!(!Refuse::Unknown.is_fence() && !Refuse::Absent.is_fence());
     }
 
     #[test]
     fn exempt_refs_pass_before_any_fact_about_the_tip() {
         let rows = [
-            ("refs/heads/main", true, Some(Pass::Delete)),
+            ("refs/heads/main", true, None),
             ("refs/tags/v1", true, Some(Pass::Delete)),
+            ("refs/jtac/roots/ab/abc", true, Some(Pass::Delete)),
             ("refs/tags/v1", false, Some(Pass::Tag)),
             ("refs/jtac/roots/ab/abc", false, Some(Pass::Evidence)),
             ("refs/heads/main", false, None),

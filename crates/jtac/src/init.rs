@@ -357,6 +357,7 @@ mod tests {
             Refusal::init_no_config_dir(),
             Refusal::init_keygen(Path::new("ssh-keygen"), path, "no"),
             Refusal::init_key(&sign),
+            Refusal::init_key_file(path, &sign),
             Refusal::init_config_write("/workspace/key", &git),
             Refusal::init_package_json("expected value"),
             Refusal::init_policy(Some(&parse)),

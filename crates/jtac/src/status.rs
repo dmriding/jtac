@@ -66,9 +66,13 @@ pub struct Last {
 }
 
 /// Gather and render. Exit 0 when a push would pass, 1 when it would be refused. HEAD goes
-/// to the branch it is on, over the upstream's tip; with no upstream it creates the branch.
+/// to the branch it merges with (`branch.<name>.merge`), else the one it is on, over the
+/// upstream's tip; with no upstream it creates the branch.
 pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
+    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted());
+    }
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let head = repo::peel(&repo, &format, "HEAD").map_err(|e| Refusal::no_head(&e))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
@@ -84,8 +88,23 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let branch = repo::probe(&repo, &["symbolic-ref", "--quiet", "HEAD"], 1)
         .map_err(|e| Refusal::repository(&e))?
         .unwrap_or_else(|| "HEAD".to_owned());
+    let merge = branch
+        .strip_prefix("refs/heads/")
+        .map(|short| repo::config(&repo, &format!("branch.{short}.merge")))
+        .transpose()
+        .map_err(|e| Refusal::repository(&e))?
+        .flatten();
+    let remote_ref = merge.as_deref().unwrap_or(&branch);
     let tool = coverage::verifier(&repo)?;
-    let g = update::gather(&repo, &store, &tool, &format, &head, &branch, old.as_ref())?;
+    let g = update::gather(
+        &repo,
+        &store,
+        &tool,
+        &format,
+        Some(&head),
+        remote_ref,
+        old.as_ref(),
+    )?;
     let decision = jtac_gate::decide(&g.update);
     let (root, tree_match) = match g.tip.counted {
         Some((commit, id)) if commit == head.commit => (Some(id), None),
@@ -130,7 +149,7 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
         notes,
         refused: match &decision {
             Decision::Pass(_) => None,
-            Decision::Refuse(Refuse::Rewind) => Some("rewind"),
+            Decision::Refuse(Refuse::Rewind | Refuse::Delete) => Some("rewind"),
             Decision::Refuse(Refuse::Unknown) => Some("unknown"),
             Decision::Refuse(Refuse::Absent) => Some("absent"),
         },
@@ -159,7 +178,7 @@ fn render(o: &StatusOut) -> String {
                 other.hex()
             );
         }
-        (Decision::Refuse(Refuse::Rewind), ..) => {
+        (Decision::Refuse(Refuse::Rewind | Refuse::Delete), ..) => {
             let _ = writeln!(
                 s,
                 "PUSH WOULD BE REFUSED: HEAD {head} rewinds its upstream, a protected branch"

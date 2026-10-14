@@ -35,13 +35,14 @@ struct Line<'a> {
     old: &'a str,
 }
 
-/// Blank lines are skipped; any other line that is not four fields refuses.
+/// Blank lines are skipped; any other line that is not four fields refuses. Split from the
+/// right: only the local ref, a user's own expression, can hold a space.
 fn lines(stdin: &str) -> Result<Vec<Line<'_>>, Refusal> {
     stdin
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| match l.split(' ').collect::<Vec<_>>()[..] {
-            [_, local, remote_ref, old] => Ok(Line {
+        .map(|l| match l.rsplitn(4, ' ').collect::<Vec<_>>()[..] {
+            [old, remote_ref, local, _] => Ok(Line {
                 raw: l,
                 local,
                 remote_ref,
@@ -58,6 +59,8 @@ struct At<'a> {
     remote_ref: &'a str,
     tip: &'a str,
     old: &'a str,
+    /// The tip's own root ref, when it exists and did not count.
+    stale: Option<String>,
 }
 
 fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal> {
@@ -66,6 +69,9 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
         return Ok((String::new(), 0));
     }
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
+    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted());
+    }
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let ctx = Ctx {
         store: Store::open(&repo).map_err(Refusal::store)?,
@@ -77,12 +83,13 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
     let mut refused = false;
     let mut ranges = Vec::new();
     for line in &lines {
-        let decision = ctx.decide(line, &mut out, &mut ranges)?;
+        let (decision, stale) = ctx.decide(line, &mut out, &mut ranges)?;
         let at = At {
             remote,
             remote_ref: line.remote_ref,
             tip: line.local,
             old: line.old,
+            stale,
         };
         match decision {
             Decision::Pass(p) => {
@@ -119,31 +126,33 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// One line's decision. Notes go to `out`; a ref that passed on a root adds its range.
+    /// One line's decision, with the tip's own root ref when it exists and did not count.
+    /// Notes go to `out`; a ref that passed on a root adds its range.
     fn decide(
         &self,
         line: &Line,
         out: &mut String,
         ranges: &mut Vec<Range>,
-    ) -> Result<Decision, Refusal> {
+    ) -> Result<(Decision, Option<String>), Refusal> {
         let local = self.oid(line.local, line)?;
         let old = self.oid(line.old, line)?;
         if let Some(pass) = jtac_gate::exempt(line.remote_ref, local.is_none()) {
-            return Ok(Decision::Pass(pass));
+            return Ok((Decision::Pass(pass), None));
         }
         let at_ref = |r: Refusal| Refusal {
             what: format!("`{}`: {}", line.remote_ref, r.what),
             ..r
         };
-        let local = local.ok_or_else(|| at_ref(Refusal::internal("a deletion was not exempt")))?;
-        let tip = repo::peel(&self.repo, &self.format, &local.hex())
+        let tip = local
+            .map(|l| repo::peel(&self.repo, &self.format, &l.hex()))
+            .transpose()
             .map_err(|e| at_ref(Refusal::repository(&e)))?;
         let g = update::gather(
             &self.repo,
             &self.store,
             &self.tool,
             &self.format,
-            &tip,
+            tip.as_ref(),
             line.remote_ref,
             old.as_ref(),
         )
@@ -152,7 +161,8 @@ impl Ctx {
             let _ = writeln!(out, "jtac: note: {note}");
         }
         let decision = jtac_gate::decide(&g.update);
-        if let (Decision::Pass(_), Some((counted, _))) = (&decision, g.tip.counted) {
+        if let (Decision::Pass(_), Some((counted, _)), Some(tip)) = (&decision, g.tip.counted, &tip)
+        {
             let known = matches!(g.update.history, History::FastForward | History::Rewinds);
             ranges.push(Range {
                 tip: tip.commit,
@@ -160,7 +170,10 @@ impl Ctx {
                 counted,
             });
         }
-        Ok(decision)
+        let stale = tip
+            .filter(|_| g.tip.own_stale)
+            .map(|t| jtac_store::ref_name(&t.commit));
+        Ok((decision, stale))
     }
 
     /// `None` for the null oid, in this repository's format.
@@ -213,27 +226,54 @@ impl Refusal {
                 "The pre-push hook is the gate: a commit leaves this clone with signed evidence \
                  that the checks ran on its tree, or it does not leave."
                     .to_owned(),
-                format!(
-                    "Run `jtac check` with {} checked out, then push again. Do not add \
-                     `--no-verify`: the commit would land with no root and read as absent to \
-                     every reader.",
-                    at.tip
-                ),
+                match &at.stale {
+                    Some(stale) => format!(
+                        "The root ref {} is there and does not count (see the note above), \
+                         and `jtac check` keeps a root it finds: run `git update-ref -d \
+                         {stale}`, then `jtac check` with {} checked out, then push again. Do \
+                         not add `--no-verify`: the commit would land with no root and read as \
+                         absent to every reader.",
+                        at.tip, at.tip
+                    ),
+                    None => format!(
+                        "Run `jtac check` with {} checked out, then push again. Do not add \
+                         `--no-verify`: the commit would land with no root and read as absent \
+                         to every reader.",
+                        at.tip
+                    ),
+                },
             ),
             Refuse::Unknown => (
                 format!(
-                    "`{}`: the remote's tip {} is not in this clone, so this push cannot be shown \
-                     to be a fast-forward.",
+                    "`{}`: the remote's tip {} is not in this clone.",
                     at.remote_ref, at.old
                 ),
                 format!(
-                    "`{branch}` is a protected branch: a push that rewinds it is refused, and a \
-                     rewind cannot be ruled out against a commit this clone has never seen."
+                    "The branch's own `.jtac/policy.toml` at that tip is half the fence that \
+                     protects it, and a rewind cannot be ruled out against a commit this clone \
+                     has never seen; a tip must not vouch for `{branch}` alone."
                 ),
                 format!(
                     "Run `git fetch {} {branch}`, then push again; if it is then refused as a \
                      rewind, merge or rebase onto the fetched tip first.",
                     at.remote
+                ),
+            ),
+            Refuse::Delete => (
+                format!(
+                    "`{}`: this push deletes a protected branch at {}.",
+                    at.remote_ref, at.old
+                ),
+                "`[fences].force_push_protected` is `deny` in `.jtac/policy.toml` at the \
+                 branch's tip: deleting it and pushing it again would rewind it past the \
+                 fence, so the deletion is the fence."
+                    .to_owned(),
+                format!(
+                    "No command clears this from here, and `--force` does not either. Do not \
+                     add `--no-verify`. What would clear it is `[fences]` in \
+                     `.jtac/policy.toml` on `{branch}`, changed through review; to retire the \
+                     branch, do that first, then `git push {} :{}`.",
+                    at.remote, at.remote_ref
                 ),
             ),
             Refuse::Rewind => (
@@ -297,10 +337,15 @@ mod tests {
             ]
         );
         assert_eq!(lines("").unwrap(), vec![]);
+        let spaced = format!("main@{{0 days ago}} {a} refs/heads/topic {z}");
+        let got = lines(&spaced).unwrap();
+        assert_eq!(
+            (got[0].local, got[0].remote_ref, got[0].old),
+            (a.as_str(), "refs/heads/topic", z.as_str())
+        );
         for bad in [
             "refs/heads/main",
             "a b c",
-            "a b c d e",
             "refs/heads/main\taaa\trefs/heads/main\tbbb",
         ] {
             let err = lines(bad).unwrap_err();
@@ -316,6 +361,14 @@ mod tests {
             remote_ref: "refs/heads/main",
             tip: &tip,
             old: &old,
+            stale: None,
+        };
+        let stale = At {
+            stale: Some("refs/jtac/roots/bb/b".into()),
+            remote: at.remote,
+            remote_ref: at.remote_ref,
+            tip: at.tip,
+            old: at.old,
         };
         let spawn = jtac_sign::SignError::Spawn {
             argv: vec!["ssh-keygen".into()],
@@ -327,6 +380,8 @@ mod tests {
             (Refusal::push(&Refuse::Absent, &at), "negotiation"),
             (Refusal::push(&Refuse::Unknown, &at), "negotiation"),
             (Refusal::push(&Refuse::Rewind, &at), "fence"),
+            (Refusal::push(&Refuse::Delete, &at), "fence"),
+            (Refusal::push(&Refuse::Absent, &stale), "negotiation"),
         ];
         for (r, kind) in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");

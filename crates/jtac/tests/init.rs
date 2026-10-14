@@ -308,6 +308,24 @@ fn a_dry_run_reports_would_write_and_writes_nothing() {
     assert!(!env.key().exists());
 }
 
+/// An unusable file at the default key path is refused before the global config names it,
+/// so the retry the message gives does not land on the same file again.
+#[test]
+fn an_unusable_file_at_the_key_path_refuses_and_names_nothing() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.key().parent().unwrap()).unwrap();
+    std::fs::write(env.key(), b"").unwrap();
+    let ran = env.jtac(&["init"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stderr.contains("does not work"), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("Move the file aside, `mv "),
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(env.git(&["config", "--global", "jtac.signingkey"]), "");
+}
+
 #[test]
 fn a_commit_signing_ssh_key_is_kept_and_nothing_is_generated() {
     let env = Env::new();
