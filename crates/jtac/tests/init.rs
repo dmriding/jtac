@@ -402,7 +402,8 @@ fn jtac_signingkey_wins_over_the_commit_signing_key() {
     std::fs::remove_file(env.repo.path().join(".git").join("jtac-key.pub")).unwrap();
     let ran = env.init(&[]);
     assert!(!ran.stdout.contains("allowed signer:"), "{}", ran.stdout);
-    let hint = format!("(`ssh-keygen -y -f {jtac_key}` prints the public key");
+    let shown = jtac_checks::git::quoted(&jtac_key, "<key path>");
+    let hint = format!("(`ssh-keygen -y -f {shown}` prints the public key");
     assert!(ran.stdout.contains(&hint), "{}", ran.stdout);
 }
 
