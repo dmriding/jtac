@@ -21,6 +21,23 @@ impl Repo {
         repo
     }
 
+    /// A bare repository plus `options`, a stand-in for a remote.
+    pub fn bare(options: &[&str]) -> Self {
+        let repo = Self::empty();
+        let mut args = vec!["init", "-q", "--bare", "-b", "main"];
+        args.extend(options);
+        repo.git(&args);
+        repo
+    }
+
+    /// A clone of `origin`, with it as the remote `origin`.
+    pub fn clone_of(origin: &Repo) -> Self {
+        let repo = Self::empty();
+        let src = origin.path().to_string_lossy().into_owned();
+        repo.git(&["clone", "-q", "--", &src, "."]);
+        repo
+    }
+
     /// A temp directory with no repository in it.
     pub fn empty() -> Self {
         Self {
