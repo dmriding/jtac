@@ -3,6 +3,7 @@
 //! Pure: no I/O, no clock, no process.
 
 pub mod canonical;
+pub mod counts;
 pub mod digest;
 pub mod merkle;
 pub mod node;
@@ -15,6 +16,7 @@ pub mod verdict;
 pub mod waiver;
 
 pub use canonical::{CanonicalError, ReadError, canonical_bytes, canonical_digest, from_canonical};
+pub use counts::counts;
 pub use digest::{ParseError, Sha256Digest};
 pub use merkle::{InclusionProof, MerkleError, merkle_root, prove};
 pub use node::{

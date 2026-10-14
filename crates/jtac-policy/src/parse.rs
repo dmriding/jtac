@@ -215,7 +215,7 @@ mod tests {
             how,
             format!(
                 "rename the check id \"{want}\" in .jtac/policy.toml to 1 to 64 bytes of \
-                 [a-z0-9_-], then run: jtac check --preview"
+                 [a-z0-9_-], then run: jtac check"
             )
         );
         let Err(PolicyError::Parse { detail, .. }) = parse("version = 1\n\"\u{202e}x\" = 1") else {

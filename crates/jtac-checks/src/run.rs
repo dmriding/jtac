@@ -59,16 +59,37 @@ struct Exec {
     duration: Duration,
 }
 
+/// The version probe's answer and the clock it started, so the run spends what is left.
+pub(crate) struct Probed {
+    pub(crate) tool_version: String,
+    started: Instant,
+}
+
 /// Run `spec` in `ctx`. Exit 0 is `pass` and a positive code is `fail`. A timeout, a spawn
 /// failure, and a negative code (a signal on Unix, a crash status on Windows) are `error`,
 /// never `skipped`. The version probe spends from the same timeout; a probe that exhausts it
 /// means the check never starts.
 pub fn run(spec: &Spec, ctx: &Context) -> Ran {
+    run_probed(spec, ctx, probe(spec, ctx))
+}
+
+pub(crate) fn probe(spec: &Spec, ctx: &Context) -> Probed {
     let started = Instant::now();
     let tool_version = probe_argv(&spec.argv)
         .and_then(|argv| execute(&argv, &ctx.cwd, 4096, PROBE_TIMEOUT.min(spec.timeout)).ok())
         .filter(|e| e.finished && e.exit == 0)
         .map_or_else(String::new, |e| first_line(&e.stdout.bytes));
+    Probed {
+        tool_version,
+        started,
+    }
+}
+
+pub(crate) fn run_probed(spec: &Spec, ctx: &Context, probed: Probed) -> Ran {
+    let Probed {
+        tool_version,
+        started,
+    } = probed;
     let left = spec.timeout.saturating_sub(started.elapsed());
     let exec = if left.is_zero() {
         Err(io::ErrorKind::TimedOut.into())

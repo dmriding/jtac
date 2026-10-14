@@ -1,23 +1,51 @@
 //! The `jtac` binary. Impure: gathers facts, renders verdicts, decides nothing. Exit 0 is
 //! `CLEARED HOT`, 1 is `ABORT`, 2 is a refusal: the gate could not answer.
 
+mod chain;
+mod check;
 mod cli;
+mod identity;
+mod judge;
 mod output;
 mod policy;
-mod preview;
 mod reason;
 mod refuse;
 mod render;
 mod repo;
+mod root;
+mod state;
+mod status;
+mod why;
+mod write;
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
-use jtac_core::Ts;
 
-use crate::cli::{CheckArgs, Cli, Command};
+use crate::cli::{Cli, Command};
 use crate::refuse::Refusal;
+
+/// A verdict a command rendered, with a warning that does not change the exit code: the
+/// verdict stands and its root is written, only `state.json` could not be.
+pub struct Printed {
+    /// The text for stdout.
+    pub stdout: String,
+    /// Exit 0 when true, 1 when false.
+    pub pass: bool,
+    /// For stderr, when something after the verdict failed.
+    pub warn: Option<Refusal>,
+}
+
+impl Printed {
+    fn verdict(stdout: String, pass: bool) -> Self {
+        Self {
+            stdout,
+            pass,
+            warn: None,
+        }
+    }
+}
 
 /// What one invocation printed and how it exited.
 #[derive(Debug, PartialEq, Eq)]
@@ -43,6 +71,19 @@ impl Run {
             code: 2,
         }
     }
+
+    fn verdict(ran: Result<Printed, Refusal>, json: bool) -> Self {
+        match ran {
+            Ok(p) => Self {
+                stdout: p.stdout,
+                stderr: p
+                    .warn
+                    .map_or_else(String::new, |w| if json { w.json() } else { w.text() }),
+                code: u8::from(!p.pass),
+            },
+            Err(r) => Self::refused(&r, json),
+        }
+    }
 }
 
 fn version() -> String {
@@ -63,51 +104,10 @@ fn run(args: &[String], cwd: &Path) -> Run {
             let first = words.first().map_or("", String::as_str);
             Run::refused(&Refusal::not_built(first), json)
         }
-        Some(Command::Check(a)) if !a.preview => {
-            Run::refused(&Refusal::check_without_preview(), json)
-        }
-        Some(Command::Check(a)) => match check(&a, cwd) {
-            Ok((text, pass)) => Run::out(text, u8::from(!pass)),
-            Err(r) => Run::refused(&r, json),
-        },
+        Some(Command::Check(a)) => Run::verdict(check::check(&a, cwd), a.json),
+        Some(Command::Status(a)) => Run::verdict(status::status(cwd, a.json), a.json),
+        Some(Command::Why(a)) => Run::verdict(why::why(cwd, a.json), a.json),
     }
-}
-
-/// Gather, run, decide, render. The rendered text and whether it passed.
-fn check(a: &CheckArgs, cwd: &Path) -> Result<(String, bool), Refusal> {
-    if std::env::var_os(jtac_checks::NESTED_VAR).is_some_and(|v| v == "1") {
-        return Err(Refusal::nested());
-    }
-    let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
-    let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
-    let loaded = policy::load(&repo, &head)?;
-    let base = repo::base(&repo, &head, a.base.as_deref()).map_err(|e| match &a.base {
-        Some(rev) => Refusal::base(rev, &e),
-        None => Refusal::repository(&e),
-    })?;
-    let dirty = repo::dirty(&repo).map_err(|e| Refusal::repository(&e))?;
-    let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
-    let p = preview::preview(&repo, &loaded, head, base, now)?;
-    let mut notes = Vec::new();
-    if dirty {
-        notes.push(
-            "the work tree has uncommitted changes: the checks ran on it, the diff-integrity \
-             rules judged HEAD; commit before `jtac check`"
-                .to_owned(),
-        );
-    }
-    if loaded.differs_on_disk {
-        notes.push("the policy on disk differs from HEAD's; the verdict used HEAD's".to_owned());
-    }
-    let out = output::output(&p, notes);
-    let text = if a.json {
-        let mut s = serde_json::to_string_pretty(&out).map_err(Refusal::internal)?;
-        s.push('\n');
-        s
-    } else {
-        render::text(&out)
-    };
-    Ok((text, out.pass))
 }
 
 fn main() -> ExitCode {
@@ -136,10 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn help_goes_to_stdout_with_exit_zero_and_names_check() {
-        let rows: [(&[&str], &str); 3] = [
+    fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
+        let rows: [(&[&str], &str); 4] = [
             (&["--help"], "check"),
-            (&["-h"], "--version"),
+            (&["--help"], "status"),
+            (&["-h"], "why"),
             (&["check", "--help"], "--preview"),
         ];
         for (args, want) in rows {
@@ -150,12 +151,11 @@ mod tests {
     }
 
     #[test]
-    fn unbuilt_commands_bare_check_and_bad_flags_are_refused_with_exit_two() {
-        let rows: [(&[&str], &str); 4] = [
-            (&["status"], "`status` is not a command"),
-            (&["check"], "without `--preview`"),
+    fn unbuilt_commands_and_bad_flags_are_refused_with_exit_two() {
+        let rows: [(&[&str], &str); 3] = [
+            (&["verify"], "`verify` is not a command"),
             (&["check", "--nope"], "--nope"),
-            (&["check", "--json"], "\"error\""),
+            (&["check", "--nope", "--json"], "\"error\""),
         ];
         for (args, want) in rows {
             let ran = run(&words(args), Path::new("."));

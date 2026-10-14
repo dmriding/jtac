@@ -4,12 +4,12 @@
 
 use jtac_checks::diff::Rule;
 use jtac_core::{Body, Outcome, Reason, Severity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::preview::Preview;
+use crate::judge::Judged;
 
 /// One reason, explained.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Explained {
     /// Which finding or check.
     #[serde(flatten)]
@@ -23,7 +23,7 @@ pub struct Explained {
 }
 
 /// The evidence a reason points at.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum About {
     /// A finding at or above `block_at`.
@@ -53,10 +53,10 @@ const NOT_PASS: &str = "A required check that is not `pass` fails the verdict. `
 const EVIDENCE: &str = "The verdict is computed from one node per policy check; a node missing, \
                         doubled, or unnamed by the policy is evidence the gate cannot vouch for.";
 
-const AGAIN: &str = "Run `jtac check --preview` again; if it repeats, report it with this output.";
+const AGAIN: &str = "Run `jtac check` again; if it repeats, report it with this output.";
 
 /// `reason` in three parts, with the check's argv from `p.nodes`.
-pub fn explain(reason: &Reason, p: &Preview) -> Explained {
+pub fn explain(reason: &Reason, p: &Judged) -> Explained {
     match reason {
         Reason::Finding {
             rule,
@@ -111,7 +111,7 @@ fn finding(rule: &str, severity: Severity, path: &str, line: u64, message: &str)
     }
 }
 
-fn check(p: &Preview, id: &str, outcome: Outcome) -> Explained {
+fn check(p: &Judged, id: &str, outcome: Outcome) -> Explained {
     let body = p.nodes.iter().find_map(|n| match &n.body {
         Body::Check(c) if c.id == id => Some(c),
         _ => None,
@@ -133,7 +133,7 @@ fn check(p: &Preview, id: &str, outcome: Outcome) -> Explained {
                 .to_owned(),
             how: format!(
                 "Run `git diff --stat {} {}` to see what git refuses, repair it (`git fsck`), \
-                 and run `jtac check --preview` again.",
+                 and run `jtac check` again.",
                 p.base.commit,
                 p.head.commit.hex()
             ),
@@ -240,6 +240,6 @@ mod tests {
         assert!(got.how.contains("--path src/a.rs"), "{}", got.how);
         assert!(!got.how.contains("<path>"), "{}", got.how);
         let unknown = finding("JT-NEW-009", Severity::Major, "", 0, "x");
-        assert!(unknown.how.contains("jtac check --preview"));
+        assert!(unknown.how.contains("jtac check"));
     }
 }
