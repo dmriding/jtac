@@ -8,6 +8,12 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.11, M8) `jtac-sign`: SSHSIG through `ssh-keygen`. `resolve` decides the key, principal
+  and binary from git config (pure); `identity` asks `ssh-keygen -l` for the fingerprint;
+  `sign` signs bytes in a `Namespace` over stdin and refuses a signature from any other key;
+  `verify` answers trusted, unknown, or invalid against `.jtac/signers` judged at the
+  document's `ts`, with ssh-keygen run in UTC. Never prompts for a passphrase. DESIGN.md 11.7
+  and 11.8 edited; decision 32; open question 2 closed.
 - (0.0.10, M7) `jtac-store`: the local store under the git common dir (`objects/`, `roots/`
   with a per-root `nodes.json` manifest, `cache/` as the file-backed `Cache`) and the ref
   layer: `put_root` writes a parentless, git-unsigned, fixed-author commit holding `root.json`
