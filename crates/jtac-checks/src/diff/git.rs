@@ -108,7 +108,9 @@ pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&out).trim().to_owned())
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+/// Run `git` with `args` in `repo` and return its stdout. A non-zero exit is an error
+/// carrying the first stderr line; the caller that expects one matches on `Failed`.
+pub fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
     let argv = || {
         std::iter::once("git")
             .chain(args.iter().copied())

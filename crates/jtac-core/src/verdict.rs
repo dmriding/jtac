@@ -81,6 +81,8 @@ pub enum Reason {
         path: String,
         /// Line.
         line: u64,
+        /// The finding's detail, so a reason names which of two at one place it is.
+        message: String,
     },
 }
 
@@ -146,6 +148,7 @@ pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
                 severity: f.severity,
                 path: f.path.clone(),
                 line: f.line,
+                message: f.message.clone(),
             });
         }
         applied.extend(covering);
@@ -340,6 +343,7 @@ mod tests {
                         severity,
                         path: "src/a.rs".into(),
                         line: 7,
+                        message: "example".into(),
                     }]
                 );
             }
@@ -448,6 +452,7 @@ mod tests {
                     severity: Severity::Blocker,
                     path: "tests/a.rs".into(),
                     line: 7,
+                    message: "example".into(),
                 },
             ]
         );

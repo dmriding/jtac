@@ -20,6 +20,11 @@ impl GitOid {
     /// The git empty tree, same bytes in every SHA-1 repository.
     pub const EMPTY_TREE_SHA1: &'static str = "sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+    /// The hex as git prints it, without the algorithm.
+    pub fn hex(&self) -> String {
+        hex::encode(self.as_bytes())
+    }
+
     /// The raw hash bytes.
     pub fn as_bytes(&self) -> &[u8] {
         match self {

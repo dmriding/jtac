@@ -7,9 +7,11 @@ checks a change before it leaves the developer's machine and records signed
 evidence that travels with the commits. A CI gate that verifies that evidence
 independently and a review packet for humans follow in later releases.
 
-**Status: pre-implementation.** `DESIGN.md` is the source of truth and the
-build plan is its section 14. Nothing here runs yet. `main` is the
-development line; releases are signed `v*` tags (`docs/RELEASING.md`).
+**Status: preview only.** `jtac check --preview` prints a verdict for HEAD and
+writes nothing; the store, signing, and hooks are the milestones after it.
+`DESIGN.md` is the source of truth and the build plan is its section 14.
+`main` is the development line; releases are signed `v*` tags
+(`docs/RELEASING.md`).
 
 ## What it will do
 

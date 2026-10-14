@@ -18,6 +18,10 @@ use crate::version::{PROBE_TIMEOUT, first_line, probe_argv};
 /// Bytes kept per stream before a capture is cut.
 pub const CAPTURE_CAP: usize = 1 << 20;
 
+/// Set to `1` in every check's environment, so `jtac check` inside a check refuses instead of
+/// recursing until the timeout (`the_child_sees_only_allowlisted_variables_and_the_nesting_marker`).
+pub const NESTED_VAR: &str = "JTAC_CHECK";
+
 const POLL: Duration = Duration::from_millis(10);
 
 const GRACE: Duration = Duration::from_millis(200);
@@ -115,6 +119,7 @@ fn execute(argv: &[String], cwd: &Path, cap: usize, timeout: Duration) -> io::Re
             .current_dir(cwd)
             .env_clear()
             .envs(scrub(utf8_vars()))
+            .env(NESTED_VAR, "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
