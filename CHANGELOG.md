@@ -8,6 +8,15 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.10, M7) `jtac-store`: the local store under the git common dir (`objects/`, `roots/`
+  with a per-root `nodes.json` manifest, `cache/` as the file-backed `Cache`) and the ref
+  layer: `put_root` writes a parentless, git-unsigned, fixed-author commit holding `root.json`
+  and `root.sig` at `refs/jtac/roots/<xx>/<commit>`; `root` reads one back from a ref and
+  refuses non-canonical bytes, a failed `validate`, or a root for another commit; `roots`
+  lists them; `push` sends them unforced and reports each ref. Every local read re-hashes
+  the file. `jtac_checks::git` gains stdin and env; `Cache::put` returns a result.
+  `jtac-testkit` gains `bare` and `clone_of`. `scripts/ref-scale.sh` measures open question
+  1. DESIGN.md 9.6 edited; decision 31.
 - (0.0.9, M6) `jtac check --preview`: the first verdict. The binary reads HEAD and its policy,
   diffs from `--base`, the upstream, or the default branch (the last commit when that is HEAD), runs the diff-integrity rules into
   an in-memory `integrity` check node, runs every policy check, calls `gate`, and prints

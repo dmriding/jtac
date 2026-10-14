@@ -1,5 +1,5 @@
 //! The check cache: key, hit construction, and the one rule for what is stored
-//! (DESIGN.md section 11.1). Backends implement `Cache`; `.git/jtac/cache/` lands in M7.
+//! (DESIGN.md section 11.1). Backends implement `Cache`; `jtac-store` holds the file-backed one.
 
 use std::collections::BTreeMap;
 
@@ -44,10 +44,27 @@ impl CacheKey {
 
 /// Where cached check nodes live. `store` and `lookup` are the only callers that decide.
 pub trait Cache {
-    /// The node stored under `name`, if any.
+    /// The node stored under `name`, if any. An entry that cannot be read is a miss.
     fn get(&self, name: &Sha256Digest) -> Option<Node>;
-    /// Keep `node` under `name`.
-    fn put(&mut self, name: Sha256Digest, node: Node);
+    /// Keep `node` under `name`. A write that fails is an error, so a full disk is loud
+    /// instead of a silent rerun forever.
+    fn put(&mut self, name: Sha256Digest, node: Node) -> Result<(), CacheError>;
+}
+
+/// Why a cache could not store or look up a node.
+#[derive(Debug, thiserror::Error)]
+pub enum CacheError {
+    /// The node has no canonical form.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalError),
+    /// The backend could not write.
+    #[error("could not write the check cache at {path}: {source}")]
+    Io {
+        /// The file.
+        path: std::path::PathBuf,
+        /// The OS error.
+        source: std::io::Error,
+    },
 }
 
 /// A cache that forgets at exit. Tests and `--preview` use it.
@@ -59,26 +76,27 @@ impl Cache for MemoryCache {
         self.0.get(name).cloned()
     }
 
-    fn put(&mut self, name: Sha256Digest, node: Node) {
+    fn put(&mut self, name: Sha256Digest, node: Node) -> Result<(), CacheError> {
         self.0.insert(name, node);
+        Ok(())
     }
 }
 
 /// Keep `node` when it is a fresh pass with a known tool version. Returns whether it was kept.
-pub fn store(cache: &mut dyn Cache, node: &Node) -> Result<bool, CanonicalError> {
+pub fn store(cache: &mut dyn Cache, node: &Node) -> Result<bool, CacheError> {
     let Some(key) = CacheKey::of(node) else {
         return Ok(false);
     };
-    cache.put(key.name()?, node.clone());
+    cache.put(key.name()?, node.clone())?;
     Ok(true)
 }
 
 /// The cached node for `key`, re-issued at `now` as a hit. A stored node that is not the fresh
 /// pass `key` names is ignored, so a wrong file under a cache name yields a rerun, not a pass.
-pub fn lookup(cache: &dyn Cache, key: &CacheKey, now: Ts) -> Result<Option<Node>, CanonicalError> {
+pub fn lookup(cache: &dyn Cache, key: &CacheKey, now: Ts) -> Result<Option<Node>, CacheError> {
     match cache.get(&key.name()?) {
         Some(original) if CacheKey::of(&original).as_ref() == Some(key) => {
-            hit(&original, now).map(Some)
+            Ok(Some(hit(&original, now)?))
         }
         _ => Ok(None),
     }
@@ -229,12 +247,16 @@ mod tests {
         for (name, key) in rows {
             assert!(lookup(&cache, &key, now).unwrap().is_none(), "{name}");
         }
-        cache.put(base.name().unwrap(), check(Outcome::Fail, "1.98.0"));
+        cache
+            .put(base.name().unwrap(), check(Outcome::Fail, "1.98.0"))
+            .unwrap();
         assert!(
             lookup(&cache, &base, now).unwrap().is_none(),
             "fail under the name"
         );
-        cache.put(base.name().unwrap(), check(Outcome::Pass, "1.99.0"));
+        cache
+            .put(base.name().unwrap(), check(Outcome::Pass, "1.99.0"))
+            .unwrap();
         assert!(
             lookup(&cache, &base, now).unwrap().is_none(),
             "other version under the name"

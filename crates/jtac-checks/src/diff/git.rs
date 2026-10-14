@@ -111,28 +111,75 @@ pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, GitError> {
 /// Run `git` with `args` in `repo` and return its stdout. A non-zero exit is an error
 /// carrying the first stderr line; the caller that expects one matches on `Failed`.
 pub fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-    let argv = || {
-        std::iter::once("git")
-            .chain(args.iter().copied())
-            .map(str::to_owned)
-            .collect()
-    };
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|source| GitError::Spawn {
-            argv: argv(),
-            source,
-        })?;
+    git_with(repo, args, None, &[])
+}
+
+/// [`git`] with bytes on stdin (closed when `None`) and `env` on top of the inherited one.
+pub fn git_with(
+    repo: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<Vec<u8>, GitError> {
+    let out = git_output(repo, args, stdin, env)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(GitError::Failed {
-            argv: argv(),
+            argv: argv(args),
             status: out.status.code(),
             stderr: stderr.lines().next().unwrap_or_default().to_owned(),
         });
     }
     Ok(out.stdout)
+}
+
+/// [`git_with`] returning the whole output whatever the exit, for a caller that reads
+/// stdout on failure too (`push --porcelain`). Only a spawn failure is an error. Stdin is
+/// fed from a thread while the output drains, so a child that fills stdout before it reads
+/// its input (`cat-file --batch`) cannot deadlock; a child that exits early is its own
+/// answer, not a broken pipe.
+pub fn git_output(
+    repo: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<std::process::Output, GitError> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(repo)
+        .envs(env.iter().copied())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let spawn = |source| GitError::Spawn {
+        argv: argv(args),
+        source,
+    };
+    let mut child = cmd.spawn().map_err(spawn)?;
+    let feeder = stdin.map(|bytes| {
+        let mut pipe = child.stdin.take().expect("stdin was piped");
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || pipe.write_all(&bytes))
+    });
+    let out = child.wait_with_output().map_err(spawn)?;
+    if let Some(feeder) = feeder
+        && let Err(e) = feeder.join().expect("the feeder thread does not panic")
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(spawn(e));
+    }
+    Ok(out)
+}
+
+fn argv(args: &[&str]) -> Vec<String> {
+    std::iter::once("git")
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect()
 }

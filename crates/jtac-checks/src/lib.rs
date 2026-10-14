@@ -9,7 +9,8 @@ mod run;
 mod spec;
 mod version;
 
-pub use cache::{Cache, CacheKey, MemoryCache, lookup, store};
+pub use cache::{Cache, CacheError, CacheKey, MemoryCache, lookup, store};
+pub use diff::git;
 pub use env::{allowed, scrub};
 pub use run::{CAPTURE_CAP, Context, NESTED_VAR, Ran, run};
 pub use spec::{Spec, specs};

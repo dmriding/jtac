@@ -1,0 +1,5 @@
+# Every test that calls git in-process would otherwise read the developer's own git config:
+# hooks, signing, encodings. Children of jtac-testkit get the same through Repo::env.
+[env]
+GIT_CONFIG_GLOBAL = { value = ".cargo/no-git-config", relative = true }
+GIT_CONFIG_NOSYSTEM = "1"

@@ -316,15 +316,15 @@ has id `sha256:01e449f228a88b336568a36424831f2c866c94d24b0916312442da7d89b67091`
 
 ### 9.6 Storage
 
-**Local.** `.git/jtac/` holds the content-addressed store: `objects/` for nodes and captured output, `roots/` for roots and signatures, `cache/` for the check cache, and `state.json` for the last verdict. It lives inside `.git` so it is never committed and is per clone.
+**Local.** `<git common dir>/jtac/` (`.git/jtac/` in a plain clone; linked worktrees share the main one) holds the content-addressed store: `objects/` for nodes and captured output, each file named by the SHA-256 of its bytes; `roots/<root id>/` for `root.json`, `root.sig`, and `nodes.json`, the node ids that are the root's Merkle leaves, which replay needs and the root does not carry; `cache/` for the check cache; and `state.json` for the last verdict. It lives inside `.git` so it is never committed and is per clone. Every read re-hashes what it finds: a file that is not what its name says is an error, never a document.
 
-**Shared.** Each root is a parentless git commit whose tree holds `root.json` and `root.sig`, referenced at:
+**Shared.** Each root is a parentless git commit whose tree holds `root.json` and `root.sig`, written with plumbing and unsigned at the git level (`root.sig` is the signature), authored `jtac <signer principal>` at the root's `ts`, so one root and signature give one commit id on every machine. It is referenced at:
 
 ```
 refs/jtac/roots/<first two hex of commit>/<commit>
 ```
 
-- One ref per covered tip means no contention between developers pushing at once.
+- One ref per covered tip means no contention between developers pushing different tips at once. Two machines that each check the same tip both write a root for it, and the second push is rejected as a non-fast-forward: the remote already holds a root for that commit, which is reported and is not a failure of the gate.
 - `jtac init` adds the fetch refspec `+refs/jtac/*:refs/jtac/*` to the remote. It does not add a push refspec, because that would change what a bare `git push` does.
 - The `pre-push` hook pushes the root refs for the commits being pushed, in a separate `git push` with an environment guard against recursion.
 - If the root push fails, the developer's push still proceeds and jtac warns loudly. The commits will read as absent until the roots are pushed. A strict mode that blocks instead is a policy option.
@@ -840,10 +840,11 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 28. **Checks see an allowlisted environment, only a pass is cached, and the tool version comes from a probe table.** A value scrub cannot recognize every token; a cached failure blocks until a cache nobody sees is cleared; the policy has no version key, and a launcher shim's hash hides a toolchain upgrade.
 29. **Diff-integrity findings point at a reserved `integrity` check, the rules diff lines themselves, and spans come from braces and indentation, not a parser.** A finding must name a check node and the verdict must fail when the rules did not run; a git setting must not move a finding between a machine and CI; a parser per language is a C build on three platforms for a v0.1 heuristic.
 30. **Preview judges HEAD; the base is `--base`, else the upstream, else the default branch, and the last commit when that is HEAD; exit codes are 0 pass, 1 block, 2 could not answer.** A verdict about uncommitted content is evidence about nothing; the upstream is the nearest stand-in for a covered ancestor before a store exists, and a base equal to HEAD would let a test removal pass with an empty diff; hooks and CI read the code, not the banner.
+31. **The store is the git common dir's `jtac/`, a root's leaves live in a local `nodes.json`, the root commit is plumbing-written, git-unsigned, and fixed-author at the root's `ts`, and a same-tip push collision is reported, not forced.** Linked worktrees must see one store; the root carries only the Merkle root and replay needs the leaves; `commit-tree` honours `commit.gpgsign` and a gpg prompt would hang every root write; one root and signature then give one commit id everywhere; and a second root for a tip already covered on the remote is evidence the remote has, not a reason to overwrite it. Open question 1 measured and closed.
 
 ## 22. Open questions
 
-1. **Ref scale.** One ref per tip is contention-free, but very large ref counts slow some git operations and some forges may limit custom refs. Measure with a scripted repository at 10k and 100k roots, and confirm the major forges accept pushes to `refs/jtac/*`. The fallback is periodic compaction into a single notes-style ref.
+1. **Ref scale.** Decided in M7: one ref per tip stands. Measured with `scripts/ref-scale.sh` on a local filesystem: at 10k roots every operation is under a second (push of one new root ref 0.3s, fetch with nothing new 0.3s); at 100k roots `for-each-ref` is 0.5s, a push of one new root ref 3.2s, a fetch with nothing new 2.6s, and a plain `git fetch origin main` 1.2s, because both ends still walk the namespace. `git status` and `rev-parse` do not change. GitHub accepts pushes to and deletions of `refs/jtac/*`; other forges are unconfirmed. The fallback, if a repository approaches 100k roots, is periodic compaction into a single notes-style ref, as a new ref layout version.
 2. **Key handling.** Is a dedicated jtac key better than reusing the commit-signing key? Reuse means no enrollment. A dedicated key means a compromise of one does not affect the other.
 3. **Which agents get a tool-call adapter in v0.1** beyond the first.
 4. **Test-integrity precision.** Decided in M5: `JT-TEST-003` ships as major in every language, scoped to a test present on both sides by name. Its false block rate is one of the launch numbers (section 14).
