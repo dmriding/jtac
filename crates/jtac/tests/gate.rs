@@ -669,7 +669,7 @@ fn a_tree_that_changes_under_the_checks_gets_no_root() {
         ),
     ];
     for (mutate, want) in rows {
-        repo.git(&["switch", "-q", "main"]);
+        repo.git(&["switch", "-q", "--discard-changes", "main"]);
         repo.write(".jtac/policy.toml", policy(mutate).as_bytes());
         repo.commit("mutating policy");
         let ran = jtac(&repo, &["check"]);
