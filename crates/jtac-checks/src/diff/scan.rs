@@ -303,7 +303,9 @@ impl<'a> Scanner<'a> {
             (Lang::Rust, '\'') => rust_char(self.rest()).map(|_| (Quote::Single, 1)),
             (Lang::Js, '`') => Some((Quote::Template(0), 1)),
             (Lang::Go, '`') => Some((Quote::Backtick, 1)),
-            (Lang::Js, '/') if self.regex_allowed() && regex_close(&self.rest()[1..]).is_some() => {
+            (Lang::Js, '/')
+                if regex_follows(&self.code) && regex_close(&self.rest()[1..]).is_some() =>
+            {
                 Some((Quote::Regex, 1))
             }
             (Lang::Rust, 'r') if !self.after_ident() => {
@@ -313,34 +315,6 @@ impl<'a> Scanner<'a> {
             }
             _ => None,
         }
-    }
-
-    /// Whether a `/` here starts a regex literal rather than a division: what precedes it is
-    /// nothing, an operator, an opening bracket, or a keyword that takes an expression.
-    fn regex_allowed(&self) -> bool {
-        let code = self.code.trim_end();
-        let Some(last) = code.chars().last() else {
-            return true;
-        };
-        if code.ends_with("++") || code.ends_with("--") {
-            return false;
-        }
-        if "(,=:[!&|?{};+-*%<>~^".contains(last) {
-            return true;
-        }
-        let word: String = code
-            .chars()
-            .rev()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        [
-            "return", "typeof", "case", "do", "else", "in", "of", "throw", "new", "delete", "void",
-            "yield", "await",
-        ]
-        .contains(&word.as_str())
     }
 
     /// Whether the char before `at` continues an identifier, allowing the `b`/`c` string prefix.
@@ -367,14 +341,15 @@ fn rust_char(rest: &[char]) -> Option<usize> {
 const NEST: u32 = 32;
 
 /// Index just past the backtick closing a JS template, and the `${ }` depth left open. In the
-/// expression braces count and a string, comment, regex (a `/` after an operator or opener
-/// that closes on the line) or template on the same line is skipped whole; one left open at
-/// the line end still skews the depth.
+/// expression braces count and a string, comment, regex (`regex_follows`, closing on the line)
+/// or template on the same line is skipped whole; one left open at the line end still skews
+/// the depth.
 fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, u32) {
     let mut i = 0;
-    let mut last = ' ';
+    let mut seen = String::new();
     while i < hay.len() {
         let rest = hay.len() - i - 1;
+        let mut track = true;
         match (hay[i], depth) {
             ('\\', 0) => i += 1,
             ('`', 0) => return (Some(i + 1), 0),
@@ -393,14 +368,13 @@ fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, 
             ('/', 1..) if hay.get(i + 1) == Some(&'/') => return (None, depth),
             ('/', 1..) if hay.get(i + 1) == Some(&'*') => {
                 i += find(&hay[i + 2..], "*/").map_or(rest, |j| j + 3);
+                track = false;
             }
-            ('/', 1..) if "(,=:[!&|?{};+-*%<>~^".contains(last) => {
-                i += regex_close(&hay[i + 1..]).unwrap_or(0);
-            }
+            ('/', 1..) if regex_follows(&seen) => i += regex_close(&hay[i + 1..]).unwrap_or(0),
             _ => {}
         }
-        if let Some(&c) = hay.get(i).filter(|c| !c.is_whitespace()) {
-            last = c;
+        if let Some(&c) = hay.get(i).filter(|_| track) {
+            seen.push(c);
         }
         i += 1;
     }
@@ -425,11 +399,51 @@ fn block_end(hay: &[char], mut depth: u32, nests: bool) -> (usize, u32) {
     (i, depth)
 }
 
+/// Whether a `/` after `code` starts a regex literal rather than a division: what precedes it
+/// is nothing, an operator, an opener, or a keyword that takes an expression, and not a postfix
+/// `++`, `--` or TypeScript `!`. The one rule for top-level code and for a `${ }` expression.
+fn regex_follows(code: &str) -> bool {
+    let code = code.trim_end();
+    let mut chars = code.chars().rev();
+    let Some(last) = chars.next() else {
+        return true;
+    };
+    let before = chars.next().unwrap_or(' ');
+    let postfix = match last {
+        '+' | '-' => before == last,
+        '!' => before.is_alphanumeric() || "_)]".contains(before),
+        _ => false,
+    };
+    if postfix {
+        return false;
+    }
+    if "(,=:[!&|?{};+-*%<>~^".contains(last) {
+        return true;
+    }
+    let word: String = code
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    [
+        "return", "typeof", "case", "do", "else", "in", "of", "throw", "new", "delete", "void",
+        "yield", "await",
+    ]
+    .contains(&word.as_str())
+}
+
+/// Chars a regex literal may span on one line; past it a `/` is division, so a class left
+/// open cannot rescan the line once per slash.
+const REGEX: usize = 1024;
+
 /// Index just past the `/` closing a regex literal, outside any `[...]` class.
 fn regex_close(hay: &[char]) -> Option<usize> {
     let mut i = 0;
     let mut class = false;
-    while i < hay.len() {
+    while i < hay.len().min(REGEX) {
         match hay[i] {
             '\\' => i += 1,
             '[' => class = true,
@@ -732,6 +746,36 @@ mod tests {
                 "const t = `${a / b}`;\nit.only('a', f);",
                 &["const t = ``;", "it.only('', f);"],
             ),
+            (
+                Lang::Js,
+                "const t = `${n++ / \"/\".length}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const s = `${(done! / total!) * 100}% of ${n} / ${m}`;\nit.only('a', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const s = `${i-- / 2}px / ${n}`;\nit.only('a', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${ /* c */ /\"/.test(s) }`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "x = done! / total / 2; it.only('a')",
+                &["x = done! / total / 2; it.only('')"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${s.replace(/* c */ /\"/g, \"\")}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();
@@ -743,6 +787,12 @@ mod tests {
     fn templates_nested_past_the_cap_read_as_text_without_recursing() {
         let deep = format!("x = `{}", "${`".repeat(20_000));
         assert_eq!(code(Lang::Js, &deep), ["x = `"]);
+    }
+
+    #[test]
+    fn a_class_left_open_does_not_rescan_the_line_once_per_slash() {
+        let wide = format!("x = `${{{}", "(/[".repeat(50_000));
+        assert_eq!(code(Lang::Js, &wide).len(), 1);
     }
 
     #[test]

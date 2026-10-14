@@ -129,16 +129,17 @@ fn shell(text: &str) -> Vec<bool> {
             let (from, quote) = match open {
                 Some(q) => (0, Some(q)),
                 None if body => (0, None),
-                None => bare
-                    .then(|| VALUE.captures(line))
-                    .flatten()
-                    .or_else(|| QUOTE.captures(line))
+                None => QUOTE
+                    .captures(line)
+                    .or_else(|| bare.then(|| VALUE.captures(line)).flatten())
                     .and_then(|c| c.get(1))
                     .map_or((0, None), |m| (m.end(), m.as_str().chars().next())),
             };
             open = quote.filter(|&q| !closes(&line[from..], q));
-            if !line.trim().is_empty() {
-                bare = open.is_none() && !body && line.contains(':') && BARE.is_match(line);
+            let plain = line.trim_start();
+            if !(plain.is_empty() || plain.starts_with('#')) {
+                bare =
+                    open.is_none() && !body && BARE.is_match(line) && (bare || line.contains(':'));
             }
             body || was
         })
@@ -696,12 +697,45 @@ mod tests {
                 change(
                     ".github/workflows/ci.yml",
                     None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - run:\n      # why\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - run:\n      !!str\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
                     "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  - run: cargo test\n",
                     Some(
                         "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  # - run: cargo test || true\n  - run: cargo test\n",
                     ),
                 ),
                 &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - name: t\n    env:\n    \"run\": \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
             ),
         ];
         table(rows);
