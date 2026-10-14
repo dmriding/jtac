@@ -63,7 +63,7 @@ impl Tool {
         if !out.status.success() {
             return Err(SignError::Failed {
                 argv: self.argv(args),
-                stderr: first_line(&out.stderr),
+                stderr: failure(&out),
             });
         }
         Ok(out.stdout)
@@ -77,10 +77,18 @@ impl Tool {
     }
 }
 
+/// What a failed `out` said, or its exit status when it said nothing.
+pub(crate) fn failure(out: &Output) -> String {
+    match first_line(&out.stderr) {
+        s if s.is_empty() => format!("no output, {}", out.status),
+        s => s,
+    }
+}
+
 pub(crate) fn first_line(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr)
         .lines()
-        .next()
+        .find(|l| !l.trim().is_empty())
         .unwrap_or_default()
         .to_owned()
 }
@@ -98,5 +106,23 @@ mod tests {
         ];
         let out = sh.ok(&args, b"fed").unwrap();
         assert_eq!(String::from_utf8_lossy(&out), "UTC0|never|\nfed");
+    }
+
+    /// Windows OpenSSH dies before its logger is up when `ProgramData` is unset, so a failure
+    /// with nothing on stderr must still say what happened.
+    #[test]
+    fn a_silent_failure_reports_the_exit_status_and_blank_lines_are_skipped() {
+        let sh = Tool::new("sh");
+        let silent: [&OsStr; 2] = ["-c".as_ref(), "exit 3".as_ref()];
+        let blank: [&OsStr; 2] = [
+            "-c".as_ref(),
+            "printf '\\n\\n  \\nreal\\n' >&2; exit 1".as_ref(),
+        ];
+        let what = |args: &[&OsStr]| match sh.ok(args, b"").unwrap_err() {
+            SignError::Failed { stderr, .. } => stderr,
+            other => panic!("{other}"),
+        };
+        assert_eq!(what(&silent), "no output, exit status: 3");
+        assert_eq!(what(&blank), "real");
     }
 }

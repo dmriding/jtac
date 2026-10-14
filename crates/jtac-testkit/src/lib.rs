@@ -73,6 +73,7 @@ impl Repo {
         .chain(inherit("LLVM_PROFILE_FILE"))
         .chain(inherit("SYSTEMROOT"))
         .chain(inherit("SYSTEMDRIVE"))
+        .chain(inherit("PROGRAMDATA"))
         .chain(inherit("TEMP"))
         .chain(inherit("TMP"))
         .chain(inherit("PATHEXT"))
