@@ -186,6 +186,13 @@ pub fn git_output(
     Ok(out)
 }
 
+/// `word` as one `sh` argument. A ref name or path git accepts can hold `$(`, `;`, `|` or a
+/// quote, and a message that names a command to run must not hand them to the shell
+/// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
+pub fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 fn argv(args: &[&str]) -> Vec<String> {
     std::iter::once("git")
         .chain(args.iter().copied())

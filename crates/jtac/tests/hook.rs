@@ -152,27 +152,39 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
         "GIT_CONFIG hid the mirror: keep was deleted"
     );
     repo.git(&["config", "--add", "remote.origin.mirror", "yes"]);
-    let ran = hook(&repo, "", &[]);
-    let local = "`git config --local --unset-all remote.origin.mirror`";
-    assert!(
-        ran.code == 2 && ran.stderr.contains(local),
-        "{}",
-        ran.stderr
-    );
-    repo.git(&["config", "--local", "--unset-all", "remote.origin.mirror"]);
-    assert_eq!(hook(&repo, "", &[]).code, 0);
-    let global = elsewhere.write("gitconfig", b"[remote \"origin\"]\n\tmirror = true\n");
+    let clears = |ran: Ran, file: &str, env: &[(&str, &str)]| {
+        let want =
+            format!("Clear it: run `git config --file '{file}' --unset-all remote.origin.mirror`.");
+        assert!(
+            ran.code == 2 && ran.stderr.contains(&want),
+            "{}",
+            ran.stderr
+        );
+        repo.git(&[
+            "config",
+            "--file",
+            file,
+            "--unset-all",
+            "remote.origin.mirror",
+        ]);
+        assert_eq!(hook(&repo, "", env).code, 0);
+    };
+    clears(hook(&repo, "", &[]), ".git/config", &[]);
+    let mirrored = b"[remote \"origin\"]\n\tmirror = true\n";
+    let global = elsewhere.write("gitconfig", mirrored);
     let env = [("GIT_CONFIG_GLOBAL", global.to_str().unwrap())];
-    let ran = hook(&repo, "", &env);
-    let how = "`git config --global --unset-all remote.origin.mirror`";
-    assert!(ran.code == 2 && ran.stderr.contains(how), "{}", ran.stderr);
-    let out = repo.command_with(
+    clears(hook(&repo, "", &env), global.to_str().unwrap(), &env);
+    let included = elsewhere.write("included", mirrored);
+    repo.git(&["config", "include.path", included.to_str().unwrap()]);
+    clears(hook(&repo, "", &[]), included.to_str().unwrap(), &[]);
+    repo.git(&["config", "--unset", "include.path"]);
+    let out = repo.command(
         "git",
-        &["config", "--global", "--unset-all", "remote.origin.mirror"],
-        &env,
+        &["-c", "remote.origin.mirror=true", "push", "origin"],
     );
-    assert!(out.status.success());
-    assert_eq!(hook(&repo, "", &env).code, 0);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let flag = "Clear it: drop `remote.origin.mirror` from the push's `-c` flags or `GIT_CONFIG_*` environment.";
+    assert!(!out.status.success() && stderr.contains(flag), "{stderr}");
     let ran = hook(
         &repo,
         &format!("refs/remotes/origin/keep {covered} refs/remotes/origin/keep {base}\n"),
@@ -182,7 +194,7 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
 }
 
 /// A ref under `refs/jtac/roots/` nobody wrote through jtac is noise: the hook, `status`,
-/// and `check` keep judging and say what they skipped (issue 30).
+/// and `check` keep judging and say what they skipped, once per push (issue 30).
 #[test]
 fn a_malformed_root_ref_is_skipped_with_a_note_not_a_refusal() {
     let Checked {
@@ -193,14 +205,17 @@ fn a_malformed_root_ref_is_skipped_with_a_note_not_a_refusal() {
     } = checked();
     let junk = "refs/jtac/roots/zz/junk";
     repo.git(&["update-ref", junk, &base]);
-    let note = format!("skipped `{junk}`");
+    let note = format!("skipped '{junk}'");
     let ran = hook(
         &repo,
-        &format!("refs/heads/main {covered} refs/heads/main {base}\n"),
+        &format!(
+            "refs/heads/main {covered} refs/heads/main {base}\n\
+             refs/heads/feat {covered} refs/heads/feat {base}\n"
+        ),
         &[],
     );
     assert_eq!(ran.code, 0, "{}", ran.stderr);
-    assert!(ran.stderr.contains(&note), "{}", ran.stderr);
+    assert_eq!(ran.stderr.matches(&note).count(), 1, "{}", ran.stderr);
     let (ran, json) = status(&repo);
     assert_eq!(ran.code, 0, "{}", ran.stderr);
     assert!(json["notes"].to_string().contains(&note), "{json}");

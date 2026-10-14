@@ -5,6 +5,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use jtac_checks::git::quoted;
 use jtac_core::{GitOid, State};
 use jtac_gate::{Decision, History, Pass, Refuse};
 use jtac_sign::Tool;
@@ -63,24 +64,28 @@ fn lines(stdin: &str) -> Result<Vec<Line<'_>>, Refusal> {
         .collect()
 }
 
-/// The commands that clear every copy of `key`, from `git config --show-scope --get-all`
-/// lines: one `--unset-all` per scope, since `--unset` fails on a second value and the
-/// repository's config cannot clear a global one; a `command` scope is a `-c` on the push
-/// itself (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
-fn unsets(key: &str, scopes: &str) -> String {
+/// What clears every copy of `key`, from `git config --show-origin --get-all` lines: one
+/// `--file <origin> --unset-all` per file, since `--unset` fails on a second value and a
+/// scope's default file is not the included or XDG file that holds the value; a
+/// `command line:` origin is a `-c` or `GIT_CONFIG_*` on the push itself
+/// (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
+fn unsets(key: &str, origins: &str) -> String {
     let mut seen = Vec::new();
-    for scope in scopes.lines().filter_map(|l| l.split('\t').next()) {
-        if !seen.contains(&scope) {
-            seen.push(scope);
+    for origin in origins.lines().filter_map(|l| l.split('\t').next()) {
+        if !seen.contains(&origin) {
+            seen.push(origin);
         }
     }
     if seen.is_empty() {
-        seen.push("local");
+        return format!("run `git config --unset-all {key}`");
     }
     seen.iter()
-        .map(|scope| match *scope {
-            "command" => format!("drop `-c {key}=...` from the push command"),
-            scope => format!("`git config --{scope} --unset-all {key}`"),
+        .map(|origin| match origin.strip_prefix("file:") {
+            Some(path) => format!("run `git config --file {} --unset-all {key}`", quoted(path)),
+            None if *origin == "command line:" => {
+                format!("drop `{key}` from the push's `-c` flags or `GIT_CONFIG_*` environment")
+            }
+            None => format!("run `git config --unset-all {key}`"),
         })
         .collect::<Vec<_>>()
         .join(" and ")
@@ -105,11 +110,11 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
     let mirror = repo::probe(&repo, &["config", "--type=bool", "--get", &key], 1)
         .map_err(|e| Refusal::repository(&e))?;
     if mirror.as_deref() == Some("true") {
-        let scopes = repo::probe(&repo, &["config", "--show-scope", "--get-all", &key], 1)
+        let origins = repo::probe(&repo, &["config", "--show-origin", "--get-all", &key], 1)
             .map_err(|e| Refusal::repository(&e))?;
         return Err(Refusal::mirror(
             remote,
-            &unsets(&key, &scopes.unwrap_or_default()),
+            &unsets(&key, &origins.unwrap_or_default()),
         ));
     }
     if lines.is_empty() {
@@ -204,7 +209,10 @@ impl Ctx {
         )
         .map_err(at_ref)?;
         for note in &g.tip.notes {
-            let _ = writeln!(out, "jtac: note: {note}");
+            let line = format!("jtac: note: {note}\n");
+            if !out.contains(&line) {
+                out.push_str(&line);
+            }
         }
         let decision = jtac_gate::decide(&g.update);
         if let (Decision::Pass(_), Some((counted, _)), Some(tip)) = (&decision, g.tip.counted, &tip)
@@ -271,8 +279,8 @@ impl Refusal {
                   unjudged, so the whole push is refused."
                 .to_owned(),
             how: format!(
-                "Run {unsets}, then push branches by name, `git push {remote} <branch>`, and \
-                 delete by name, `git push {remote} :<branch>`, which the hook judges."
+                "Clear it: {unsets}. Then push branches by name, `git push {remote} <branch>`, \
+                 and delete by name, `git push {remote} :<branch>`, which the hook judges."
             ),
         }
     }
@@ -431,25 +439,31 @@ mod tests {
     }
 
     #[test]
-    fn unsets_name_every_scope_once_and_the_push_command_for_a_dash_c() {
+    fn unsets_name_each_origin_file_once_and_the_push_itself_for_a_command_line_value() {
         let rows = [
-            ("", "`git config --local --unset-all k`"),
-            ("local\ttrue", "`git config --local --unset-all k`"),
+            ("", "run `git config --unset-all k`"),
             (
-                "local\ttrue\nlocal\tyes",
-                "`git config --local --unset-all k`",
+                "file:.git/config\ttrue",
+                "run `git config --file '.git/config' --unset-all k`",
             ),
             (
-                "global\ttrue\nlocal\t1",
-                "`git config --global --unset-all k` and `git config --local --unset-all k`",
+                "file:.git/config\ttrue\nfile:.git/config\tyes",
+                "run `git config --file '.git/config' --unset-all k`",
             ),
             (
-                "worktree\ton\ncommand\ttrue",
-                "`git config --worktree --unset-all k` and drop `-c k=...` from the push command",
+                "file:/home/x/.gitconfig\ttrue\nfile:/w/it's\t1",
+                "run `git config --file '/home/x/.gitconfig' --unset-all k` and run `git config \
+                 --file '/w/it'\\''s' --unset-all k`",
             ),
+            (
+                "file:.git/config\ton\ncommand line:\ttrue",
+                "run `git config --file '.git/config' --unset-all k` and drop `k` from the \
+                 push's `-c` flags or `GIT_CONFIG_*` environment",
+            ),
+            ("standard input:\ttrue", "run `git config --unset-all k`"),
         ];
-        for (scopes, want) in rows {
-            assert_eq!(unsets("k", scopes), want, "{scopes:?}");
+        for (origins, want) in rows {
+            assert_eq!(unsets("k", origins), want, "{origins:?}");
         }
     }
 

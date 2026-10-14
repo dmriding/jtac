@@ -4,7 +4,7 @@
 //! `commit-tree` honours `commit.gpgsign` and a gpg prompt would hang every root write;
 //! `i18n.commitEncoding` pinned because an `encoding` header would change the commit id.
 
-use jtac_checks::git::{GitError, git, git_output, git_with};
+use jtac_checks::git::{GitError, git, git_output, git_with, quoted};
 use jtac_core::{GitOid, Root, from_canonical};
 
 use crate::roots::StoredRoot;
@@ -142,13 +142,15 @@ pub struct Listed {
 }
 
 /// The namespace as read: the root refs, and the names under it that are not
-/// `<xx>/<commit>`. Nobody writes those through jtac, so they are a note, never a reason to
-/// stop judging the tip (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
+/// `<xx>/<commit>`, a name that is not UTF-8 included. Nobody writes those through jtac, so
+/// they are a note, never a reason to stop judging the tip; anyone with push access chooses
+/// them, so the note quotes them for `sh`
+/// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roots {
     /// In ref order.
     pub listed: Vec<Listed>,
-    /// Full ref names, in ref order.
+    /// Full ref names, in ref order, lossy where not UTF-8.
     pub skipped: Vec<String>,
 }
 
@@ -156,9 +158,11 @@ impl Roots {
     /// One note per skipped ref, for whichever command prints notes.
     pub fn notes(&self) -> impl Iterator<Item = String> + '_ {
         self.skipped.iter().map(|name| {
+            let q = quoted(name);
             format!(
-                "skipped `{name}`: not `<xx>/<commit>` under refs/jtac/roots/; `git update-ref \
-                 -d {name}` removes it here and `git push <remote> :{name}` on the remote"
+                "skipped {q}: not <xx>/<commit> under refs/jtac/roots/; `git update-ref -d {q}` \
+                 removes it here and `git push <remote> {}` on the remote",
+                quoted(&format!(":{name}"))
             )
         })
     }
@@ -169,14 +173,14 @@ impl Store {
     pub fn roots(&self) -> Result<Roots, StoreError> {
         let repo = self.repo();
         let format = trimmed(git(repo, &["rev-parse", "--show-object-format"])?)?;
-        let out = trimmed(git(
+        let out = git(
             repo,
             &[
                 "for-each-ref",
                 "--format=%(refname) %(objectname)",
                 NAMESPACE,
             ],
-        )?)?;
+        )?;
         let oid = |hex: &str| -> Result<GitOid, StoreError> {
             format!("{format}:{hex}")
                 .parse()
@@ -185,7 +189,14 @@ impl Store {
                 })
         };
         let mut roots = Roots::default();
-        for line in out.lines() {
+        for raw in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            let Ok(line) = std::str::from_utf8(raw) else {
+                let name = raw.split(|b| *b == b' ').next().unwrap_or_default();
+                roots
+                    .skipped
+                    .push(String::from_utf8_lossy(name).into_owned());
+                continue;
+            };
             let (name, object) = line.split_once(' ').ok_or_else(|| StoreError::Output {
                 what: format!("for-each-ref line {line:?}"),
             })?;

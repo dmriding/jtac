@@ -466,7 +466,9 @@ fn the_file_cache_round_trips_and_a_bad_file_is_a_miss() {
 }
 
 /// A ref nobody wrote through jtac is noise: listing it as skipped keeps every reader
-/// judging the tip, and the writer's own refs still list (issue 30).
+/// judging the tip, and the writer's own refs still list (issue 30). Its name is the
+/// pusher's choice, so the command the note names must not run it through `sh`, and a
+/// name that is not UTF-8 is skipped like any other.
 #[test]
 fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     let repo = with_commit(&[]);
@@ -502,4 +504,41 @@ fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     }
     let roots = s.roots().unwrap();
     assert!(roots.skipped.is_empty() && roots.listed.len() == 1);
+    let hostile = "refs/jtac/roots/zz/$(touch${IFS}PWNED)/it's";
+    repo.git(&["update-ref", hostile, &head]);
+    let note = s.roots().unwrap().notes().next().unwrap();
+    let cmd = note.split('`').nth(1).unwrap();
+    assert_eq!(
+        cmd, "git update-ref -d 'refs/jtac/roots/zz/$(touch${IFS}PWNED)/it'\\''s'",
+        "{note}"
+    );
+    #[cfg(unix)]
+    {
+        let out = repo.command("sh", &["-c", cmd]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!repo.path().join("PWNED").exists(), "the note ran the name");
+        assert!(s.roots().unwrap().skipped.is_empty());
+        use std::os::unix::ffi::OsStrExt as _;
+        let raw = std::ffi::OsStr::from_bytes(b"refs/jtac/roots/zz/\xff");
+        let ok = std::process::Command::new("git")
+            .arg("update-ref")
+            .arg(raw)
+            .arg(&head)
+            .current_dir(repo.path())
+            .env_clear()
+            .envs(repo.env())
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let roots = s.roots().unwrap();
+        assert_eq!(
+            roots.skipped,
+            vec!["refs/jtac/roots/zz/\u{fffd}".to_owned()]
+        );
+        assert_eq!(roots.listed.len(), 1);
+    }
 }
