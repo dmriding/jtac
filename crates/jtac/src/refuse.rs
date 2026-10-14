@@ -1,6 +1,6 @@
 //! What the CLI refuses and how it says so: what, why, how (DESIGN.md section 12), on stderr
 //! with exit 2. A refusal is never a verdict: the gate could not answer. Every refusal here
-//! is a negotiation; fences arrive with the hooks.
+//! is a negotiation; the hooks build the fences with `fence`.
 
 use jtac_checks::diff::git::GitError;
 use jtac_policy::{POLICY_PATH, PolicyError};
@@ -34,12 +34,20 @@ impl Refusal {
         }
     }
 
+    /// A fence: no command clears it from here. `how` says what would, elsewhere.
+    pub fn fence(what: impl Into<String>, why: impl Into<String>, how: impl Into<String>) -> Self {
+        Self {
+            kind: "fence",
+            ..Self::new(what, why, how)
+        }
+    }
+
     /// A command a later release ships.
     pub fn not_built(command: &str) -> Self {
         Self::new(
             format!("`{command}` is not a command in this release."),
             format!(
-                "jtac {} ships `check`, `status`, and `why`; exiting zero on anything else \
+                "jtac {} ships `init`, `check`, `status`, `why`, and `hook`; exiting zero on anything else \
                  would let a hook treat \"not built\" as \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),
@@ -116,9 +124,8 @@ impl Refusal {
              that judged by rules nobody chose would be a gate nobody can answer for. The tree \
              under test carries its own rules, so an uncommitted file does not count.",
             format!(
-                "Write `{POLICY_PATH}` in the shape DESIGN.md section 10.2 shows, commit it, and \
-                 run `jtac check` again. `jtac init` writes one from detection in a \
-                 later release."
+                "Run `jtac init` to write `{POLICY_PATH}` from what the tree holds, commit it, \
+                 and run `jtac check` again."
             ),
         )
     }
@@ -156,14 +163,18 @@ impl Refusal {
     }
 
     /// The repository has a grafts file.
-    pub fn grafted() -> Self {
+    pub fn grafted(path: &std::path::Path) -> Self {
+        let path = path.to_string_lossy().replace('\\', "/");
         Self::new(
-            "the repository has `info/grafts`.",
+            format!("the repository has a grafts file, `{path}`."),
             "A graft changes the parents git reports, so the base, the diff, and `covers` \
              would describe a history the root does not name; replace refs are ignored for \
              the same reason, but a grafts file cannot be.",
-            "Remove `.git/info/grafts` (`git replace --convert-graft-file` keeps it as replace \
-             refs, which jtac ignores), then run `jtac check` again.",
+            format!(
+                "Remove `{path}` (`git replace --convert-graft-file` keeps it as replace refs, \
+                 which jtac ignores; unset `GIT_GRAFT_FILE` if that named it), then run the \
+                 command again."
+            ),
         )
     }
 
@@ -200,9 +211,8 @@ impl Refusal {
     pub fn no_identity(err: &jtac_sign::ResolveError) -> Self {
         let how = match err {
             jtac_sign::ResolveError::NoKey => {
-                "Run `git config jtac.signingkey <path to an SSH private key>` (or sign commits \
-                 with SSH: `git config gpg.format ssh` and `user.signingkey`), then `jtac check`; \
-                 `jtac init` generates a key in a later release."
+                "Run `jtac init`, which keeps an SSH `user.signingkey` or generates a dedicated \
+                 key and names it in `jtac.signingkey`, then `jtac check`."
             }
             jtac_sign::ResolveError::NoPrincipal => {
                 "Run `git config user.email <you@example.com>`, then `jtac check`."
@@ -335,7 +345,7 @@ mod tests {
         let rows = [
             Refusal::not_built("status"),
             Refusal::dirty("x"),
-            Refusal::grafted(),
+            Refusal::grafted(std::path::Path::new("/workspace/.git/info/grafts")),
             Refusal::shallow(),
             Refusal::moved(None),
             Refusal::moved(Some("y")),

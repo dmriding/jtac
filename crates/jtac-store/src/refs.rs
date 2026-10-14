@@ -19,10 +19,12 @@ pub fn ref_name(commit: &GitOid) -> String {
     format!("{NAMESPACE}{}/{hex}", &hex[..2])
 }
 
-/// Write the root commit and point the ref at it. Returns the root commit's hex. The commit
-/// is a function of the root and the signature alone: fixed author, dated the root's `ts`.
-/// Refuses a root that would not read back: one that fails `validate`, names a commit this
-/// repository does not have, or is dated before 1970, which git cannot write.
+/// Write the root commit and create the ref. Returns the root commit's hex. The commit is a
+/// function of the root and the signature alone: fixed author, dated the root's `ts`. The
+/// ref is created, never replaced: a ref that already holds a root is `Exists`
+/// (`a_root_ref_is_created_never_replaced`). Refuses a root that would not read back: one
+/// that fails `validate`, names a commit this repository does not have, or is dated before
+/// 1970, which git cannot write.
 pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, StoreError> {
     let repo = store.repo();
     let invalid = |what: String| StoreError::Invalid { what };
@@ -78,8 +80,14 @@ pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, St
         None,
         &env,
     )?)?;
-    git(repo, &["update-ref", &ref_name(&root.commit), &commit])?;
-    Ok(commit)
+    let name = ref_name(&root.commit);
+    match git(repo, &["update-ref", &name, &commit, ""]) {
+        Ok(_) => Ok(commit),
+        Err(GitError::Failed { .. }) if read(store, &root.commit)?.is_some() => {
+            Err(StoreError::Exists { name })
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// The root at `commit`'s ref, or `None` when there is no such ref. A ref that exists but
@@ -177,10 +185,16 @@ impl Store {
             .collect()
     }
 
-    /// Push the root refs for `commits` to `remote`, never forced. Each ref's outcome is
-    /// reported; a rejection means the remote already holds a root for that commit. An empty
-    /// list pushes nothing: a bare `git push` would send the current branch.
-    pub fn push(&self, remote: &str, commits: &[GitOid]) -> Result<Vec<Pushed>, StoreError> {
+    /// Push the root refs for `commits` to `remote`, never forced, with `env` on the child git
+    /// (the `pre-push` hook's `JTAC_HOOK=1`). Each ref's outcome is reported; a rejection means
+    /// the remote already holds a root for that commit. An empty list pushes nothing: a bare
+    /// `git push` would send the current branch.
+    pub fn push(
+        &self,
+        remote: &str,
+        commits: &[GitOid],
+        env: &[(&str, &str)],
+    ) -> Result<Vec<Pushed>, StoreError> {
         let mut distinct: Vec<&GitOid> = Vec::new();
         for c in commits {
             if !distinct.contains(&c) {
@@ -199,7 +213,7 @@ impl Store {
             .collect();
         let mut args = vec!["push", "--porcelain", "--", remote];
         args.extend(specs.iter().map(String::as_str));
-        let out = git_output(self.repo(), &args, None, &[])?;
+        let out = git_output(self.repo(), &args, None, env)?;
         let text = String::from_utf8_lossy(&out.stdout);
         let pushed: Vec<Pushed> = text.lines().filter_map(porcelain).collect();
         if pushed.len() != distinct.len() {

@@ -8,6 +8,19 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.13, M10) The push gate goes live. `jtac_gate::decide` is the one push decision: delete,
+  tag, and `refs/jtac/` pass; a non-fast-forward update or a deletion of a protected branch
+  is the fence, judged from the tip's policy joined with the branch's old tip's; an old oid
+  the clone lacks refuses naming `git fetch`; then the tip needs a root whose signature
+  holds, or a root for the same tree. `jtac hook pre-push` gathers git's stdin
+  lines into facts, renders the decision on stderr, and pushes the root refs ahead of the
+  code with `JTAC_HOOK=1` as the recursion guard; a root push that fails warns. `jtac init`
+  finds the remote, resolves or generates the signing key (ed25519 under the user config
+  directory, named by the global `jtac.signingkey`), creates the store, writes the detected
+  policy, installs the hook (refusing a file it did not write), adds the fetch refspec, and
+  records an `init` lever node; `--dry-run`; idempotent. `jtac status` asks the same
+  decision, tree fallback included. A root ref is created, never replaced (issue 27).
+  DESIGN.md 11.1, 11.3, 11.7, 11.9, 14 edited; decision 34; the shell classifier is M10b.
 - (0.0.12, M9) `jtac check` writes: on a clean tree it resolves the signing identity, diffs
   from the nearest covered ancestor, runs the checks through the file cache, and on a pass
   assembles the root (`covers` from the diff base, `parents` by commit), signs it, and

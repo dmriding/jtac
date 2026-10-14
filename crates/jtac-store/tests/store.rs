@@ -101,7 +101,7 @@ fn a_root_written_on_one_clone_is_fetched_and_read_on_another() {
         let leaf = store_a.put_node(&node("1.98.0")).unwrap();
         let id = store_a.put_root(&root_a, SIG, &[leaf]).unwrap();
         assert_eq!(id, root_a.id().unwrap());
-        let pushed = store_a.push("origin", &[root_a.commit]).unwrap();
+        let pushed = store_a.push("origin", &[root_a.commit], &[]).unwrap();
         assert_eq!(pushed.len(), 1);
         assert_eq!(pushed[0].outcome, PushOutcome::Sent);
         assert_eq!(pushed[0].name, ref_name(&root_a.commit));
@@ -198,15 +198,6 @@ fn the_root_commit_is_parentless_unsigned_and_the_same_for_the_same_root() {
         repo.git(&["ls-tree", "--name-only", &first]),
         "root.json\nroot.sig"
     );
-    s.put_root(&r, SIG, &[]).unwrap();
-    assert_eq!(repo.git(&["rev-parse", &name]), first);
-    let later = Root {
-        ts: "2026-10-11T18:30:00Z".parse().unwrap(),
-        ..r.clone()
-    };
-    s.put_root(&later, SIG, &[]).unwrap();
-    assert_ne!(repo.git(&["rev-parse", &name]), first);
-
     let other = Repo::clone_of(&repo);
     other.git(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
     Store::open(other.path())
@@ -214,6 +205,32 @@ fn the_root_commit_is_parentless_unsigned_and_the_same_for_the_same_root() {
         .put_root(&r, SIG, &[])
         .unwrap();
     assert_eq!(other.git(&["rev-parse", &name]), first);
+}
+
+/// Issue 27: two checks on one tip raced and the second `update-ref` replaced the first,
+/// so one run's printed root was not the ref's. The ref is created with an empty old value.
+#[test]
+fn a_root_ref_is_created_never_replaced() {
+    let repo = with_commit(&[]);
+    let s = Store::open(repo.path()).unwrap();
+    let r = root(&repo, TS);
+    let id = s.put_root(&r, SIG, &[]).unwrap();
+    let name = ref_name(&r.commit);
+    let first = repo.git(&["rev-parse", &name]);
+    let later = Root {
+        ts: "2026-10-11T18:30:00Z".parse().unwrap(),
+        ..r.clone()
+    };
+    for again in [&r, &later] {
+        let err = s.put_root(again, SIG, &[]).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Exists { name: n } if *n == name),
+            "{err}"
+        );
+        assert_eq!(repo.git(&["rev-parse", &name]), first);
+        let again = again.id().unwrap();
+        assert_eq!(s.local_root(&again).unwrap().is_some(), again == id);
+    }
 }
 
 #[test]
@@ -332,11 +349,11 @@ fn push_reports_each_ref_and_a_second_root_for_the_same_tip_is_rejected() {
     let r = root(&a, TS);
     store_a.put_root(&r, SIG, &[]).unwrap();
     assert_eq!(
-        store_a.push("origin", &[r.commit]).unwrap()[0].outcome,
+        store_a.push("origin", &[r.commit], &[]).unwrap()[0].outcome,
         PushOutcome::Sent
     );
     assert_eq!(
-        store_a.push("origin", &[r.commit]).unwrap()[0].outcome,
+        store_a.push("origin", &[r.commit], &[]).unwrap()[0].outcome,
         PushOutcome::UpToDate
     );
 
@@ -347,7 +364,7 @@ fn push_reports_each_ref_and_a_second_root_for_the_same_tip_is_rejected() {
         ..root(&b, TS)
     };
     store_b.put_root(&later, SIG, &[]).unwrap();
-    let pushed = store_b.push("origin", &[later.commit]).unwrap();
+    let pushed = store_b.push("origin", &[later.commit], &[]).unwrap();
     assert!(
         matches!(&pushed[0].outcome, PushOutcome::Rejected { summary } if summary.contains("rejected")),
         "{pushed:?}"
@@ -358,21 +375,47 @@ fn push_reports_each_ref_and_a_second_root_for_the_same_tip_is_rejected() {
         "a rejected push changes nothing on the remote"
     );
 
-    let err = store_b.push("nowhere", &[later.commit]).unwrap_err();
+    let err = store_b.push("nowhere", &[later.commit], &[]).unwrap_err();
     assert!(matches!(err, StoreError::Git(_)), "{err}");
 
     b.write("ahead.md", b"example\n");
     b.commit("ahead of origin");
     let before = origin.git(&["rev-parse", "main"]);
-    assert_eq!(store_b.push("origin", &[]).unwrap(), vec![]);
+    assert_eq!(store_b.push("origin", &[], &[]).unwrap(), vec![]);
     assert_eq!(
         origin.git(&["rev-parse", "main"]),
         before,
         "an empty push sends nothing"
     );
-    let twice = store_a.push("origin", &[r.commit, r.commit]).unwrap();
+    let twice = store_a.push("origin", &[r.commit, r.commit], &[]).unwrap();
     assert_eq!(twice.len(), 1);
     assert_eq!(twice[0].outcome, PushOutcome::UpToDate);
+}
+
+#[test]
+fn push_hands_its_env_to_the_child_git_and_so_to_its_hooks() {
+    let origin = Repo::bare(&[]);
+    let a = Repo::clone_of(&origin);
+    a.write("README.md", b"example\n");
+    a.commit("first");
+    let store = Store::open(a.path()).unwrap();
+    let r = root(&a, TS);
+    store.put_root(&r, SIG, &[]).unwrap();
+    let hooks = a.path().join(a.git(&["rev-parse", "--git-path", "hooks"]));
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-push");
+    std::fs::write(&hook, "#!/bin/sh\nprintf '%s' \"$JTAC_HOOK\" > hook-env\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let pushed = store
+        .push("origin", &[r.commit], &[("JTAC_HOOK", "1")])
+        .unwrap();
+    assert_eq!(pushed[0].outcome, PushOutcome::Sent);
+    let seen = std::fs::read_to_string(a.path().join("hook-env")).unwrap();
+    assert_eq!(seen, "1");
 }
 
 #[test]

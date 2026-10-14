@@ -73,8 +73,17 @@ pub fn resolve(cfg: &GitConfig) -> Result<Resolved, ResolveError> {
     Ok(Resolved {
         key: KeyRef::parse(key),
         principal: principal.to_owned(),
-        program: PathBuf::from(set(&cfg.gpg_ssh_program).unwrap_or("ssh-keygen")),
+        program: program(set(&cfg.gpg_ssh_program)),
     })
+}
+
+/// `gpg.ssh.program` when set, else the name on PATH.
+pub(crate) fn program(gpg_ssh_program: Option<&str>) -> PathBuf {
+    PathBuf::from(
+        gpg_ssh_program
+            .filter(|s| !s.is_empty())
+            .unwrap_or("ssh-keygen"),
+    )
 }
 
 #[cfg(test)]

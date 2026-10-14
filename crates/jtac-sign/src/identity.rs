@@ -61,6 +61,16 @@ pub fn identity(r: Resolved) -> Result<Identity, SignError> {
     })
 }
 
+/// The ssh-keygen a verifier runs: `gpg.ssh.program` as [`resolve`](crate::resolve) reads it,
+/// `~` expanded. Checking a signature needs no key and no principal.
+pub fn verifier(gpg_ssh_program: Option<&str>) -> Result<Tool, SignError> {
+    let program = crate::key::program(gpg_ssh_program);
+    Ok(Tool::new(expand_home(
+        &program,
+        std::env::home_dir().as_deref(),
+    )?))
+}
+
 /// `~` and `~/...` only. Git also expands `~user` through the password database; jtac has no
 /// safe way to, so it refuses rather than sign with a different key than git would.
 fn expand_home(path: &Path, home: Option<&Path>) -> Result<PathBuf, SignError> {
@@ -103,5 +113,22 @@ mod tests {
         }
         let err = expand_home(Path::new("~dev/.ssh/key"), Some(home)).unwrap_err();
         assert!(matches!(err, SignError::Key { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_verifier_is_gits_program_or_ssh_keygen_on_path() {
+        let rows = [
+            (None, "ssh-keygen"),
+            (Some(""), "ssh-keygen"),
+            (Some("/opt/ssh/bin/ssh-keygen"), "/opt/ssh/bin/ssh-keygen"),
+        ];
+        for (given, want) in rows {
+            assert_eq!(
+                verifier(given).unwrap().program(),
+                Path::new(want),
+                "{given:?}"
+            );
+        }
+        assert!(verifier(Some("~dev/ssh-keygen")).is_err());
     }
 }

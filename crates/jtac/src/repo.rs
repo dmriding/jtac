@@ -73,11 +73,13 @@ pub(crate) fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<St
     }
 }
 
-/// Whether `info/grafts` exists: a graft rewrites the parents git shows and, unlike replace
-/// refs, cannot be switched off for a call (`a_replace_graft_does_not_hide_the_change`).
-pub fn grafted(repo: &Path) -> Result<bool, RepoError> {
+/// Whether `info/grafts` exists: a graft rewrites the parents git shows, so `check`, the
+/// hook, and `status` refuse rather than read a history the remote will not see
+/// (`a_replace_graft_does_not_hide_the_change`, `a_grafts_file_refuses_the_hook_and_status`).
+pub fn grafted(repo: &Path) -> Result<Option<PathBuf>, RepoError> {
     let out = git(repo, &["rev-parse", "--git-path", "info/grafts"])?;
-    Ok(repo.join(text(&out)).exists())
+    let path = repo.join(text(&out));
+    Ok(path.exists().then_some(path))
 }
 
 /// One git config value, `None` when unset.
@@ -133,18 +135,33 @@ pub fn root(cwd: &Path) -> Result<PathBuf, RepoError> {
 
 /// HEAD's commit and tree in the repository's object format.
 pub fn head(repo: &Path) -> Result<Head, RepoError> {
-    let format = text(&git(repo, &["rev-parse", "--show-object-format"])?);
-    let oid = |spec: &str| -> Result<GitOid, RepoError> {
-        let hex = text(&git(
-            repo,
-            &["rev-parse", "--verify", "--end-of-options", spec],
-        )?);
-        let full = format!("{format}:{hex}");
-        full.parse().map_err(|_| RepoError::Oid { text: full })
-    };
-    let commit = oid("HEAD^{commit}")?;
-    let tree = oid(&format!("{}^{{tree}}", commit.hex()))?;
+    peel(repo, &format(repo)?, "HEAD")
+}
+
+/// `rev` peeled to a commit, and that commit's tree.
+pub fn peel(repo: &Path, format: &str, rev: &str) -> Result<Head, RepoError> {
+    let commit = resolve(repo, format, &format!("{rev}^{{commit}}"))?;
+    let tree = resolve(repo, format, &format!("{}^{{tree}}", commit.hex()))?;
     Ok(Head { commit, tree })
+}
+
+/// The object format as git names it: `sha1` or `sha256`, the prefix a [`GitOid`] takes.
+pub fn format(repo: &Path) -> Result<String, RepoError> {
+    Ok(text(&git(repo, &["rev-parse", "--show-object-format"])?))
+}
+
+/// `hex` as an object id in `format`.
+pub fn oid(format: &str, hex: &str) -> Result<GitOid, RepoError> {
+    let full = format!("{format}:{hex}");
+    full.parse().map_err(|_| RepoError::Oid { text: full })
+}
+
+fn resolve(repo: &Path, format: &str, spec: &str) -> Result<GitOid, RepoError> {
+    let hex = text(&git(
+        repo,
+        &["rev-parse", "--verify", "--end-of-options", spec],
+    )?);
+    oid(format, &hex)
 }
 
 /// Why the work tree is not HEAD's tree, or `None`. `git status` alone is not enough: an

@@ -369,7 +369,11 @@ fn missing_bad_and_unreadable_policies_refuse_with_exit_two() {
         "{}",
         ran.stderr
     );
-    assert!(ran.stderr.contains("negotiation: Write"), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("negotiation: Run `jtac init`"),
+        "{}",
+        ran.stderr
+    );
     repo.write(".jtac/policy.toml", b"version = 1\n[checks.ok]\nrun = []\n");
     repo.commit("bad policy");
     let ran = jtac(&repo, &["check", "--preview", "--json"]);

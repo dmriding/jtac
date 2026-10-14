@@ -311,6 +311,48 @@ fn a_second_check_on_a_covered_head_keeps_the_root_and_the_next_commits_chain_to
 
 /// The probe table knows `node`, and this binary answering `--version` under that name gives
 /// a tool version without a toolchain the scrubbed check environment cannot find.
+/// Issue 27: the check in the policy fetches the other clone's root refs, so the tip's ref
+/// appears between this run's look at it and its own write. The ref is created, never
+/// replaced; the loser reports the root that won.
+#[test]
+fn a_check_that_loses_the_race_to_the_same_tip_reports_the_root_that_won() {
+    let first = Repo::init(&[]);
+    let path = first.path().to_string_lossy().replace('\\', "/");
+    with_policy(
+        &first,
+        &format!(
+            "[checks.fetch]\nrun = [\"git\", \"fetch\", \"-q\", \"{path}\", \
+             \"+refs/jtac/*:refs/jtac/*\"]\n"
+        ),
+    );
+    first.write("src/lib.rs", b"fn a() {}\n");
+    let head = first.commit("base");
+    keyed(&first);
+    let (code, out) = json(&first, &["check", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    let won = out["root"].as_str().unwrap().to_owned();
+
+    let second = Repo::clone_of(&first);
+    keyed(&second);
+    assert_eq!(second.git(&["rev-parse", "HEAD"]), head);
+    assert!(root_refs(&second).is_empty());
+    let (code, out) = json(&second, &["check", "--json"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["root"].as_str().unwrap(), won);
+    assert!(
+        out["notes"].as_array().unwrap().iter().any(|n| n
+            .as_str()
+            .unwrap()
+            .contains("another run wrote HEAD's root first")),
+        "{out}"
+    );
+    assert_eq!(root_refs(&second).len(), 1);
+    assert_eq!(
+        root_json(&second, &head)["ts"],
+        root_json(&first, &head)["ts"]
+    );
+}
+
 #[test]
 fn a_known_tool_is_a_cache_hit_on_the_second_check() {
     let repo = Repo::init(&[]);
@@ -448,11 +490,7 @@ fn no_key_and_no_principal_are_refused_before_any_check_runs() {
         "{}",
         ran.stderr
     );
-    assert!(
-        ran.stderr.contains("git config jtac.signingkey"),
-        "{}",
-        ran.stderr
-    );
+    assert!(ran.stderr.contains("Run `jtac init`"), "{}", ran.stderr);
     repo.git(&["config", "gpg.format", "ssh"]);
     repo.git(&["config", "user.signingkey", "/nowhere/key"]);
     let ran = jtac(&repo, &["check"]);
@@ -776,12 +814,14 @@ fn a_replace_graft_does_not_hide_the_change_and_a_grafts_file_refuses() {
     assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
     assert!(
         ran.stderr
-            .starts_with("jtac: the repository has `info/grafts`."),
+            .starts_with("jtac: the repository has a grafts file, `")
+            && ran.stderr.contains("/.git/info/grafts`."),
         "{}",
         ran.stderr
     );
     assert!(
-        ran.stderr.contains("Remove `.git/info/grafts`"),
+        ran.stderr
+            .contains("/.git/info/grafts` (`git replace --convert-graft-file`"),
         "{}",
         ran.stderr
     );
