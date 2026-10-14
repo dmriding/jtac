@@ -383,7 +383,13 @@ fn the_store_lives_in_the_common_dir_so_worktrees_share_it() {
     let main = Store::open(repo.path()).unwrap();
     let linked = Store::open(&wt).unwrap();
     assert_eq!(main.dir(), linked.dir());
-    assert_eq!(main.dir(), repo.path().join(".git").join("jtac"));
+    let canonical = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+    assert_eq!(
+        canonical(main.dir().parent().unwrap()),
+        canonical(&repo.path().join(".git")),
+        "git prints the long path with forward slashes; the temp dir may be the short form"
+    );
+    assert_eq!(main.dir().file_name().unwrap(), "jtac");
     assert!(!main.dir().exists(), "open creates nothing");
     let r = root(&repo, TS);
     linked.put_root(&r, SIG, &[]).unwrap();
