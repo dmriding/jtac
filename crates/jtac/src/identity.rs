@@ -22,7 +22,7 @@ pub fn identity(repo: &Path) -> Result<Identity, Refusal> {
     };
     let mut resolved = resolve(&cfg).map_err(|e| Refusal::no_identity(&e))?;
     if let KeyRef::File(path) = &resolved.key
-        && path.is_relative()
+        && !path.has_root()
         && !path.to_string_lossy().starts_with('~')
     {
         resolved.key = KeyRef::File(repo.join(path));

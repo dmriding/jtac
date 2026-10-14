@@ -51,8 +51,9 @@ impl Repo {
     }
 
     /// The environment a child gets: `PATH`, a `HOME` inside the temp directory, git told to
-    /// read no global or system config, and the coverage profile path when one is set, so an
-    /// instrumented binary writes its profile there and not into the repository under test.
+    /// read no global or system config, the coverage profile path when one is set, so an
+    /// instrumented binary writes its profile there and not into the repository under test,
+    /// and the Windows system variables without which OpenSSH does not start.
     pub fn env(&self) -> Vec<(String, String)> {
         let inherit = |name: &str| {
             std::env::var_os(name).map(|v| (name.to_owned(), v.to_string_lossy().into_owned()))
@@ -70,6 +71,12 @@ impl Repo {
         .map(|(k, v)| (k.to_owned(), v))
         .chain(inherit("PATH"))
         .chain(inherit("LLVM_PROFILE_FILE"))
+        .chain(inherit("SYSTEMROOT"))
+        .chain(inherit("SYSTEMDRIVE"))
+        .chain(inherit("TEMP"))
+        .chain(inherit("TMP"))
+        .chain(inherit("PATHEXT"))
+        .chain(inherit("COMSPEC"))
         .collect()
     }
 
