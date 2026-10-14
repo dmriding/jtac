@@ -8,6 +8,15 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.12, M9) `jtac check` writes: on a clean tree it resolves the signing identity, diffs
+  from the nearest covered ancestor, runs the checks through the file cache, and on a pass
+  assembles the root (`covers` from the diff base, `parents` by commit), signs it, and
+  points its ref at it; a block keeps the nodes and writes no root; a covered HEAD is
+  checked again and keeps its root. `state.json` holds the last verdict; `jtac status` says
+  whether a push would pass and lists the unpushed commits by their roots; `jtac why`
+  renders the last verdict with a note when HEAD moved. `jtac_core::counts`,
+  `jtac_checks::run_cached`, `Store::put_state`/`state`. DESIGN.md 9.4, 9.6, 11.1, 11.9
+  edited; decision 33.
 - (0.0.11, M8) `jtac-sign`: SSHSIG through `ssh-keygen`. `resolve` decides the key, principal
   and binary from git config (pure); `identity` asks `ssh-keygen -l` for the fingerprint;
   `sign` signs bytes in a `Namespace` over stdin and refuses a signature from any other key;

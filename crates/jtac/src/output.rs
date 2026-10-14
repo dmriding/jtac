@@ -2,23 +2,23 @@
 //! from it (DESIGN.md section 7.1). Versioned with `v`, so a reader can pin what it parses.
 
 use jtac_core::{Body, GitOid, Outcome, Severity, Sha256Digest, State, Ts};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::preview::Preview;
+use crate::judge::Judged;
 use crate::reason::{Explained, explain};
 use crate::repo::Base;
 
-/// What `jtac check --preview` prints.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// What `jtac check` prints and `state.json` keeps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Output {
     /// Output schema version.
     pub v: u32,
     /// The command.
-    pub command: &'static str,
+    pub command: String,
     /// Nothing was written.
     pub preview: bool,
     /// `CLEARED HOT` or `ABORT`.
-    pub banner: &'static str,
+    pub banner: String,
     /// Whether a root could be written.
     pub pass: bool,
     /// Covered or declared off.
@@ -33,6 +33,8 @@ pub struct Output {
     pub base: Base,
     /// Hash of the resolved policy.
     pub policy: Sha256Digest,
+    /// The root written or found for this commit; absent in preview and on a block.
+    pub root: Option<Sha256Digest>,
     /// Facts that change how to read the verdict, such as a dirty work tree.
     pub notes: Vec<String>,
     /// What blocks, in verdict order.
@@ -48,7 +50,7 @@ pub struct Output {
 }
 
 /// A finding as shown.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingOut {
     /// Rule id.
     pub rule: String,
@@ -63,7 +65,7 @@ pub struct FindingOut {
 }
 
 /// A check as shown.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckOut {
     /// Check id.
     pub id: String,
@@ -77,10 +79,12 @@ pub struct CheckOut {
     pub tool_version: String,
     /// The argv, empty for `integrity`.
     pub argv: Vec<String>,
+    /// The node this result was cached from, when it was.
+    pub cached_from: Option<Sha256Digest>,
 }
 
-/// Build the structure from `p` and the caller's `notes`.
-pub fn output(p: &Preview, notes: Vec<String>) -> Output {
+/// Build the structure from `p`, the caller's `notes`, and the root it wrote or found.
+pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256Digest>) -> Output {
     let reasons: Vec<Explained> = p.verdict.reasons.iter().map(|r| explain(r, p)).collect();
     let blocking = |f: &jtac_core::FindingBody| {
         p.verdict.reasons.iter().any(|r| match r {
@@ -118,19 +122,21 @@ pub fn output(p: &Preview, notes: Vec<String>) -> Output {
                 duration_ms: c.duration_ms,
                 tool_version: c.tool_version.clone(),
                 argv: c.argv.clone(),
+                cached_from: c.cached_from,
             }),
             _ => {}
         }
     }
     Output {
         v: 1,
-        command: "check",
-        preview: true,
+        command: "check".to_owned(),
+        preview,
         banner: if p.verdict.pass {
             "CLEARED HOT"
         } else {
             "ABORT"
-        },
+        }
+        .to_owned(),
         pass: p.verdict.pass,
         state: p.verdict.state,
         ts: p.now,
@@ -138,6 +144,7 @@ pub fn output(p: &Preview, notes: Vec<String>) -> Output {
         tree: p.head.tree,
         base: p.base.clone(),
         policy: p.facts.policy,
+        root,
         notes,
         reasons,
         advisory,

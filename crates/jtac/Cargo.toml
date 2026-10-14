@@ -16,6 +16,8 @@ publish = true
 jtac-core = { workspace = true }
 jtac-policy = { workspace = true }
 jtac-checks = { workspace = true }
+jtac-store = { workspace = true }
+jtac-sign = { workspace = true }
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 jiff = "0.2.38"
 serde = { version = "1.0.229", features = ["derive"] }

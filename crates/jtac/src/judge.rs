@@ -1,13 +1,15 @@
-//! Gather the evidence for one verdict in memory and hand it to `gate` (DESIGN.md section
-//! 11.1 steps 3 to 5): the `integrity` check node first, its findings, then every policy check
-//! in order. Nothing is stored or cached; the nodes live for one render.
+//! Gather the evidence for one verdict and hand it to `gate` (DESIGN.md section 11.1 steps 3
+//! to 5): the `integrity` check node first, its findings, then every policy check in order.
+//! With a cache, a check's node may be a hit; without one (`--preview`) every check runs and
+//! nothing is kept, because a pass computed on a dirty tree would be cached under HEAD's
+//! tree id.
 
 use std::path::Path;
 use std::time::Instant;
 
 use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Report, report};
-use jtac_checks::{CAPTURE_CAP, Context, run, specs};
+use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
     Body, Capture, CheckBody, Facts, FindingBody, Node, Outcome, Sha256Digest, Ts, Verdict, gate,
 };
@@ -18,7 +20,7 @@ use crate::refuse::Refusal;
 use crate::repo::{Base, Head};
 
 /// Everything one verdict was computed from.
-pub struct Preview {
+pub struct Judged {
     /// HEAD.
     pub head: Head,
     /// The base the rules read from.
@@ -29,6 +31,9 @@ pub struct Preview {
     pub now: Ts,
     /// Check and finding nodes, `integrity` first.
     pub nodes: Vec<Node>,
+    /// Every captured stream of a fresh run, for the store; a hit's were kept before its
+    /// entry was (`write::evidence`).
+    pub captures: Vec<Vec<u8>>,
     /// Why the rules did not run: git could not read the diff.
     pub integrity_error: Option<String>,
     /// What the rules counted, when they ran.
@@ -38,13 +43,14 @@ pub struct Preview {
 }
 
 /// Run the rules and the checks on `head` and decide.
-pub fn preview(
+pub fn judge(
     repo: &Path,
     loaded: &Loaded,
     head: Head,
     base: Base,
     now: Ts,
-) -> Result<Preview, Refusal> {
+    cache: Option<&dyn Cache>,
+) -> Result<Judged, Refusal> {
     let facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
     let node = |body: Body| Node {
         tree: head.tree,
@@ -64,6 +70,7 @@ pub fn preview(
         started.elapsed().as_millis(),
     )));
     let check_id = integrity.id().map_err(Refusal::internal)?;
+    let mut captures = vec![integrity_error.clone().unwrap_or_default().into_bytes()];
     let mut nodes = vec![integrity];
     for f in report.iter().flat_map(|r| &r.findings) {
         nodes.push(node(Body::Finding(FindingBody {
@@ -80,15 +87,32 @@ pub fn preview(
         capture_cap: CAPTURE_CAP,
     };
     for spec in specs(&loaded.policy) {
-        nodes.push(node(Body::Check(run(&spec, &ctx).body)));
+        let Some(cache) = cache else {
+            nodes.push(node(Body::Check(run(&spec, &ctx).body)));
+            continue;
+        };
+        match run_cached(&spec, &ctx, cache, head.tree, facts.policy, now)
+            .map_err(Refusal::store)?
+        {
+            Checked::Hit(n) => nodes.push(n),
+            Checked::Ran {
+                node,
+                stdout,
+                stderr,
+            } => {
+                captures.extend([stdout, stderr]);
+                nodes.push(node);
+            }
+        }
     }
     let verdict = gate(&facts, &nodes, now);
-    Ok(Preview {
+    Ok(Judged {
         head,
         base,
         facts,
         now,
         nodes,
+        captures,
         integrity_error,
         report,
         verdict,

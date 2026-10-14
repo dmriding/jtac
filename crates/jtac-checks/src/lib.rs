@@ -3,6 +3,7 @@
 //! Impure: gathers facts and decides nothing.
 
 mod cache;
+mod cached;
 pub mod diff;
 mod env;
 mod run;
@@ -10,6 +11,7 @@ mod spec;
 mod version;
 
 pub use cache::{Cache, CacheError, CacheKey, MemoryCache, lookup, store};
+pub use cached::{Checked, run_cached};
 pub use diff::git;
 pub use env::{allowed, scrub};
 pub use run::{CAPTURE_CAP, Context, NESTED_VAR, Ran, run};

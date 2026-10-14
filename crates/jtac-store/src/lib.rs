@@ -8,6 +8,7 @@ mod fs;
 mod objects;
 mod refs;
 mod roots;
+mod state;
 
 use std::path::{Path, PathBuf};
 

@@ -6,15 +6,42 @@ use std::fmt::Write;
 
 use crate::output::Output;
 use crate::reason::{finding_line, shown};
+use crate::refuse::Refusal;
+
+/// `o` as JSON with `--json`, else as text.
+pub fn render(o: &Output, as_json: bool) -> Result<String, Refusal> {
+    if as_json { json(o) } else { Ok(text(o)) }
+}
+
+/// Any output structure, pretty-printed with a trailing newline.
+pub fn json<T: serde::Serialize>(value: &T) -> Result<String, Refusal> {
+    let mut s = serde_json::to_string_pretty(value).map_err(Refusal::internal)?;
+    s.push('\n');
+    Ok(s)
+}
 
 /// Render `o`.
 pub fn text(o: &Output) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "{} (preview, nothing written): {}", o.banner, summary(o));
+    let mode = if o.preview {
+        " (preview, nothing written)"
+    } else {
+        ""
+    };
+    let _ = writeln!(s, "{}{mode}: {}", o.banner, summary(o));
     let _ = writeln!(s, "  commit  {}", o.commit);
     let _ = writeln!(s, "  tree    {}", o.tree);
     let _ = writeln!(s, "  base    {} ({})", o.base.commit, o.base.from);
     let _ = writeln!(s, "  policy  {}", o.policy);
+    match (&o.root, o.preview) {
+        (Some(root), _) => {
+            let _ = writeln!(s, "  root    {root}");
+        }
+        (None, false) => {
+            let _ = writeln!(s, "  root    none written");
+        }
+        (None, true) => {}
+    }
     for note in &o.notes {
         let _ = writeln!(s, "  note    {note}");
     }
@@ -37,7 +64,16 @@ pub fn text(o: &Output) -> String {
         } else {
             shown(&c.argv)
         };
-        let _ = writeln!(s, "     {} {} {}ms  {argv}", c.id, c.outcome, c.duration_ms);
+        let cached = if c.cached_from.is_some() {
+            " (cached)"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            s,
+            "     {} {} {}ms{cached}  {argv}",
+            c.id, c.outcome, c.duration_ms
+        );
     }
     match (o.added_lines, &o.tiers) {
         (Some(n), Some(tiers)) if tiers.is_empty() => {

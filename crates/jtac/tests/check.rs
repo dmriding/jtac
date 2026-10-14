@@ -1,6 +1,6 @@
 //! `jtac check --preview` against throwaway repositories: the verdict, the base rule, the
 //! notes, and every refusal, through the built binary so the coverage floor measures `main`.
-//! Policy checks run the binary itself (`--version` passes, `status` fails), so no check
+//! Policy checks run the binary itself (`--version` passes, `verify` is refused), so no check
 //! reads a tool's real configuration.
 
 use jtac_testkit::Repo;
@@ -19,7 +19,7 @@ fn policy(extra: &str) -> String {
 
 fn failing(id: &str, required: bool) -> String {
     format!(
-        "[checks.{id}]\nrun = [\"{}\", \"status\"]\nrequired = {required}\n",
+        "[checks.{id}]\nrun = [\"{}\", \"verify\"]\nrequired = {required}\n",
         me()
     )
 }
@@ -275,7 +275,7 @@ fn with_no_candidate_or_no_common_ancestor_the_last_commit_is_judged() {
     );
     assert!(
         ran.stderr
-            .contains("negotiation: Run `jtac check --preview --base HEAD~1`"),
+            .contains("negotiation: Run `jtac check --base HEAD~1`"),
         "{}",
         ran.stderr
     );
@@ -315,7 +315,7 @@ fn a_failing_check_names_its_argv_and_each_note_has_its_own_cause() {
     assert_eq!(
         reason["how"],
         format!(
-            "Run `{} status` at the repository root and fix what it reports.",
+            "Run `{} verify` at the repository root and fix what it reports.",
             me()
         )
     );

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use jtac_checks::diff::git::{GitError, git, merge_base};
 use jtac_core::GitOid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// HEAD as the verdict names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub struct Head {
 }
 
 /// The tree-ish the diff rules read from, and how it was chosen.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Base {
     /// Hex, as git prints it.
     pub commit: String,
@@ -62,7 +62,7 @@ fn text(out: &[u8]) -> String {
 /// `None` only on the exit git documents for "no such thing" (`absent`): 1 for the `--quiet`
 /// forms and `merge-base` with no common ancestor, 128 for `@{upstream}` on a branch without
 /// one. Any other failure is fatal and propagates, so a missing object never reads as absence.
-fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<String>, RepoError> {
+pub(crate) fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<String>, RepoError> {
     match git(repo, args) {
         Ok(out) => Ok(Some(text(&out))),
         Err(GitError::Failed {
@@ -71,6 +71,51 @@ fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<String>, Repo
         }) if status == absent => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Whether `info/grafts` exists: a graft rewrites the parents git shows and, unlike replace
+/// refs, cannot be switched off for a call (`a_replace_graft_does_not_hide_the_change`).
+pub fn grafted(repo: &Path) -> Result<bool, RepoError> {
+    let out = git(repo, &["rev-parse", "--git-path", "info/grafts"])?;
+    Ok(repo.join(text(&out)).exists())
+}
+
+/// One git config value, `None` when unset.
+pub fn config(repo: &Path, key: &str) -> Result<Option<String>, RepoError> {
+    probe(repo, &["config", "--get", key], 1)
+}
+
+/// The full ref name of the current branch's upstream, when it has one.
+pub fn upstream(repo: &Path) -> Result<Option<String>, RepoError> {
+    probe(
+        repo,
+        &["rev-parse", "--symbolic-full-name", "@{upstream}"],
+        128,
+    )
+}
+
+/// Commits reachable from HEAD and not from `upstream`, oldest first.
+pub fn ahead(repo: &Path, head: &Head, upstream: &str) -> Result<Vec<GitOid>, RepoError> {
+    let not = format!("^{upstream}");
+    let commit = head.commit.hex();
+    let out = git(
+        repo,
+        &["rev-list", "--reverse", "--topo-order", &commit, &not, "--"],
+    )?;
+    let prefix = match head.commit {
+        GitOid::Sha1(_) => "sha1",
+        GitOid::Sha256(_) => "sha256",
+    };
+    text(&out)
+        .lines()
+        .map(|hex| {
+            format!("{prefix}:{hex}")
+                .parse()
+                .map_err(|_| RepoError::Oid {
+                    text: hex.to_owned(),
+                })
+        })
+        .collect()
 }
 
 /// The work tree root above `cwd`, bytes kept as git printed them minus the newline.
@@ -102,9 +147,11 @@ pub fn head(repo: &Path) -> Result<Head, RepoError> {
     Ok(Head { commit, tree })
 }
 
-/// Whether the work tree or index differs from HEAD, untracked files included whatever
-/// `status.showUntrackedFiles` says.
-pub fn dirty(repo: &Path) -> Result<bool, RepoError> {
+/// Why the work tree is not HEAD's tree, or `None`. `git status` alone is not enough: an
+/// index entry marked skip-worktree or assume-unchanged hides a modified file from it, and
+/// `info/exclude` or `core.excludesFile` hides an untracked one, neither of which the tree
+/// under test carries (`a_tree_that_status_calls_clean_can_still_differ_from_head`).
+pub fn dirty(repo: &Path) -> Result<Option<String>, RepoError> {
     let out = git(
         repo,
         &[
@@ -115,7 +162,30 @@ pub fn dirty(repo: &Path) -> Result<bool, RepoError> {
             "--untracked-files=all",
         ],
     )?;
-    Ok(!out.is_empty())
+    if !out.is_empty() {
+        return Ok(Some("`git status` shows uncommitted changes".to_owned()));
+    }
+    let entries = git(repo, &["ls-files", "-v", "-z"])?;
+    let hidden = entries
+        .split(|b| *b == 0)
+        .find(|e| matches!(e.first(), Some(b'S' | b'a'..=b'z')));
+    if let Some(entry) = hidden {
+        let path = String::from_utf8_lossy(entry.get(2..).unwrap_or_default());
+        return Ok(Some(format!(
+            "`{path}` is marked skip-worktree or assume-unchanged, so `git status` does not \
+             show its changes"
+        )));
+    }
+    let others = git(
+        repo,
+        &["ls-files", "-o", "-z", "--exclude-per-directory=.gitignore"],
+    )?;
+    Ok(others.split(|b| *b == 0).find(|e| !e.is_empty()).map(|e| {
+        format!(
+            "`{}` is untracked and hidden by a local exclude, not by `.gitignore`",
+            String::from_utf8_lossy(e)
+        )
+    }))
 }
 
 /// The blob at `path` in `head`'s tree as `(sha, bytes)`; `None` when there is no entry.
@@ -153,20 +223,29 @@ pub fn on_disk_matches(repo: &Path, path: &str, sha: &str) -> Result<bool, RepoE
 }
 
 /// The base the rules diff from (DESIGN.md section 10.3): the merge base of HEAD with
-/// `explicit`, else with the upstream, else with the default branch. When that is HEAD itself,
-/// or nothing names a candidate, the rules judge the last commit: the first parent, or the
-/// empty tree for a parentless HEAD. An explicit rev that does not resolve or shares no history
-/// is the caller's refusal.
-pub fn base(repo: &Path, head: &Head, explicit: Option<&str>) -> Result<Base, RepoError> {
+/// `explicit`, else the `nearest` covered ancestor, else the merge base with the upstream,
+/// else with the default branch. When that is HEAD itself, or nothing names a candidate, the
+/// rules judge the last commit: the first parent, or the empty tree for a parentless HEAD. An
+/// explicit rev that does not resolve or shares no history is the caller's refusal.
+pub fn base(
+    repo: &Path,
+    head: &Head,
+    explicit: Option<&str>,
+    nearest: Option<&str>,
+) -> Result<Base, RepoError> {
     let commit = head.commit.hex();
-    let (candidate, reason) = match explicit {
-        Some(rev) => {
+    let (candidate, reason) = match (explicit, nearest) {
+        (Some(rev), _) => {
             let spec = format!("{rev}^{{commit}}");
             git(repo, &["rev-parse", "--verify", "--end-of-options", &spec])?;
             let base = merge_base(repo, rev, &commit)?;
             (Some(base), format!("--base {rev}"))
         }
-        None => match candidate(repo)? {
+        (None, Some(covered)) => (
+            Some(covered.to_owned()),
+            "nearest covered ancestor".to_owned(),
+        ),
+        (None, None) => match candidate(repo)? {
             Some((full, shown)) => match probe(repo, &["merge-base", &full, &commit], 1)? {
                 Some(base) => (Some(base), format!("merge base with {shown}")),
                 None if shallow(repo)? => {
@@ -219,9 +298,11 @@ fn last_commit(repo: &Path, commit: &str, why: &str) -> Result<Base, RepoError> 
     }
 }
 
-/// Whether the clone was made with a depth, so missing history is a refusal, never absence
-/// (`a_shallow_clone_refuses_instead_of_judging_nothing`).
-fn shallow(repo: &Path) -> Result<bool, RepoError> {
+/// Whether `.git/shallow` marks commits, so missing history is a refusal, never absence
+/// (`a_shallow_clone_refuses_instead_of_judging_nothing`); a writing `check` refuses here
+/// outright, since a mark written by hand reads the same as a depth-limited clone
+/// (`a_shallow_mark_real_or_forged_gets_no_root`).
+pub fn shallow(repo: &Path) -> Result<bool, RepoError> {
     Ok(text(&git(repo, &["rev-parse", "--is-shallow-repository"])?) == "true")
 }
 

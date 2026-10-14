@@ -8,7 +8,7 @@ use std::process::Output;
 use jtac_core::{Signer, Ts};
 
 use crate::fingerprint::printed;
-use crate::tool::first_line;
+use crate::tool::{failure, first_line};
 use crate::{Namespace, SignError, Tool};
 
 /// A trust file larger than this is refused unread.
@@ -51,7 +51,7 @@ pub fn verify(
     let sig_file = temp("jtac-sig-", sig.as_bytes())?;
     let out = novalidate(tool, ns, &sig_file, msg)?;
     if !out.status.success() {
-        return Ok(invalid(&first_line(&out.stderr)));
+        return Ok(invalid(&failure(&out)));
     }
     match printed(&out.stdout) {
         Some(found) if found == signer.fingerprint => {}

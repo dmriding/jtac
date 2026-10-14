@@ -77,7 +77,7 @@ pub enum PolicyError {
 }
 
 /// The tail every `how` shares: the edit leaves the tree dirty, and only `--preview` runs there.
-pub(crate) const NEXT: &str = ", then run: jtac check --preview";
+pub(crate) const NEXT: &str = ", then run: jtac check";
 
 fn place(position: &Option<(u32, u32)>) -> String {
     match position {

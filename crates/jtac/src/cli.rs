@@ -17,11 +17,16 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-/// Every command the parser accepts; only `check --preview` runs in this release.
+/// Every command the parser accepts; `check`, `status`, and `why` run in this release.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// Run the gate on HEAD: diff-integrity rules, the policy's checks, then the verdict
+    /// Run the gate on HEAD: diff-integrity rules, the policy's checks, then the verdict;
+    /// a pass writes a signed root
     Check(CheckArgs),
+    /// Whether a push would pass: HEAD's root, the unpushed commits, the last verdict
+    Status(JsonArg),
+    /// The last verdict's reasons, each with its rule, why it exists, and the next command
+    Why(JsonArg),
     /// A command a later release ships.
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -30,12 +35,22 @@ pub enum Command {
 /// `jtac check` flags.
 #[derive(Args, Debug, PartialEq, Eq)]
 pub struct CheckArgs {
-    /// Print the verdict with its reasons and write nothing; the only mode this release runs
+    /// Print the verdict with its reasons and write nothing; the only mode that runs on a
+    /// dirty tree
     #[arg(long)]
     pub preview: bool,
-    /// Diff from the merge base of REV and HEAD instead of the upstream or default branch
+    /// Diff from the merge base of REV and HEAD instead of the nearest covered ancestor,
+    /// the upstream, or the default branch
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
+    /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The one flag `status` and `why` take.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct JsonArg {
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -58,11 +73,18 @@ mod tests {
             }))
         );
         let cli = Cli::try_parse_from(["jtac", "status", "--json"]).unwrap();
+        assert_eq!(cli.command, Some(Command::Status(JsonArg { json: true })));
+        let cli = Cli::try_parse_from(["jtac", "why"]).unwrap();
+        assert_eq!(cli.command, Some(Command::Why(JsonArg { json: false })));
+        let cli = Cli::try_parse_from(["jtac", "verify", "--range", "x"]).unwrap();
         assert_eq!(
             cli.command,
-            Some(Command::Other(vec!["status".into(), "--json".into()]))
+            Some(Command::Other(vec![
+                "verify".into(),
+                "--range".into(),
+                "x".into()
+            ]))
         );
-        assert_eq!(Cli::try_parse_from(["jtac"]).unwrap().command, None);
         assert!(Cli::try_parse_from(["jtac", "check", "--nope"]).is_err());
     }
 }
