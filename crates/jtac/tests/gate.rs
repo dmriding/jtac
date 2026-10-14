@@ -584,16 +584,11 @@ fn the_nearest_covered_ancestor_is_on_the_first_parent_line_or_none_at_all() {
     assert_eq!(code, 0, "{v}");
     let from = v["base"]["from"].as_str().unwrap();
     let diffed = v["base"]["commit"].as_str().unwrap();
-    assert!(diffed != s1 && diffed != base, "{v}");
-    assert!(
-        from == "nearest covered ancestor" || from.starts_with("first parent of HEAD"),
-        "{from}"
-    );
+    assert!(diffed != s1 && diffed != base && diffed != x, "{v}");
+    assert_eq!(diffed, t1, "{v}");
+    assert!(from.starts_with("first parent of HEAD"), "{from}");
     let root = root_json(&repo, &merge);
-    assert_eq!(
-        root["covers"],
-        serde_json::json!([format!("sha1:{t1}"), format!("sha1:{merge}")])
-    );
+    assert_eq!(root["covers"], serde_json::json!([format!("sha1:{merge}")]));
     assert_eq!(root["parents"][0]["commit"], format!("sha1:{x}"));
     assert_eq!(root["parents"].as_array().unwrap().len(), 1, "{root}");
 }
@@ -641,4 +636,117 @@ fn past_the_bound_covers_is_a_range_and_a_lost_state_file_only_warns() {
         "{}",
         ran.stdout
     );
+}
+
+/// Run `jtac` from `subdir` of the repository.
+fn jtac_in(repo: &Repo, subdir: &str, args: &[&str]) -> Ran {
+    let out = Command::new(env!("CARGO_BIN_EXE_jtac"))
+        .args(args)
+        .current_dir(repo.path().join(subdir))
+        .env_clear()
+        .envs(repo.env())
+        .output()
+        .unwrap();
+    Ran {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(out.stdout).unwrap(),
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+#[test]
+fn a_tree_that_changes_under_the_checks_gets_no_root() {
+    let repo = passing();
+    repo.git(&["branch", "other"]);
+    let mutate = "[checks.mutate]\nrun = [\"git\", \"switch\", \"-q\", \"other\"]\n";
+    repo.write(".jtac/policy.toml", policy(mutate).as_bytes());
+    repo.commit("mutating policy");
+    let ran = jtac(&repo, &["check"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr
+            .starts_with("jtac: HEAD or the work tree changed while the checks ran."),
+        "{}",
+        ran.stderr
+    );
+    assert!(root_refs(&repo).is_empty());
+    let dir = repo.git(&["rev-parse", "--git-common-dir"]);
+    assert!(
+        !repo
+            .path()
+            .join(dir)
+            .join("jtac")
+            .join("state.json")
+            .exists()
+    );
+}
+
+#[test]
+fn a_merge_is_judged_against_its_first_parent_line_not_the_merged_branch() {
+    let repo = Repo::init(&[]);
+    with_policy(&repo, "");
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    repo.commit("base");
+    keyed(&repo);
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["switch", "-q", "-c", "side"]);
+    repo.write("side.txt", b"s\n");
+    repo.commit("side");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["switch", "-q", "main"]);
+    repo.write("src/lib.rs", b"#[test]\nfn keeps() {}\nfn a() {}\n");
+    let added = repo.commit("add test");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    repo.commit("drop test");
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-gpg-sign",
+        "-m",
+        "merge side",
+        "side",
+    ]);
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["base"]["commit"], added);
+    assert_eq!(v["base"]["from"], "nearest covered ancestor");
+    assert_eq!(v["reasons"][0]["rule"], "JT-TEST-001");
+    assert_eq!(root_refs(&repo).len(), 3);
+}
+
+#[test]
+fn a_replace_graft_does_not_hide_the_change_and_a_grafts_file_refuses() {
+    let repo = blocking();
+    repo.git(&["replace", "--graft", "HEAD"]);
+    assert_eq!(repo.git(&["log", "--oneline", "HEAD"]).lines().count(), 1);
+    let ran = jtac(&repo, &["check"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("JT-TEST-001"), "{}", ran.stdout);
+    assert!(root_refs(&repo).is_empty());
+    let head = repo.git(&["rev-parse", "HEAD"]);
+    repo.write(".git/info/grafts", format!("{head}\n").as_bytes());
+    let ran = jtac(&repo, &["check"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr
+            .starts_with("jtac: the repository has `info/grafts`."),
+        "{}",
+        ran.stderr
+    );
+    assert!(
+        ran.stderr.contains("Remove `.git/info/grafts`"),
+        "{}",
+        ran.stderr
+    );
+}
+
+#[test]
+fn a_relative_signing_key_is_read_from_the_repository_root() {
+    let repo = passing();
+    repo.git(&["config", "jtac.signingkey", ".git/key"]);
+    let ran = jtac_in(&repo, "src", &["check"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(root_refs(&repo).len(), 1);
 }

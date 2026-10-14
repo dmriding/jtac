@@ -137,7 +137,8 @@ pub fn git_with(
 /// stdout on failure too (`push --porcelain`). Only a spawn failure is an error. Stdin is
 /// fed from a thread while the output drains, so a child that fills stdout before it reads
 /// its input (`cat-file --batch`) cannot deadlock; a child that exits early is its own
-/// answer, not a broken pipe.
+/// answer, not a broken pipe. Replace refs are never followed: a `git replace --graft` would
+/// show a history the root does not name (`a_replace_graft_does_not_hide_the_change`).
 pub fn git_output(
     repo: &Path,
     args: &[&str],
@@ -149,6 +150,7 @@ pub fn git_output(
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(repo)
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .envs(env.iter().copied())
         .stdin(if stdin.is_some() {
             Stdio::piped()

@@ -73,6 +73,13 @@ pub(crate) fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<St
     }
 }
 
+/// Whether `info/grafts` exists: a graft rewrites the parents git shows and, unlike replace
+/// refs, cannot be switched off for a call (`a_replace_graft_does_not_hide_the_change`).
+pub fn grafted(repo: &Path) -> Result<bool, RepoError> {
+    let out = git(repo, &["rev-parse", "--git-path", "info/grafts"])?;
+    Ok(repo.join(text(&out)).exists())
+}
+
 /// One git config value, `None` when unset.
 pub fn config(repo: &Path, key: &str) -> Result<Option<String>, RepoError> {
     probe(repo, &["config", "--get", key], 1)

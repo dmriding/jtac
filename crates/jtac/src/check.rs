@@ -23,6 +23,9 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if let (Some(why), false) = (&dirty, a.preview) {
         return Err(Refusal::dirty(why));
     }
+    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted());
+    }
     let signer = if a.preview {
         None
     } else {
@@ -59,6 +62,13 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let Some(cache) = cache else {
         unreachable!("a signer and a cache come together")
     };
+    let still = repo::head(&repo).map_err(|e| Refusal::no_head(&e))? == head
+        && repo::dirty(&repo)
+            .map_err(|e| Refusal::repository(&e))?
+            .is_none();
+    if !still {
+        return Err(Refusal::moved());
+    }
     write::evidence(&store, &j, cache)?;
     let existing = store.root(&head.commit).map_err(Refusal::store)?;
     let root_id = match (&existing, j.verdict.pass) {

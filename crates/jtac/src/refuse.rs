@@ -155,6 +155,28 @@ impl Refusal {
         )
     }
 
+    /// The repository has a grafts file.
+    pub fn grafted() -> Self {
+        Self::new(
+            "the repository has `info/grafts`.",
+            "A graft changes the parents git reports, so the base, the diff, and `covers` \
+             would describe a history the root does not name; replace refs are ignored for \
+             the same reason, but a grafts file cannot be.",
+            "Remove `.git/info/grafts` (`git replace --convert-graft-file` keeps it as replace \
+             refs, which jtac ignores), then run `jtac check` again.",
+        )
+    }
+
+    /// HEAD or the work tree changed between the preflight and the write.
+    pub fn moved() -> Self {
+        Self::new(
+            "HEAD or the work tree changed while the checks ran.",
+            "The checks read the work tree as it was during the run; a root and a cache entry \
+             name HEAD's tree only when the tree stayed HEAD's from start to end.",
+            "Leave the tree alone while `jtac check` runs, then run it again.",
+        )
+    }
+
     /// No signing key, or no principal, in git config.
     pub fn no_identity(err: &jtac_sign::ResolveError) -> Self {
         let how = match err {
@@ -294,6 +316,8 @@ mod tests {
         let rows = [
             Refusal::not_built("status"),
             Refusal::dirty("x"),
+            Refusal::grafted(),
+            Refusal::moved(),
             Refusal::no_identity(&jtac_sign::ResolveError::NoKey),
             Refusal::no_identity(&jtac_sign::ResolveError::NoPrincipal),
             Refusal::sign(&jtac_sign::SignError::KeyMismatch {

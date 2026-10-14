@@ -4,12 +4,13 @@
 use std::path::Path;
 
 use jtac_core::{GateRef, Sha256Digest};
-use jtac_sign::{GitConfig, Identity, resolve};
+use jtac_sign::{GitConfig, Identity, KeyRef, resolve};
 
 use crate::refuse::Refusal;
 use crate::repo::config;
 
-/// The signing identity git config names for `repo`.
+/// The signing identity git config names for `repo`. A relative key path is read from the
+/// repository root, where git reads it, not from where `jtac` was run.
 pub fn identity(repo: &Path) -> Result<Identity, Refusal> {
     let get = |key: &str| config(repo, key).map_err(|e| Refusal::repository(&e));
     let cfg = GitConfig {
@@ -19,7 +20,13 @@ pub fn identity(repo: &Path) -> Result<Identity, Refusal> {
         gpg_ssh_program: get("gpg.ssh.program")?,
         user_email: get("user.email")?,
     };
-    let resolved = resolve(&cfg).map_err(|e| Refusal::no_identity(&e))?;
+    let mut resolved = resolve(&cfg).map_err(|e| Refusal::no_identity(&e))?;
+    if let KeyRef::File(path) = &resolved.key
+        && path.is_relative()
+        && !path.to_string_lossy().starts_with('~')
+    {
+        resolved.key = KeyRef::File(repo.join(path));
+    }
     jtac_sign::identity(resolved).map_err(|e| Refusal::sign(&e))
 }
 

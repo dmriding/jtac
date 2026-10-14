@@ -48,6 +48,9 @@ pub fn covered(repo: &Path, store: &Store, head: &Head) -> Result<BTreeSet<GitOi
 }
 
 /// The nearest first-parent ancestor with a root, as hex: the base the rules diff from.
+/// Walked as a plain first-parent list, because `--boundary` would also list a merge's
+/// second parent, and a covered branch tip there would hide what the first-parent line
+/// changed (`a_merge_is_judged_against_its_first_parent_line_not_the_merged_branch`).
 pub fn nearest(
     repo: &Path,
     covered: &BTreeSet<GitOid>,
@@ -56,12 +59,17 @@ pub fn nearest(
     if covered.is_empty() {
         return Ok(None);
     }
-    let lines = walk(repo, &["--first-parent"], head, covered, None)?;
-    Ok(lines
-        .iter()
-        .filter_map(|l| l.strip_prefix('-'))
-        .find(|hex| oid(head, hex).is_ok_and(|c| covered.contains(&c)))
-        .map(str::to_owned))
+    let out = git(
+        repo,
+        &["rev-list", "--first-parent", &head.commit.hex(), "--"],
+    )
+    .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+    for hex in String::from_utf8_lossy(&out).lines().skip(1) {
+        if covered.contains(&oid(head, hex)?) {
+            return Ok(Some(hex.to_owned()));
+        }
+    }
+    Ok(None)
 }
 
 /// `covers` and `parents` for a root on `head` whose rules diffed from `base`: every commit
