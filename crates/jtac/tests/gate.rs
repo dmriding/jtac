@@ -684,7 +684,7 @@ fn a_tree_that_changes_under_the_checks_gets_no_root() {
 }
 
 #[test]
-fn a_hand_written_shallow_file_does_not_hide_the_covered_ancestor() {
+fn a_shallow_mark_real_or_forged_gets_no_root() {
     let repo = Repo::init(&[]);
     with_policy(&repo, "");
     repo.write("src/lib.rs", b"#[test]\nfn keeps() {}\nfn a() {}\n");
@@ -694,17 +694,36 @@ fn a_hand_written_shallow_file_does_not_hide_the_covered_ancestor() {
     repo.write("src/lib.rs", b"fn a() {}\n");
     let dropped = repo.commit("drop test");
     repo.write("b.txt", b"b\n");
-    repo.commit("harmless");
-    repo.write(".git/shallow", format!("{dropped}\n").as_bytes());
-    let ran = jtac(&repo, &["check"]);
-    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    let harmless = repo.commit("harmless");
+    repo.write("c.txt", b"c\n");
+    repo.commit("harmless again");
+    repo.write(".git/shallow", format!("{harmless}\n").as_bytes());
+    let refused = || {
+        let ran = jtac(&repo, &["check"]);
+        assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stderr.starts_with("jtac: the history is shallow: "),
+            "{}",
+            ran.stderr
+        );
+        assert!(ran.stderr.contains("--unshallow"), "{}", ran.stderr);
+        assert_eq!(root_refs(&repo).len(), 1);
+    };
+    refused();
+    let object = repo
+        .path()
+        .join(".git/objects")
+        .join(&dropped[..2])
+        .join(&dropped[2..]);
+    std::fs::remove_file(object).unwrap();
+    refused();
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
     assert!(
-        ran.stderr.starts_with("jtac: `shallow` lists "),
+        ran.stdout.contains("first parent of HEAD"),
         "{}",
-        ran.stderr
+        ran.stdout
     );
-    assert!(ran.stderr.contains("--unshallow"), "{}", ran.stderr);
-    assert_eq!(root_refs(&repo).len(), 1);
 }
 
 #[test]

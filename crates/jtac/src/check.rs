@@ -23,8 +23,11 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if let (Some(why), false) = (&dirty, a.preview) {
         return Err(Refusal::dirty(why));
     }
-    if let Some(what) = repo::cut_history(&repo).map_err(|e| Refusal::repository(&e))? {
-        return Err(Refusal::cut_history(&what));
+    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted());
+    }
+    if !a.preview && repo::shallow(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::shallow());
     }
     let signer = if a.preview {
         None

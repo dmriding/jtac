@@ -586,10 +586,9 @@ fn a_shallow_clone_refuses_instead_of_judging_nothing() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("as a boundary, but its parent is in the repository"),
+        stderr.contains("merge base with origin/main is not in this clone"),
         "{stderr}"
     );
-    assert!(stderr.contains("--unshallow"), "{stderr}");
 }
 
 #[test]

@@ -73,45 +73,11 @@ pub(crate) fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<St
     }
 }
 
-/// What cuts the history git walks short of the objects it holds, or `None`: an
-/// `info/grafts` file, or a `shallow` file naming a commit whose parent object is present,
-/// as a hand-written file does and a depth-limited fetch into a fuller clone can. Neither can
-/// be switched off for a call the way replace refs are
-/// (`a_replace_graft_does_not_hide_the_change`,
-/// `a_hand_written_shallow_file_does_not_hide_the_covered_ancestor`).
-pub fn cut_history(repo: &Path) -> Result<Option<String>, RepoError> {
-    let path = |name: &str| -> Result<PathBuf, RepoError> {
-        Ok(repo.join(text(&git(repo, &["rev-parse", "--git-path", name])?)))
-    };
-    if path("info/grafts")?.exists() {
-        return Ok(Some("the repository has `info/grafts`".to_owned()));
-    }
-    let shallow = match std::fs::read_to_string(path("shallow")?) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(GitError::Spawn {
-                argv: vec!["shallow".into()],
-                source: e,
-            }
-            .into());
-        }
-    };
-    for commit in shallow.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let object = git(repo, &["cat-file", "commit", commit])?;
-        let parents = String::from_utf8_lossy(&object);
-        let present = parents
-            .lines()
-            .take_while(|l| !l.is_empty())
-            .filter_map(|l| l.strip_prefix("parent "))
-            .any(|p| git(repo, &["cat-file", "-e", p]).is_ok());
-        if present {
-            return Ok(Some(format!(
-                "`shallow` lists {commit} as a boundary, but its parent is in the repository"
-            )));
-        }
-    }
-    Ok(None)
+/// Whether `info/grafts` exists: a graft rewrites the parents git shows and, unlike replace
+/// refs, cannot be switched off for a call (`a_replace_graft_does_not_hide_the_change`).
+pub fn grafted(repo: &Path) -> Result<bool, RepoError> {
+    let out = git(repo, &["rev-parse", "--git-path", "info/grafts"])?;
+    Ok(repo.join(text(&out)).exists())
 }
 
 /// One git config value, `None` when unset.
@@ -332,9 +298,11 @@ fn last_commit(repo: &Path, commit: &str, why: &str) -> Result<Base, RepoError> 
     }
 }
 
-/// Whether the clone was made with a depth, so missing history is a refusal, never absence
-/// (`a_shallow_clone_refuses_instead_of_judging_nothing`).
-fn shallow(repo: &Path) -> Result<bool, RepoError> {
+/// Whether `.git/shallow` marks commits, so missing history is a refusal, never absence
+/// (`a_shallow_clone_refuses_instead_of_judging_nothing`); a writing `check` refuses here
+/// outright, since a mark written by hand reads the same as a depth-limited clone
+/// (`a_shallow_mark_real_or_forged_gets_no_root`).
+pub fn shallow(repo: &Path) -> Result<bool, RepoError> {
     Ok(text(&git(repo, &["rev-parse", "--is-shallow-repository"])?) == "true")
 }
 

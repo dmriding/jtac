@@ -155,16 +155,28 @@ impl Refusal {
         )
     }
 
-    /// A grafts file, or a shallow file that is not a real boundary.
-    pub fn cut_history(what: &str) -> Self {
+    /// The repository has a grafts file.
+    pub fn grafted() -> Self {
         Self::new(
-            format!("{what}."),
-            "A graft or a shallow mark changes the parents git walks, so the base, the diff, \
-             and `covers` would describe a history the root does not name; replace refs are \
-             ignored for the same reason, but these two cannot be.",
+            "the repository has `info/grafts`.",
+            "A graft changes the parents git reports, so the base, the diff, and `covers` \
+             would describe a history the root does not name; replace refs are ignored for \
+             the same reason, but a grafts file cannot be.",
             "Remove `.git/info/grafts` (`git replace --convert-graft-file` keeps it as replace \
-             refs, which jtac ignores), or run `git fetch --unshallow` (a `.git/shallow` \
-             written by hand is simply removed); then run `jtac check` again.",
+             refs, which jtac ignores), then run `jtac check` again.",
+        )
+    }
+
+    /// A writing `check` in a shallow repository.
+    pub fn shallow() -> Self {
+        Self::new(
+            "the history is shallow: `.git/shallow` marks commits whose parents this clone \
+             does not walk.",
+            "A root's base and `covers` come from walking history, and a shallow mark cuts \
+             the walk where git cannot tell a depth-limited clone from a file written by hand; \
+             a root here could vouch for commits it never judged.",
+            "Run `git fetch --unshallow` (remove `.git/shallow` if it was written by hand), \
+             then `jtac check` again; `jtac check --preview` answers here and writes nothing.",
         )
     }
 
@@ -323,7 +335,8 @@ mod tests {
         let rows = [
             Refusal::not_built("status"),
             Refusal::dirty("x"),
-            Refusal::cut_history("x"),
+            Refusal::grafted(),
+            Refusal::shallow(),
             Refusal::moved(None),
             Refusal::moved(Some("y")),
             Refusal::no_identity(&jtac_sign::ResolveError::NoKey),
