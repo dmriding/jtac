@@ -47,6 +47,9 @@ static UNBLOCKS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// A GitLab script key opening a list.
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:before_|after_)?script:\s*$").expect("literal"));
+/// A `"` or `'` opening a scalar value.
+static QUOTE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*(?:-\s+)*(?:[^\s:#"']+:\s+)?(["'])"#).expect("literal"));
 /// A command key opening a block scalar.
 static BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -99,6 +102,43 @@ fn inside(text: &str) -> Vec<bool> {
             body
         })
         .collect()
+}
+
+/// Whether each line is shell to `check`: a block scalar's body, or the continuation of a
+/// `"` or `'` scalar opened above, where a leading `#` is text. Rows in
+/// `a_quoted_scalar_continuing_onto_a_hash_line_is_read`.
+fn shell(text: &str) -> Vec<bool> {
+    let mut open: Option<char> = None;
+    split_lines(text)
+        .into_iter()
+        .zip(inside(text))
+        .map(|(line, body)| {
+            let was = open.is_some();
+            let (from, quote) = match open {
+                Some(q) => (0, Some(q)),
+                None if body => (0, None),
+                None => QUOTE
+                    .captures(line)
+                    .and_then(|c| c.get(1))
+                    .map_or((0, None), |m| (m.end(), m.as_str().chars().next())),
+            };
+            open = quote.filter(|&q| !closes(&line[from..], q));
+            body || was
+        })
+        .collect()
+}
+
+/// Whether `s` closes an open `q` scalar: `\` escapes in `"`, a doubled quote in `'`.
+fn closes(s: &str, q: char) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && q == '"' {
+            chars.next();
+        } else if c == q && !(q == '\'' && chars.next_if_eq(&'\'').is_some()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether each Jenkinsfile line lies in a `'''` or `"""` string, where `//` is shell.
@@ -179,7 +219,7 @@ pub(crate) fn check(views: &[View]) -> Vec<Finding> {
         let body = v
             .change
             .new_text()
-            .map(if groovy { quoted } else { inside })
+            .map(if groovy { quoted } else { shell })
             .unwrap_or_default();
         let comment = |n: &u64, t: &str| {
             let at = usize::try_from(*n)
@@ -526,6 +566,67 @@ mod tests {
                     Some("steps:\n  - bash: |\n      bash -c 'cargo test\n      #' || true\n"),
                 ),
                 &[(4, "CI step may fail `#' || true`")],
+            ),
+        ];
+        table(rows);
+    }
+
+    #[test]
+    fn a_quoted_scalar_continuing_onto_a_hash_line_is_read() {
+        let rows: &[(Change, &[(u64, &str)])] = &[
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"bash -c 'cargo test\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: 'bash -c \"cargo test\n      #\" || true'\n"),
+                ),
+                &[(3, "CI step may fail `#\" || true'`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"echo \\\"a\n      #\\\" || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#\\\" || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: 'it''s\n      #'' || true'\n"),
+                ),
+                &[(3, "CI step may fail `#'' || true'`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"cargo test\"\n  # never || true\n"),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: |\n      \"a\n",
+                    Some("steps:\n  - run: |\n      \"a\n  # never || true\n"),
+                ),
+                &[],
             ),
         ];
         table(rows);

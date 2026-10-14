@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "jtac"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "clap",
  "jiff",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-checks"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "jtac-core",
  "jtac-policy",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-core"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "hex",
  "jiff",
@@ -355,14 +355,14 @@ dependencies = [
 
 [[package]]
 name = "jtac-gate"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "jtac-core",
 ]
 
 [[package]]
 name = "jtac-policy"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "globset",
  "jtac-core",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-sign"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "jtac-core",
  "libc",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-store"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "jtac-checks",
  "jtac-core",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-testkit"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "tempfile",
 ]

@@ -37,7 +37,7 @@ pub fn counts(lang: Lang, lines: &[Line], test_file: bool) -> Counts {
         if rust {
             if std::mem::take(&mut pending) {
                 if TEST_MOD.is_match(&line.code) {
-                    tail = 1;
+                    tail += 1;
                     continue;
                 }
                 counts.production += 1;
@@ -132,6 +132,11 @@ mod tests {
                 "#[cfg(test)]\nmod tests {\n} mod real {\n    pub fn a() {}\n}\n",
                 false,
                 (2, 0, 2),
+            ),
+            (
+                "#[cfg(test)]\nmod tests {\n#[cfg(test)]\nmod inner {\n}\n    fn t() {}\n}\n",
+                false,
+                (0, 0, 0),
             ),
             (
                 "pub fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() {\n        let s = r#\"\nhello\n\"#;\n    }\n}\n",

@@ -13,11 +13,11 @@ const LINES: usize = 32;
 
 /// Added lines as (number, as written, probe text). A line inside a Rust attribute probes the
 /// whole attribute at its opener's line, once per attribute, and not at all when only an inner
-/// line changed and the old file had as many copies of the attribute as the new one; any other
-/// line probes itself as `View::added` gives it.
+/// line changed and the old file had as many copies of the attribute on the same item as the
+/// new one; any other line probes itself as `View::added` gives it.
 pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, String)> {
     let mut out: Vec<(u64, &str, String)> = Vec::new();
-    let mut copies: Option<(BTreeMap<String, usize>, BTreeMap<String, usize>)> = None;
+    let mut copies: Option<(Copies, Copies)> = None;
     for (n, text, blanked) in v.added(comments) {
         let Some(start) = attribute(v, n) else {
             out.push((n, text, blanked));
@@ -31,7 +31,7 @@ pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, 
         let seen = out.iter().any(|p| p.0 == probe.0);
         let kept = probe.0 != n && {
             let (old, new) = copies.get_or_insert_with(|| (attributes(&v.old), attributes(&v.new)));
-            let key = joined(&v.new, start, written);
+            let key = keyed(&v.new, start);
             old.get(&key) >= new.get(&key)
         };
         if !seen && !kept {
@@ -41,13 +41,30 @@ pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, 
     out
 }
 
-/// Every attribute in `lines` as written, with its number of copies.
-fn attributes(lines: &[Line]) -> BTreeMap<String, usize> {
+/// Attributes as written with the item each decorates, by number of copies.
+type Copies = BTreeMap<(String, String), usize>;
+
+fn attributes(lines: &[Line]) -> Copies {
     let mut copies = BTreeMap::new();
     for i in (0..lines.len()).filter(|&i| opener(&lines[i])) {
-        *copies.entry(joined(lines, i, written)).or_insert(0) += 1;
+        *copies.entry(keyed(lines, i)).or_insert(0) += 1;
     }
     copies
+}
+
+/// The attribute at `start` as written, with the code line it decorates: the first past it
+/// and any attribute below it that holds code, so a copy moved to another item is new.
+fn keyed(lines: &[Line], start: usize) -> (String, String) {
+    let mut i = start;
+    let item = loop {
+        match lines.get(i) {
+            None => break "",
+            Some(l) if opener(l) => i = end(lines, i) + 1,
+            Some(l) if l.code.trim().is_empty() => i += 1,
+            Some(l) => break l.code.trim(),
+        }
+    };
+    (joined(lines, start, written), item.to_owned())
 }
 
 fn code(l: &Line) -> String {
@@ -86,22 +103,24 @@ fn attribute(v: &View, n: u64) -> Option<usize> {
 
 /// The attribute opened at `start`, on one line up to its close, each line as `shown` reads it.
 fn joined(lines: &[Line], start: usize, shown: fn(&Line) -> String) -> String {
+    lines[start..=end(lines, start)]
+        .iter()
+        .filter(|l| !l.code.trim().is_empty())
+        .map(|l| shown(l).trim().to_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Index of the line closing the attribute opened at `start`, or of the last it may span.
+fn end(lines: &[Line], start: usize) -> usize {
     let mut open = 0;
-    let mut text = String::new();
-    for line in lines.iter().skip(start).take(LINES) {
-        if line.code.trim().is_empty() {
-            continue;
-        }
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        text.push_str(shown(line).trim());
+    for (i, line) in lines.iter().enumerate().skip(start).take(LINES) {
         open += brackets(line);
         if open <= 0 {
-            break;
+            return i;
         }
     }
-    text
+    (start + LINES).min(lines.len()) - 1
 }
 
 fn brackets(line: &Line) -> i64 {

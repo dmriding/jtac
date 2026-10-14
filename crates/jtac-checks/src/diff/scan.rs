@@ -44,7 +44,7 @@ impl Line<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Clear,
-    Block { doc: bool },
+    Block { doc: bool, depth: u32 },
     Str(Quote),
 }
 
@@ -53,6 +53,8 @@ enum Quote {
     Double,
     Single,
     Backtick,
+    /// A JS template with the `${ }` depth open at the line end.
+    Template(u32),
     Triple(char),
     Raw(usize),
     Regex,
@@ -105,7 +107,7 @@ struct Scanner<'a> {
 impl<'a> Scanner<'a> {
     fn new(lang: Lang, text: &'a str, state: State) -> Self {
         let comment = match state {
-            State::Block { doc } => Some(doc),
+            State::Block { doc, .. } => Some(doc),
             _ => None,
         };
         Self {
@@ -156,7 +158,7 @@ impl<'a> Scanner<'a> {
     fn run(&mut self) {
         while self.at < self.chars.len() {
             match self.state {
-                State::Block { .. } => self.in_block(),
+                State::Block { doc, depth } => self.in_block(doc, depth),
                 State::Str(quote) => self.in_string(quote),
                 State::Clear => {
                     if self.clear() {
@@ -178,13 +180,11 @@ impl<'a> Scanner<'a> {
         self.chars.iter().rev().take_while(|&&c| c == '\\').count() % 2 == 1
     }
 
-    fn in_block(&mut self) {
-        let end = match find(self.rest(), "*/") {
-            Some(i) => {
-                self.state = State::Clear;
-                i + 2
-            }
-            None => self.rest().len(),
+    fn in_block(&mut self, doc: bool, depth: u32) {
+        let (end, depth) = block_end(self.rest(), depth, self.lang == Lang::Rust);
+        self.state = match depth {
+            0 => State::Clear,
+            depth => State::Block { doc, depth },
         };
         let chunk: String = self.chars[self.at..self.at + end].iter().collect();
         self.comment_text.push_str(&chunk);
@@ -196,18 +196,25 @@ impl<'a> Scanner<'a> {
         let closer: String = match quote {
             Quote::Double => "\"".into(),
             Quote::Single => "'".into(),
-            Quote::Backtick => "`".into(),
+            Quote::Backtick | Quote::Template(_) => "`".into(),
             Quote::Triple(q) => q.to_string().repeat(3),
             Quote::Raw(hashes) => format!("\"{}", "#".repeat(hashes)),
             Quote::Regex => "/".into(),
         };
-        let close = match quote {
-            Quote::Double | Quote::Single => {
-                find_unescaped(rest, closer.chars().next().unwrap_or('"'))
+        let (close, quote) = match quote {
+            Quote::Double | Quote::Single => (
+                find_unescaped(rest, closer.chars().next().unwrap_or('"')),
+                quote,
+            ),
+            Quote::Template(depth) => {
+                let (close, depth) = template_close(rest, depth);
+                (close, Quote::Template(depth))
             }
-            Quote::Backtick if self.lang == Lang::Js => find_unescaped(rest, '`'),
-            Quote::Regex => regex_close(rest),
-            _ => find(rest, &closer).map(|i| i + closer.chars().count()),
+            Quote::Regex => (regex_close(rest), quote),
+            _ => (
+                find(rest, &closer).map(|i| i + closer.chars().count()),
+                quote,
+            ),
         };
         let end = close.unwrap_or(rest.len());
         let content = end - close.map_or(0, |_| closer.chars().count());
@@ -229,6 +236,7 @@ impl<'a> Scanner<'a> {
         self.has_code |= has_content;
         self.code.push_str(&kept);
         self.at += end;
+        self.state = State::Str(quote);
         if close.is_some() {
             self.has_code = true;
             self.code.push_str(&closer);
@@ -254,7 +262,7 @@ impl<'a> Scanner<'a> {
             self.note_comment(doc);
             self.comment_text.push_str("/*");
             self.at += 2;
-            self.state = State::Block { doc };
+            self.state = State::Block { doc, depth: 1 };
             return false;
         }
         if let Some((quote, len)) = self.string_opener() {
@@ -293,7 +301,8 @@ impl<'a> Scanner<'a> {
             (_, '"') => Some((Quote::Double, 1)),
             (Lang::Python | Lang::Js | Lang::Go, '\'') => Some((Quote::Single, 1)),
             (Lang::Rust, '\'') => rust_char(self.rest()).map(|_| (Quote::Single, 1)),
-            (Lang::Js | Lang::Go, '`') => Some((Quote::Backtick, 1)),
+            (Lang::Js, '`') => Some((Quote::Template(0), 1)),
+            (Lang::Go, '`') => Some((Quote::Backtick, 1)),
             (Lang::Js, '/') if self.regex_allowed() && regex_close(&self.rest()[1..]).is_some() => {
                 Some((Quote::Regex, 1))
             }
@@ -351,6 +360,45 @@ fn rust_char(rest: &[char]) -> Option<usize> {
         '\\' => find_unescaped(&rest[1..], '\'').map(|i| i + 1),
         _ => (rest.get(2) == Some(&'\'')).then_some(3),
     }
+}
+
+/// Index just past the backtick closing a JS template, and the `${ }` depth left open; braces
+/// inside the expression count, a backtick there does not.
+fn template_close(hay: &[char], mut depth: u32) -> (Option<usize>, u32) {
+    let mut i = 0;
+    while i < hay.len() {
+        match (hay[i], depth) {
+            ('\\', 0) => i += 1,
+            ('`', 0) => return (Some(i + 1), 0),
+            ('$', 0) if hay.get(i + 1) == Some(&'{') => {
+                depth = 1;
+                i += 1;
+            }
+            ('{', 1..) => depth += 1,
+            ('}', 1..) => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    (None, depth)
+}
+
+/// Chars to the end of a block comment or of the line, and the depth left open; `/*` nests
+/// only when `nests`, as in Rust.
+fn block_end(hay: &[char], mut depth: u32, nests: bool) -> (usize, u32) {
+    let mut i = 0;
+    while i < hay.len() && depth > 0 {
+        if hay[i..].starts_with(&['*', '/']) {
+            depth -= 1;
+            i += 2;
+        } else if nests && hay[i..].starts_with(&['/', '*']) {
+            depth += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (i, depth)
 }
 
 /// Index just past the `/` closing a regex literal, outside any `[...]` class.
@@ -473,6 +521,8 @@ mod tests {
             (Lang::Rust, "x /* a\n still\n */ y", &[Code, Comment, Code]),
             (Lang::Rust, "/**/ x", &[Code]),
             (Lang::Rust, "/**/", &[Comment]),
+            (Lang::Rust, "/* /*\n */ a\n */ b", &[Comment, Comment, Code]),
+            (Lang::Js, "/* /* */ b", &[Code]),
             (Lang::Js, "/// a\n/** b */\n// c", &[Comment, Doc, Comment]),
             (
                 Lang::Python,
@@ -565,6 +615,11 @@ mod tests {
                 &["const t = `", "`; x('') + \"\""],
             ),
             (
+                Lang::Js,
+                "const t = `${\n`}`; it('{')",
+                &["const t = `", "`; it('')"],
+            ),
+            (
                 Lang::Go,
                 "s := `raw\n{`\nr := '{'",
                 &["s := `", "`", "r := ''"],
@@ -616,6 +671,12 @@ mod tests {
                 &["/* eslint-disable", " y */"],
             ),
             (Lang::Rust, "// only", &["// only"]),
+            (
+                Lang::Js,
+                "const s = `${x /* ` */}`;\nit.only('b', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (Lang::Rust, "/* /* */ { */ x", &[" x/* /* */ { */"]),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();
