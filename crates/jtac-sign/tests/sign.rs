@@ -283,7 +283,7 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
         matches!(&err, SignError::Io { path, source } if *path == missing && source.kind() == std::io::ErrorKind::NotFound),
         "{err}"
     );
-    let dir = k.path("");
+    let dir = k.dir.path().to_path_buf();
     let err = verify(
         &id.tool,
         Some(&dir),
