@@ -44,7 +44,7 @@ impl Line<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Clear,
-    Block { doc: bool },
+    Block { doc: bool, depth: u32 },
     Str(Quote),
 }
 
@@ -53,6 +53,8 @@ enum Quote {
     Double,
     Single,
     Backtick,
+    /// A JS template with the `${ }` depth open at the line end.
+    Template(u32),
     Triple(char),
     Raw(usize),
     Regex,
@@ -90,6 +92,8 @@ struct Scanner<'a> {
     lang: Lang,
     text: &'a str,
     chars: Vec<char>,
+    /// `regex_closers` over `chars`, JavaScript only.
+    closers: Vec<Option<usize>>,
     at: usize,
     state: State,
     code: String,
@@ -105,13 +109,19 @@ struct Scanner<'a> {
 impl<'a> Scanner<'a> {
     fn new(lang: Lang, text: &'a str, state: State) -> Self {
         let comment = match state {
-            State::Block { doc } => Some(doc),
+            State::Block { doc, .. } => Some(doc),
             _ => None,
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let closers = match lang {
+            Lang::Js => regex_closers(&chars),
+            _ => Vec::new(),
         };
         Self {
             lang,
             text,
-            chars: text.chars().collect(),
+            chars,
+            closers,
             at: 0,
             state,
             code: String::with_capacity(text.len()),
@@ -148,6 +158,11 @@ impl<'a> Scanner<'a> {
         &self.chars[self.at..]
     }
 
+    /// Index just past the `/` closing a regex read from `i`.
+    fn closer(&self, i: usize) -> Option<usize> {
+        self.closers.get(i).copied().flatten().map(|k| i + k)
+    }
+
     fn starts(&self, s: &str) -> bool {
         let needle: Vec<char> = s.chars().collect();
         self.rest().starts_with(&needle)
@@ -156,7 +171,7 @@ impl<'a> Scanner<'a> {
     fn run(&mut self) {
         while self.at < self.chars.len() {
             match self.state {
-                State::Block { .. } => self.in_block(),
+                State::Block { doc, depth } => self.in_block(doc, depth),
                 State::Str(quote) => self.in_string(quote),
                 State::Clear => {
                     if self.clear() {
@@ -178,13 +193,11 @@ impl<'a> Scanner<'a> {
         self.chars.iter().rev().take_while(|&&c| c == '\\').count() % 2 == 1
     }
 
-    fn in_block(&mut self) {
-        let end = match find(self.rest(), "*/") {
-            Some(i) => {
-                self.state = State::Clear;
-                i + 2
-            }
-            None => self.rest().len(),
+    fn in_block(&mut self, doc: bool, depth: u32) {
+        let (end, depth) = block_end(self.rest(), depth, self.lang == Lang::Rust);
+        self.state = match depth {
+            0 => State::Clear,
+            depth => State::Block { doc, depth },
         };
         let chunk: String = self.chars[self.at..self.at + end].iter().collect();
         self.comment_text.push_str(&chunk);
@@ -196,18 +209,26 @@ impl<'a> Scanner<'a> {
         let closer: String = match quote {
             Quote::Double => "\"".into(),
             Quote::Single => "'".into(),
-            Quote::Backtick => "`".into(),
+            Quote::Backtick | Quote::Template(_) => "`".into(),
             Quote::Triple(q) => q.to_string().repeat(3),
             Quote::Raw(hashes) => format!("\"{}", "#".repeat(hashes)),
             Quote::Regex => "/".into(),
         };
-        let close = match quote {
-            Quote::Double | Quote::Single => {
-                find_unescaped(rest, closer.chars().next().unwrap_or('"'))
+        let (close, quote) = match quote {
+            Quote::Double | Quote::Single => (
+                find_unescaped(rest, closer.chars().next().unwrap_or('"')),
+                quote,
+            ),
+            Quote::Template(depth) => {
+                let closers = self.closers.get(self.at..).unwrap_or(&[]);
+                let (close, depth) = template_close(rest, closers, depth, 0);
+                (close, Quote::Template(depth))
             }
-            Quote::Backtick if self.lang == Lang::Js => find_unescaped(rest, '`'),
-            Quote::Regex => regex_close(rest),
-            _ => find(rest, &closer).map(|i| i + closer.chars().count()),
+            Quote::Regex => (self.closer(self.at).map(|c| c - self.at), quote),
+            _ => (
+                find(rest, &closer).map(|i| i + closer.chars().count()),
+                quote,
+            ),
         };
         let end = close.unwrap_or(rest.len());
         let content = end - close.map_or(0, |_| closer.chars().count());
@@ -229,6 +250,7 @@ impl<'a> Scanner<'a> {
         self.has_code |= has_content;
         self.code.push_str(&kept);
         self.at += end;
+        self.state = State::Str(quote);
         if close.is_some() {
             self.has_code = true;
             self.code.push_str(&closer);
@@ -254,7 +276,7 @@ impl<'a> Scanner<'a> {
             self.note_comment(doc);
             self.comment_text.push_str("/*");
             self.at += 2;
-            self.state = State::Block { doc };
+            self.state = State::Block { doc, depth: 1 };
             return false;
         }
         if let Some((quote, len)) = self.string_opener() {
@@ -293,8 +315,9 @@ impl<'a> Scanner<'a> {
             (_, '"') => Some((Quote::Double, 1)),
             (Lang::Python | Lang::Js | Lang::Go, '\'') => Some((Quote::Single, 1)),
             (Lang::Rust, '\'') => rust_char(self.rest()).map(|_| (Quote::Single, 1)),
-            (Lang::Js | Lang::Go, '`') => Some((Quote::Backtick, 1)),
-            (Lang::Js, '/') if self.regex_allowed() && regex_close(&self.rest()[1..]).is_some() => {
+            (Lang::Js, '`') => Some((Quote::Template(0), 1)),
+            (Lang::Go, '`') => Some((Quote::Backtick, 1)),
+            (Lang::Js, '/') if regex_follows(&self.code) && self.closer(self.at + 1).is_some() => {
                 Some((Quote::Regex, 1))
             }
             (Lang::Rust, 'r') if !self.after_ident() => {
@@ -304,34 +327,6 @@ impl<'a> Scanner<'a> {
             }
             _ => None,
         }
-    }
-
-    /// Whether a `/` here starts a regex literal rather than a division: what precedes it is
-    /// nothing, an operator, an opening bracket, or a keyword that takes an expression.
-    fn regex_allowed(&self) -> bool {
-        let code = self.code.trim_end();
-        let Some(last) = code.chars().last() else {
-            return true;
-        };
-        if code.ends_with("++") || code.ends_with("--") {
-            return false;
-        }
-        if "(,=:[!&|?{};+-*%<>~^".contains(last) {
-            return true;
-        }
-        let word: String = code
-            .chars()
-            .rev()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        [
-            "return", "typeof", "case", "do", "else", "in", "of", "throw", "new", "delete", "void",
-            "yield", "await",
-        ]
-        .contains(&word.as_str())
     }
 
     /// Whether the char before `at` continues an identifier, allowing the `b`/`c` string prefix.
@@ -353,21 +348,128 @@ fn rust_char(rest: &[char]) -> Option<usize> {
     }
 }
 
-/// Index just past the `/` closing a regex literal, outside any `[...]` class.
-fn regex_close(hay: &[char]) -> Option<usize> {
+/// Templates a line may nest before a backtick reads as text, so a crafted line cannot
+/// overflow the stack.
+const NEST: u32 = 32;
+
+/// Index just past the backtick closing a JS template, and the `${ }` depth left open. In the
+/// expression braces count and a string, comment, regex (`regex_follows`, closing on the line)
+/// or template on the same line is skipped whole; one left open at the line end still skews
+/// the depth. `closers` is the line's `regex_closers` from the same index as `hay`.
+fn template_close(
+    hay: &[char],
+    closers: &[Option<usize>],
+    mut depth: u32,
+    nested: u32,
+) -> (Option<usize>, u32) {
     let mut i = 0;
-    let mut class = false;
+    let mut seen = String::new();
     while i < hay.len() {
-        match hay[i] {
-            '\\' => i += 1,
-            '[' => class = true,
-            ']' => class = false,
-            '/' if !class => return Some(i + 1),
+        let rest = hay.len() - i - 1;
+        let mut track = true;
+        match (hay[i], depth) {
+            ('\\', 0) => i += 1,
+            ('`', 0) => return (Some(i + 1), 0),
+            ('$', 0) if hay.get(i + 1) == Some(&'{') => {
+                depth = 1;
+                i += 1;
+            }
+            ('{', 1..) => depth += 1,
+            ('}', 1..) => depth -= 1,
+            (q @ ('"' | '\''), 1..) => i += find_unescaped(&hay[i + 1..], q).unwrap_or(rest),
+            ('`', 1..) if nested < NEST => {
+                let inner = closers.get(i + 1..).unwrap_or(&[]);
+                i += template_close(&hay[i + 1..], inner, 0, nested + 1)
+                    .0
+                    .unwrap_or(rest);
+            }
+            ('/', 1..) if hay.get(i + 1) == Some(&'/') => return (None, depth),
+            ('/', 1..) if hay.get(i + 1) == Some(&'*') => {
+                i += find(&hay[i + 2..], "*/").map_or(rest, |j| j + 3);
+                track = false;
+            }
+            ('/', 1..) if regex_follows(&seen) => {
+                i += closers.get(i + 1).copied().flatten().unwrap_or(0);
+            }
             _ => {}
+        }
+        if let Some(&c) = hay.get(i).filter(|_| track) {
+            seen.push(c);
         }
         i += 1;
     }
-    None
+    (None, depth)
+}
+
+/// Chars to the end of a block comment or of the line, and the depth left open; `/*` nests
+/// only when `nests`, as in Rust.
+fn block_end(hay: &[char], mut depth: u32, nests: bool) -> (usize, u32) {
+    let mut i = 0;
+    while i < hay.len() && depth > 0 {
+        if hay[i..].starts_with(&['*', '/']) {
+            depth -= 1;
+            i += 2;
+        } else if nests && hay[i..].starts_with(&['/', '*']) {
+            depth += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (i, depth)
+}
+
+/// Whether a `/` after `code` starts a regex literal rather than a division: what precedes it
+/// is nothing, an operator, an opener, or a keyword that takes an expression, and not a postfix
+/// `++`, `--` or TypeScript `!`. The one rule for top-level code and for a `${ }` expression.
+fn regex_follows(code: &str) -> bool {
+    let code = code.trim_end();
+    let mut chars = code.chars().rev();
+    let Some(last) = chars.next() else {
+        return true;
+    };
+    let before = chars.next().unwrap_or(' ');
+    let postfix = match last {
+        '+' | '-' => before == last,
+        '!' => {
+            (before.is_alphanumeric() || "_)]".contains(before))
+                && !keyword(&code[..code.len() - 1])
+        }
+        _ => false,
+    };
+    !postfix && ("(,=:[!&|?{};+-*%<>~^".contains(last) || keyword(code))
+}
+
+/// Whether `code` ends in a keyword that takes an expression, as `return` does; `.new` is a
+/// member.
+fn keyword(code: &str) -> bool {
+    let head = code.trim_end_matches(|c: char| c.is_alphanumeric() || "_$#".contains(c));
+    !(head.ends_with('.') && !head.ends_with("..."))
+        && [
+            "return", "typeof", "case", "do", "else", "in", "of", "throw", "new", "delete", "void",
+            "yield", "await",
+        ]
+        .contains(&&code[head.len()..])
+}
+
+/// For each index, the length of the regex literal read from there outside a `[...]` class up
+/// to its closing `/`, by one backward pass, so a line is read once however many slashes or
+/// templates it holds; a length holds for any suffix, so a slice of the table serves one.
+fn regex_closers(hay: &[char]) -> Vec<Option<usize>> {
+    let n = hay.len();
+    let (mut out, mut class) = (vec![None; n + 1], vec![None; n + 1]);
+    let on = |k: Option<usize>, step: usize| k.map(|k| k + step);
+    for i in (0..n).rev() {
+        let (next, skip) = (i + 1, (i + 2).min(n));
+        (out[i], class[i]) = match hay[i] {
+            '\\' => (on(out[skip], 2), on(class[skip], 2)),
+            '[' => (on(class[next], 1), on(class[next], 1)),
+            ']' => (on(out[next], 1), on(out[next], 1)),
+            '/' => (Some(1), on(class[next], 1)),
+            _ => (on(out[next], 1), on(class[next], 1)),
+        };
+    }
+    out
 }
 
 /// Keywords an array literal may follow, as `return [` does.
@@ -473,6 +575,9 @@ mod tests {
             (Lang::Rust, "x /* a\n still\n */ y", &[Code, Comment, Code]),
             (Lang::Rust, "/**/ x", &[Code]),
             (Lang::Rust, "/**/", &[Comment]),
+            (Lang::Rust, "/* /*\n */ a\n */ b", &[Comment, Comment, Code]),
+            (Lang::Js, "/* /* */ b", &[Code]),
+            (Lang::Go, "/* /* */ x", &[Code]),
             (Lang::Js, "/// a\n/** b */\n// c", &[Comment, Doc, Comment]),
             (
                 Lang::Python,
@@ -565,6 +670,11 @@ mod tests {
                 &["const t = `", "`; x('') + \"\""],
             ),
             (
+                Lang::Js,
+                "const t = `${\n`}`}`; it('{')",
+                &["const t = `", "`; it('')"],
+            ),
+            (
                 Lang::Go,
                 "s := `raw\n{`\nr := '{'",
                 &["s := `", "`", "r := ''"],
@@ -616,11 +726,157 @@ mod tests {
                 &["/* eslint-disable", " y */"],
             ),
             (Lang::Rust, "// only", &["// only"]),
+            (
+                Lang::Js,
+                "const s = `${x /* ` */}`;\nit.only('b', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (Lang::Rust, "/* /* */ { */ x", &[" x/* /* */ { */"]),
+            (
+                Lang::Js,
+                "const t = `${1 /* { */}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${'}' + \"`\" + `}`}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${x // }`\n}`; it.only('a', f)",
+                &["const t = `", "`; it.only('', f)"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${s.replace(/\"/g, '&quot;')}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${u.replace(/^https?:\\/\\//, \"\")}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${a / b}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${n++ / \"/\".length}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const s = `${(done! / total!) * 100}% of ${n} / ${m}`;\nit.only('a', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const s = `${i-- / 2}px / ${n}`;\nit.only('a', f);",
+                &["const s = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${ /* c */ /\"/.test(s) }`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "x = done! / total / 2; it.only('a')",
+                &["x = done! / total / 2; it.only('')"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${s.replace(/* c */ /\"/g, \"\")}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${(()=>{return!/\"/.test(s)})()}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const p = `${(c.new / c.all * 100).toFixed(1)}% (${c.new}/${c.all})`;\nit('a', f);",
+                &["const p = ``;", "it('', f);"],
+            ),
+            (
+                Lang::Js,
+                "c.new / 2; it.only('a', f); p / 3",
+                &["c.new / 2; it.only('', f); p / 3"],
+            ),
+            (
+                Lang::Js,
+                "const c = [...typeof /\"/]; it.only('a', f);",
+                &["const c = [...typeof //]; it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "$new / 2; it.only('a', f); p / 3",
+                &["$new / 2; it.only('', f); p / 3"],
+            ),
+            (
+                Lang::Js,
+                "this.#new / 2; it.only('a', f); p / 3",
+                &["this.#new / 2; it.only('', f); p / 3"],
+            ),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();
             assert_eq!(got, *want, "{lang:?}: {text:?}");
         }
+    }
+
+    #[test]
+    fn templates_nested_past_the_cap_read_as_text_without_recursing() {
+        let deep = format!("x = `{}", "${`".repeat(20_000));
+        assert_eq!(code(Lang::Js, &deep), ["x = `"]);
+    }
+
+    #[test]
+    fn regex_closers_agree_with_a_forward_scan_on_every_short_line() {
+        fn forward(hay: &[char]) -> Option<usize> {
+            let (mut i, mut class) = (0, false);
+            while i < hay.len() {
+                match hay[i] {
+                    '\\' => i += 1,
+                    '[' => class = true,
+                    ']' => class = false,
+                    '/' if !class => return Some(i + 1),
+                    _ => {}
+                }
+                i += 1;
+            }
+            None
+        }
+        let alphabet = ['\\', '[', ']', '/', 'a'];
+        for len in 0..=7 {
+            for mut n in 0..alphabet.len().pow(len) {
+                let line: Vec<char> = (0..len)
+                    .map(|_| {
+                        let c = alphabet[n % alphabet.len()];
+                        n /= alphabet.len();
+                        c
+                    })
+                    .collect();
+                let table = regex_closers(&line);
+                for i in 0..=line.len() {
+                    assert_eq!(table[i], forward(&line[i..]), "{line:?} from {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_class_left_open_does_not_rescan_the_line_once_per_slash() {
+        let wide = format!("x = `${{{}", "(/[".repeat(50_000));
+        assert_eq!(code(Lang::Js, &wide).len(), 1);
+        let many = "a=`x${b}`;".repeat(20_000);
+        assert_eq!(code(Lang::Js, &many).len(), 1);
+        let long = format!("const re = /{}\\/*/;\nit.only('b', g);", "a".repeat(1030));
+        assert_eq!(code(Lang::Js, &long)[1], "it.only('', g);");
     }
 
     #[test]

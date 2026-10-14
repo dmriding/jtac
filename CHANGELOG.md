@@ -8,6 +8,13 @@ request moves them under a dated heading and bumps nothing.
 
 ### Fixed
 
+- (0.0.15) `JT-SUP-001` and `JT-TEST-002` count the copies of a multi-line attribute per item
+  it decorates, so a copy moved to another item is new (issue 17). The scanner follows `${ }`
+  depth in a JS template and `/* */` depth in a Rust block comment, so a closer inside either
+  no longer leaves the rest of the file in the wrong state (issue 18). A column-0 `#[cfg(test)]
+  mod` inside a test tail nests instead of resetting the tail's depth, as `scripts/loc-cap.sh`
+  reads it (issue 19). `JT-CI-001` reads a `#` line continuing a `"` or `'` scalar as text,
+  not a comment (issue 20).
 - (0.0.14) A ref under `refs/jtac/roots/` that is not `<xx>/<commit>` is skipped with a note
   instead of refusing `check`, `status`, and the hook in every clone that fetched it (issue
   30; DESIGN.md 9.6). Every git child jtac spawns runs without `GIT_CONFIG`, which steers

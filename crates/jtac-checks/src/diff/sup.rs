@@ -225,6 +225,26 @@ mod tests {
                 &[(6, "#[cfg_attr(")],
             ),
             (
+                "#[cfg_attr(\n    all(),\n    allow(x)\n)]\nfn a() {}\n#[cfg_attr(\n    any(),\n    allow(x)\n)]\nfn b() {}\n",
+                "#[cfg_attr(\n    any(),\n    allow(x)\n)]\nfn a() {}\n#[cfg_attr(\n    all(),\n    allow(x)\n)]\nfn b() {}\n",
+                &[(1, "#[cfg_attr("), (6, "#[cfg_attr(")],
+            ),
+            (
+                "#[allow(\n    dead_code, // a\n)]\nfn f() -> u8 { 1 }\n",
+                "#[allow(\n    dead_code, // b\n)]\nfn f() -> u8 { 2 }\n",
+                &[],
+            ),
+            (
+                "#[allow(\n    clippy::too_many_arguments,\n)]\nfn a(x: u8) {}\n",
+                "#[allow(\n    // wire format\n    clippy::too_many_arguments,\n)]\nfn a(x: u8, y: u8) {}\n",
+                &[],
+            ),
+            (
+                "#[allow(\n    dead_code,\n)]\nfn b() {}\n#[allow(\n    clippy::too_many_lines,\n)]\nfn a() {}\n",
+                "#[allow(\n    clippy::too_many_lines,\n)]\nfn b() {}\n",
+                &[(1, "#[allow(")],
+            ),
+            (
                 "",
                 "#[derive(Debug)]\nstruct S;\n#[allow(x)] // jtac-loc-exempt: no\nfn b() {}\n",
                 &[(3, "#[allow(x)] // jtac-loc-exempt: no")],

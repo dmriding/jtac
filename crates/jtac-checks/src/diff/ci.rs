@@ -47,6 +47,20 @@ static UNBLOCKS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// A GitLab script key opening a list.
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:before_|after_)?script:\s*$").expect("literal"));
+/// A `"` or `'` opening a scalar value after a key or a dash, past an anchor or tag; one at a
+/// line start continues a plain scalar and opens nothing, unless the line above was `BARE`.
+static QUOTE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:-\s+)*(?:(?:"[^"]*"|'[^']*'|[^\s:#"']+):\s+|-\s+)(?:[&!]\S+\s+)?(["'])"#)
+        .expect("literal")
+});
+/// A key, anchor or tag with its value on the next line.
+static BARE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:-\s*)*(?:(?:"[^"]*"|'[^']*'|[^\s:#"']+):\s*)?(?:[&!]\S+)?\s*(?:#.*)?$"#)
+        .expect("literal")
+});
+/// A `"` or `'` opening the value of the key above.
+static VALUE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*(?:[&!]\S+\s+)?(["'])"#).expect("literal"));
 /// A command key opening a block scalar.
 static BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -99,6 +113,53 @@ fn inside(text: &str) -> Vec<bool> {
             body
         })
         .collect()
+}
+
+/// Whether each line is shell to `check`: a block scalar's body, or the continuation of a
+/// `"` or `'` scalar opened above, where a leading `#` is text. Rows in
+/// `a_quoted_scalar_continuing_onto_a_hash_line_is_read` and
+/// `a_quoted_value_below_a_bare_key_or_dash_opens`.
+fn shell(text: &str) -> Vec<bool> {
+    let mut open: Option<char> = None;
+    let mut bare = false;
+    split_lines(text)
+        .into_iter()
+        .zip(inside(text))
+        .map(|(line, body)| {
+            let was = open.is_some();
+            let (from, quote) = match open {
+                Some(q) => (0, Some(q)),
+                None if body => (0, None),
+                None => QUOTE
+                    .captures(line)
+                    .or_else(|| bare.then(|| VALUE.captures(line)).flatten())
+                    .and_then(|c| c.get(1))
+                    .map_or((0, None), |m| (m.end(), m.as_str().chars().next())),
+            };
+            open = quote.filter(|&q| !closes(&line[from..], q));
+            let plain = line.trim_start();
+            if !(plain.is_empty() || plain.starts_with('#')) {
+                bare = open.is_none()
+                    && !body
+                    && BARE.is_match(line)
+                    && (bare || line.contains(':') || plain.starts_with('-'));
+            }
+            body || was
+        })
+        .collect()
+}
+
+/// Whether `s` closes an open `q` scalar: `\` escapes in `"`, a doubled quote in `'`.
+fn closes(s: &str, q: char) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && q == '"' {
+            chars.next();
+        } else if c == q && !(q == '\'' && chars.next_if_eq(&'\'').is_some()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether each Jenkinsfile line lies in a `'''` or `"""` string, where `//` is shell.
@@ -179,7 +240,7 @@ pub(crate) fn check(views: &[View]) -> Vec<Finding> {
         let body = v
             .change
             .new_text()
-            .map(if groovy { quoted } else { inside })
+            .map(if groovy { quoted } else { shell })
             .unwrap_or_default();
         let comment = |n: &u64, t: &str| {
             let at = usize::try_from(*n)
@@ -526,6 +587,187 @@ mod tests {
                     Some("steps:\n  - bash: |\n      bash -c 'cargo test\n      #' || true\n"),
                 ),
                 &[(4, "CI step may fail `#' || true`")],
+            ),
+        ];
+        table(rows);
+    }
+
+    #[test]
+    fn a_quoted_scalar_continuing_onto_a_hash_line_is_read() {
+        let rows: &[(Change, &[(u64, &str)])] = &[
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"bash -c 'cargo test\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: 'bash -c \"cargo test\n      #\" || true'\n"),
+                ),
+                &[(3, "CI step may fail `#\" || true'`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"echo \\\"a\n      #\\\" || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#\\\" || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: 'it''s\n      #'' || true'\n"),
+                ),
+                &[(3, "CI step may fail `#'' || true'`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: \"cargo test\"\n  # never || true\n"),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: |\n      \"a\n",
+                    Some("steps:\n  - run: |\n      \"a\n  # never || true\n"),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - name: Check\n      'static lifetimes\n    run: cargo test\n",
+                    Some(
+                        "steps:\n  - name: Check\n      'static lifetimes\n    run: cargo test\n  # never || true\n",
+                    ),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - \"run\": cargo test\n",
+                    Some("steps:\n  - \"run\": \"bash -c 'cargo test\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  - run: cargo test\n",
+                    Some(
+                        "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  # - run: cargo test || true\n  - run: cargo test\n",
+                    ),
+                ),
+                &[],
+            ),
+        ];
+        table(rows);
+    }
+
+    #[test]
+    fn a_quoted_value_below_a_bare_key_or_dash_opens() {
+        let rows: &[(Change, &[(u64, &str)])] = &[
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: &cmd \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some("steps:\n  - run:\n      \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(4, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some("steps:\n  - run: &c\n\n      \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - run:\n      # why\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - run:\n      !!str\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some(
+                        "steps:\n  - name: t\n    env:\n    \"run\": \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".gitlab-ci.yml",
+                    None,
+                    "job:\n  script:\n    - exit 1\n",
+                    Some(
+                        "job:\n  script:\n    - exit 1\n    -\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(6, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".gitlab-ci.yml",
+                    None,
+                    "job:\n  script:\n    - exit 1\n",
+                    Some(
+                        "job:\n  script:\n    - exit 1\n    - !!str\n      \"bash -c 'exit 1\n      #' || true\"\n",
+                    ),
+                ),
+                &[(6, "CI step may fail `#' || true\"`")],
             ),
         ];
         table(rows);
