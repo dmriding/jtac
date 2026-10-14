@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
 
-use jtac_checks::git::git;
+use jtac_checks::git::{git, quoted};
 use jtac_core::GitOid;
 use jtac_store::{PushOutcome, Store, ref_name};
 
@@ -73,6 +73,7 @@ fn commits(
     let rooted: BTreeSet<GitOid> = store
         .roots()
         .map_err(|e| e.to_string())?
+        .listed
         .into_iter()
         .map(|l| l.commit)
         .collect();
@@ -114,7 +115,8 @@ fn warning(remote: &str, refs: &[String], why: &str) -> String {
     );
     let _ = writeln!(
         s,
-        "next: git push {remote} 'refs/jtac/roots/*:refs/jtac/roots/*'"
+        "next: git push {} 'refs/jtac/roots/*:refs/jtac/roots/*'",
+        quoted(remote, "<remote>")
     );
     s
 }

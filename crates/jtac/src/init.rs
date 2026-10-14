@@ -6,7 +6,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use jtac_checks::git::git_with;
+use jtac_checks::git::{git_with, quoted};
 use jtac_core::{Action, Body, GitOid, LeverBody, Node, Sha256Digest, Ts};
 use jtac_policy::POLICY_PATH;
 use jtac_sign::{Identity, KeyRef};
@@ -234,8 +234,8 @@ fn key_step(out: &mut InitOutput, p: &Plan, dry: bool) -> Result<Option<Identity
     out.signers = id.as_ref().and_then(keydir::signers_line);
     let unread = match (&out.signers, id.as_ref().map(|i| &i.key)) {
         (None, Some(KeyRef::File(path))) => format!(
-            " (`ssh-keygen -y -f '{}'` prints the public key; prefix it with the email)",
-            slashes(path)
+            " (`ssh-keygen -y -f {}` prints the public key; prefix it with the email)",
+            quoted(&slashes(path), "<key path>")
         ),
         _ => String::new(),
     };
@@ -340,8 +340,9 @@ impl Refusal {
             "`.jtac/` is a protected path: jtac writes into it only as a directory of this \
              repository, never through a link that can point anywhere on the machine.",
             format!(
-                "Replace it with a directory, `rm '{path}' && mkdir '{path}'`, commit, then \
-                 run `jtac init` again."
+                "Replace it with a directory, `rm {q} && mkdir {q}`, commit, then run `jtac \
+                 init` again.",
+                q = quoted(&path, "<path>")
             ),
         )
     }

@@ -140,7 +140,9 @@ pub fn git_with(
 /// answer, not a broken pipe. Replace refs are never followed, the commit graph is never
 /// read, and a partial clone never fetches an object on demand: a `git replace --graft` or an
 /// edited graph file would show a history the root does not name, and a reader of evidence
-/// must not touch the network (`a_replace_graft_does_not_hide_the_change`).
+/// must not touch the network (`a_replace_graft_does_not_hide_the_change`). `GIT_CONFIG` is
+/// dropped: it steers `git config` alone, and a config read must see what `git push` sees
+/// (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
 pub fn git_output(
     repo: &Path,
     args: &[&str],
@@ -153,6 +155,7 @@ pub fn git_output(
     cmd.args(["-c", "core.commitGraph=false"])
         .args(args)
         .current_dir(repo)
+        .env_remove("GIT_CONFIG")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_NO_LAZY_FETCH", "1")
         .envs(env.iter().copied())
@@ -181,6 +184,24 @@ pub fn git_output(
         return Err(spawn(e));
     }
     Ok(out)
+}
+
+/// `word` as one `sh` argument inside a backtick span: as is when every character is plain,
+/// single-quoted otherwise, and `placeholder` when it holds a backtick, which no span can
+/// show, starts with `-`, which quoting does not stop git from reading as an option, or
+/// holds U+FFFD, the mark of bytes already lost. A ref, remote or path git accepts can hold
+/// `$(`, `;`, `#`, a quote or a backtick, and a message that names a command to run must
+/// not hand them to the shell or let them end the span
+/// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
+pub fn quoted(word: &str, placeholder: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:@+,%".contains(c);
+    if word.starts_with('-') || word.contains('`') || word.contains('\u{fffd}') {
+        placeholder.to_owned()
+    } else if !word.is_empty() && word.chars().all(plain) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 fn argv(args: &[&str]) -> Vec<String> {

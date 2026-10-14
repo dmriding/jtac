@@ -100,8 +100,10 @@ fn hook_to(repo: &Repo, remote: &str, stdin: &[u8], extra: &[(&str, &str)]) -> R
 
 /// A mirror remote deletes remote refs the clone lacks without a line on stdin, so a
 /// protected branch would go unjudged; the push is refused on `remote.<name>.mirror` in any
-/// of git's spellings, with empty stdin too. A push of a `refs/remotes/` ref by refspec is
-/// not a mirror and passes on its own merits.
+/// of git's spellings, with empty stdin too, and when `GIT_CONFIG` points `git config` at
+/// another file (issue 32; `git push` never reads it). The command the refusal names clears
+/// the key where it is set, a second value and a global copy included (issue 33). A push of
+/// a `refs/remotes/` ref by refspec is not a mirror and passes on its own merits.
 #[test]
 fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
     let Checked {
@@ -128,12 +130,136 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
         assert_eq!(ran.code, 2, "{spelling}, empty stdin: {}", ran.stderr);
     }
     repo.git(&["config", "--unset", "remote.origin.mirror"]);
+    repo.git(&[
+        "push",
+        "-q",
+        "origin",
+        &format!("{covered}:refs/heads/keep"),
+    ]);
+    repo.git(&["config", "remote.origin.mirror", "true"]);
+    let elsewhere = Repo::empty();
+    let empty = elsewhere.write("empty", b"");
+    let env = [("GIT_CONFIG", empty.to_str().unwrap())];
+    assert!(
+        !repo
+            .command_with("git", &["push", "origin"], &env)
+            .status
+            .success()
+    );
+    let kept = origin.command("git", &["rev-parse", "--verify", "-q", "refs/heads/keep"]);
+    assert!(
+        kept.status.success(),
+        "GIT_CONFIG hid the mirror: keep was deleted"
+    );
+    repo.git(&["config", "--add", "remote.origin.mirror", "yes"]);
+    let clears = |ran: Ran, ends: &str, env: &[(&str, &str)]| {
+        let (_, rest) = ran
+            .stderr
+            .split_once("Clear it: run `git config --file ")
+            .unwrap();
+        let (shown, rest) = rest
+            .split_once(" --unset-all remote.origin.mirror`.")
+            .unwrap();
+        let file = shown.trim_matches('\'').replace("'\\''", "'");
+        assert!(
+            ran.code == 2 && rest.contains("`git push origin <branch>`"),
+            "{}",
+            ran.stderr
+        );
+        assert!(
+            std::path::Path::new(&file).is_absolute() && file.ends_with(ends),
+            "{file}"
+        );
+        let cmd = format!("git config --file {shown} --unset-all remote.origin.mirror");
+        #[cfg(unix)]
+        let out = repo.command("sh", &["-c", &format!("cd sub && {cmd}")]);
+        #[cfg(not(unix))]
+        let out = repo.command(
+            "git",
+            &[
+                "-C",
+                "sub",
+                "config",
+                "--file",
+                &file,
+                "--unset-all",
+                "remote.origin.mirror",
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(hook(&repo, "", env).code, 0);
+    };
+    std::fs::create_dir_all(repo.path().join("sub")).unwrap();
+    clears(hook(&repo, "", &[]), "/.git/config", &[]);
+    let mirrored = b"[remote \"origin\"]\n\tmirror = true\n";
+    let global = elsewhere.write("gitconfig", mirrored);
+    let env = [("GIT_CONFIG_GLOBAL", global.to_str().unwrap())];
+    clears(hook(&repo, "", &env), "gitconfig", &env);
+    let included = elsewhere.write("included", mirrored);
+    repo.git(&["config", "include.path", included.to_str().unwrap()]);
+    clears(hook(&repo, "", &[]), "included", &[]);
+    #[cfg(unix)]
+    {
+        let odd = elsewhere.write("tab\thé'x", mirrored);
+        repo.git(&["config", "include.path", odd.to_str().unwrap()]);
+        clears(hook(&repo, "", &[]), "tab\thé'x", &[]);
+    }
+    repo.git(&["config", "--unset", "include.path"]);
+    let url = repo.git(&["remote", "get-url", "origin"]);
+    repo.git(&["remote", "add", "x;id;#", &url]);
+    repo.git(&["config", "remote.x;id;#.mirror", "true"]);
+    let ran = hook_to(&repo, "x;id;#", b"", &[]);
+    let want = "--unset-all 'remote.x;id;#.mirror'`. Then push branches by name, `git push \
+                'x;id;#' <branch>`";
+    assert!(ran.code == 2 && ran.stderr.contains(want), "{}", ran.stderr);
+    let out = repo.command(
+        "git",
+        &["-c", "remote.origin.mirror=true", "push", "origin"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let flag = "Clear it: drop `remote.origin.mirror` from the push's `-c` flags or `GIT_CONFIG_*` environment.";
+    assert!(!out.status.success() && stderr.contains(flag), "{stderr}");
     let ran = hook(
         &repo,
         &format!("refs/remotes/origin/keep {covered} refs/remotes/origin/keep {base}\n"),
         &[],
     );
     assert_eq!(ran.code, 0, "{}", ran.stderr);
+}
+
+/// A ref under `refs/jtac/roots/` nobody wrote through jtac is noise: the hook, `status`,
+/// and `check` keep judging and say what they skipped, once per push (issue 30).
+#[test]
+fn a_malformed_root_ref_is_skipped_with_a_note_not_a_refusal() {
+    let Checked {
+        repo,
+        base,
+        covered,
+        ..
+    } = checked();
+    let junk = "refs/jtac/roots/zz/junk";
+    repo.git(&["update-ref", junk, &base]);
+    let note = format!("skipped {junk}:");
+    let ran = hook(
+        &repo,
+        &format!(
+            "refs/heads/main {covered} refs/heads/main {base}\n\
+             refs/heads/feat {covered} refs/heads/feat {base}\n"
+        ),
+        &[],
+    );
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert_eq!(ran.stderr.matches(&note).count(), 1, "{}", ran.stderr);
+    let (ran, json) = status(&repo);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(json["notes"].to_string().contains(&note), "{json}");
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains(&note), "{}", ran.stdout);
 }
 
 /// A ref name git accepts and this release cannot read must refuse, never pass unjudged.
@@ -298,7 +424,7 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             "deleting a branch whose tip this clone lacks refuses, naming git fetch",
             format!("(delete) {z} refs/heads/side {unseen}\n"),
             1,
-            &["negotiation: Run `git fetch origin side`"],
+            &["negotiation: Run `git fetch origin refs/heads/side`"],
         ),
         row(
             "a tag passes without evidence",
@@ -352,13 +478,16 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             "an old oid this clone lacks refuses, naming git fetch",
             main(covered, &unseen),
             1,
-            &["negotiation: Run `git fetch origin main`"],
+            &["negotiation: Run `git fetch origin refs/heads/main`"],
         ),
         row(
             "an old oid this clone lacks refuses on an unprotected branch too",
             format!("refs/heads/side {covered} refs/heads/side {unseen}\n"),
             1,
-            &["half the fence", "negotiation: Run `git fetch origin side`"],
+            &[
+                "half the fence",
+                "negotiation: Run `git fetch origin refs/heads/side`",
+            ],
         ),
         row(
             "an orphan whose policy allows the rewind is still fenced by the branch",

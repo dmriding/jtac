@@ -111,7 +111,8 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
         Some((commit, _)) => (None, Some(commit)),
         None => (None, None),
     };
-    let covered = chain::covered(&repo, &store, &head)?;
+    let roots = store.roots().map_err(Refusal::store)?;
+    let covered = chain::covered(&repo, &roots, &head)?;
     let unpushed = match &upstream {
         Some(full) => repo::ahead(&repo, &head, full)
             .map_err(|e| Refusal::repository(&e))?

@@ -36,7 +36,9 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     };
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let existing = store.root(&head.commit).map_err(Refusal::store)?;
-    let covered = chain::covered(&repo, &store, &head)?;
+    let roots = store.roots().map_err(Refusal::store)?;
+    let mut notes: Vec<String> = roots.notes().collect();
+    let covered = chain::covered(&repo, &roots, &head)?;
     let nearest = chain::nearest(&repo, &covered, &head)?;
     let base =
         repo::base(&repo, &head, a.base.as_deref(), nearest.as_deref()).map_err(|e| {
@@ -49,7 +51,6 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let mut file_cache = store.cache();
     let cache: Option<&mut dyn Cache> = signer.as_ref().map(|_| &mut file_cache as &mut dyn Cache);
     let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref())?;
-    let mut notes = Vec::new();
     if let Some(why) = dirty {
         notes.push(format!(
             "the work tree is not HEAD's tree ({why}): the checks ran on it, the diff-integrity \

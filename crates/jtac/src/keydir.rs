@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use jtac_checks::git::git;
+use jtac_checks::git::{git, quoted};
 use jtac_sign::{Identity, KeyRef, ResolveError, SignError};
 
 use crate::identity::{git_config, resolved};
@@ -195,9 +195,9 @@ impl Refusal {
             "Roots are signed with SSHSIG through ssh-keygen; with no key, `jtac check` has \
              nothing to sign with and writes no root.",
             format!(
-                "Run `ssh-keygen -t ed25519 -N \"\" -f '{}'` yourself (install OpenSSH if it \
+                "Run `ssh-keygen -t ed25519 -N \"\" -f {}` yourself (install OpenSSH if it \
                  is missing), then `jtac init` again.",
-                path.to_string_lossy()
+                quoted(&path.to_string_lossy(), "<key path>")
             ),
         )
     }
@@ -222,9 +222,11 @@ impl Refusal {
             "init names a key in the global config only after ssh-keygen has read it, so a \
              broken file is never the key every repository signs with.",
             format!(
-                "Move the file aside, `mv '{path}' '{path}.bad'`, so init generates a fresh \
-                 key there; or name a key you have: `git config --global jtac.signingkey <path \
-                 to an SSH private key>`; then `jtac init` again."
+                "Move the file aside, `mv {} {}`, so init generates a fresh key there; or \
+                 name a key you have: `git config --global jtac.signingkey <path to an SSH \
+                 private key>`; then `jtac init` again.",
+                quoted(&path, "<key path>"),
+                quoted(&format!("{path}.bad"), "<key path>.bad")
             ),
         )
     }
@@ -235,7 +237,10 @@ impl Refusal {
             format!("could not set `jtac.signingkey` in the global git config: {err}."),
             "The key is named in the global config so every repository signs as the same \
              person; a key nobody names is a key `jtac check` never finds.",
-            format!("Run `git config --global jtac.signingkey '{value}'`, then `jtac init` again."),
+            format!(
+                "Run `git config --global jtac.signingkey {}`, then `jtac init` again.",
+                jtac_checks::git::quoted(value, "<key path>")
+            ),
         )
     }
 }

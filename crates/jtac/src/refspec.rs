@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use jtac_checks::git::git;
+use jtac_checks::git::{git, quoted};
 
 use crate::init::ask;
 use crate::refuse::Refusal;
@@ -56,14 +56,18 @@ impl Refusal {
     /// `--remote` names a remote this repository does not have.
     pub fn init_no_remote(name: &str, remotes: &[String]) -> Self {
         let other = match remotes.first() {
-            Some(r) => format!(", or name one it has: `jtac init --remote {r}`"),
+            Some(r) => format!(
+                ", or name one it has: `jtac init --remote {}`",
+                quoted(r, "<remote>")
+            ),
             None => String::new(),
         };
+        let q = quoted(name, "<remote>");
         ask(
-            format!("`--remote {name}`: this repository has no remote named `{name}`."),
+            format!("`--remote {q}`: this repository has no remote named `{q}`."),
             "init adds the evidence fetch refspec to one remote; a name git does not know \
              would leave the roots on the server unfetched while init reported it done.",
-            format!("Run `git remote add {name} <url>`, then `jtac init --remote {name}`{other}."),
+            format!("Run `git remote add {q} <url>`, then `jtac init --remote {q}`{other}."),
         )
     }
 
@@ -77,7 +81,10 @@ impl Refusal {
             ),
             "init adds the evidence fetch refspec to one remote, the one roots are pushed to; \
              guessing would fetch evidence from a remote nobody pushes it to.",
-            format!("Run `jtac init --remote {first}`, naming the remote you push to."),
+            format!(
+                "Run `jtac init --remote {}`, naming the remote you push to.",
+                quoted(first, "<remote>")
+            ),
         )
     }
 }

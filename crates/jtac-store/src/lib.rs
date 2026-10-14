@@ -16,7 +16,7 @@ use jtac_checks::git::{GitError, git};
 use jtac_core::{CanonicalError, ReadError};
 
 pub use cache::FileCache;
-pub use refs::{Listed, PushOutcome, Pushed, ref_name};
+pub use refs::{Listed, PushOutcome, Pushed, Roots, ref_name};
 
 /// One clone's store: `<git common dir>/jtac/`, shared by every linked worktree.
 #[derive(Clone, Debug)]

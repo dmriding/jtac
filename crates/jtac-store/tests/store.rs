@@ -115,7 +115,7 @@ fn a_root_written_on_one_clone_is_fetched_and_read_on_another() {
         assert_eq!(store_b.local_root(&id).unwrap(), None);
         assert_eq!(store_b.manifest(&id).unwrap(), None);
         assert_eq!(store_b.node(&leaf).unwrap(), None);
-        let listed = store_b.roots().unwrap();
+        let listed = store_b.roots().unwrap().listed;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].commit, root_a.commit);
         assert_eq!(
@@ -465,8 +465,12 @@ fn the_file_cache_round_trips_and_a_bad_file_is_a_miss() {
     assert!(cache.put(name, original).is_err());
 }
 
+/// A ref nobody wrote through jtac is noise: listing it as skipped keeps every reader
+/// judging the tip, and the writer's own refs still list (issue 30). Its name is the
+/// pusher's choice, so the command the note names must not run it through `sh`, and a
+/// name that is not UTF-8 is skipped like any other.
 #[test]
-fn roots_refuses_a_ref_in_the_namespace_the_writer_would_not_write() {
+fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     let repo = with_commit(&[]);
     let s = Store::open(repo.path()).unwrap();
     let head = repo.git(&["rev-parse", "HEAD"]);
@@ -485,11 +489,63 @@ fn roots_refuses_a_ref_in_the_namespace_the_writer_would_not_write() {
             "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
         ),
     ];
+    repo.git(&["update-ref", &good, &head]);
     for name in rows {
         repo.git(&["update-ref", name, &head]);
-        assert!(refused(&s.roots().unwrap_err()), "{name}");
+        let roots = s.roots().unwrap();
+        assert_eq!(roots.skipped, vec![name.as_bytes().to_vec()]);
+        assert_eq!(roots.listed.len(), 1, "{name}");
+        let note = roots.notes().next().unwrap();
+        assert!(
+            note.contains(name) && note.contains("git update-ref -d"),
+            "{note}"
+        );
         repo.git(&["update-ref", "-d", name]);
     }
-    repo.git(&["update-ref", &good, &head]);
-    assert_eq!(s.roots().unwrap().len(), 1);
+    let roots = s.roots().unwrap();
+    assert!(roots.skipped.is_empty() && roots.listed.len() == 1);
+    let plain = "refs/jtac/roots/zz/junk";
+    repo.git(&["update-ref", plain, &head]);
+    let note = s.roots().unwrap().notes().next().unwrap();
+    assert_eq!(
+        note.split('`').nth(1).unwrap(),
+        "git update-ref -d refs/jtac/roots/zz/junk",
+        "{note}"
+    );
+    repo.git(&["update-ref", "-d", plain]);
+    for hostile in [
+        "refs/jtac/roots/zz/$(touch${IFS}PWNED)/it's",
+        "refs/jtac/roots/zz/x`touch${IFS}PWNED`y",
+    ] {
+        repo.git(&["update-ref", hostile, &head]);
+        let note = s.roots().unwrap().notes().next().unwrap();
+        assert!(
+            !note.contains("touch") && !note.contains("zz/") && note.contains("for-each-ref"),
+            "{note}"
+        );
+        repo.git(&["update-ref", "-d", hostile]);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let raw = std::ffi::OsStr::from_bytes(b"refs/jtac/roots/zz/\xff");
+        let ok = std::process::Command::new("git")
+            .arg("update-ref")
+            .arg(raw)
+            .arg(&head)
+            .current_dir(repo.path())
+            .env_clear()
+            .envs(repo.env())
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let roots = s.roots().unwrap();
+        assert_eq!(roots.skipped, vec![b"refs/jtac/roots/zz/\xff".to_vec()]);
+        assert_eq!(roots.listed.len(), 1);
+        let note = roots.notes().next().unwrap();
+        assert!(
+            note.contains("git for-each-ref refs/jtac/roots/") && !note.contains("zz/"),
+            "{note}"
+        );
+    }
 }

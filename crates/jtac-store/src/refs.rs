@@ -4,7 +4,7 @@
 //! `commit-tree` honours `commit.gpgsign` and a gpg prompt would hang every root write;
 //! `i18n.commitEncoding` pinned because an `encoding` header would change the commit id.
 
-use jtac_checks::git::{GitError, git, git_output, git_with};
+use jtac_checks::git::{GitError, git, git_output, git_with, quoted};
 use jtac_core::{GitOid, Root, from_canonical};
 
 use crate::roots::StoredRoot;
@@ -141,19 +141,51 @@ pub struct Listed {
     pub root_commit: GitOid,
 }
 
+/// The namespace as read: the root refs, and the names under it that are not
+/// `<xx>/<commit>`, a name that is not UTF-8 included. Nobody writes those through jtac, so
+/// they are a note, never a reason to stop judging the tip; anyone with push access chooses
+/// them, so a note shows a name only when every character is plain, and names no command
+/// with a lossy name, which would delete another ref
+/// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roots {
+    /// In ref order.
+    pub listed: Vec<Listed>,
+    /// Full ref names as git printed them, in ref order.
+    pub skipped: Vec<Vec<u8>>,
+}
+
+impl Roots {
+    /// One note per skipped ref, for whichever command prints notes.
+    pub fn notes(&self) -> impl Iterator<Item = String> + '_ {
+        self.skipped
+            .iter()
+            .map(|raw| match std::str::from_utf8(raw) {
+                Ok(name) if quoted(name, "") == name => format!(
+                    "skipped {name}: not <xx>/<commit> under refs/jtac/roots/; `git update-ref -d \
+                 {name}` removes it here and `git push <remote> :{name}` on the remote"
+                ),
+                _ => "skipped a ref under refs/jtac/roots/ whose name this note cannot show; `git \
+                  for-each-ref refs/jtac/roots/` prints it, `git update-ref -d <ref>` removes \
+                  it here and `git push <remote> :<ref>` on the remote"
+                    .to_owned(),
+            })
+    }
+}
+
 impl Store {
-    /// Every root ref in this clone, in ref order.
-    pub fn roots(&self) -> Result<Vec<Listed>, StoreError> {
+    /// Every root ref in this clone, in ref order, and every name skipped.
+    pub fn roots(&self) -> Result<Roots, StoreError> {
         let repo = self.repo();
         let format = trimmed(git(repo, &["rev-parse", "--show-object-format"])?)?;
-        let out = trimmed(git(
+        let out = git(
             repo,
             &[
                 "for-each-ref",
                 "--format=%(refname) %(objectname)",
                 NAMESPACE,
             ],
-        )?)?;
+        )?;
         let oid = |hex: &str| -> Result<GitOid, StoreError> {
             format!("{format}:{hex}")
                 .parse()
@@ -161,28 +193,32 @@ impl Store {
                     what: format!("{hex} is not a {format} object id"),
                 })
         };
-        out.lines()
-            .map(|line| {
-                let (name, object) = line.split_once(' ').ok_or_else(|| StoreError::Output {
-                    what: format!("for-each-ref line {line:?}"),
-                })?;
-                let commit = name
-                    .strip_prefix(NAMESPACE)
-                    .and_then(|tail| tail.split_once('/'))
-                    .filter(|(shard, hex)| {
-                        shard.len() == 2 && hex.starts_with(shard) && !hex.contains('/')
-                    })
-                    .and_then(|(_, hex)| oid(hex).ok())
-                    .ok_or_else(|| StoreError::Ref {
-                        name: name.to_owned(),
-                        what: "the ref is not <xx>/<commit> for this repository's format".into(),
-                    })?;
-                Ok(Listed {
+        let mut roots = Roots::default();
+        for raw in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            let Ok(line) = std::str::from_utf8(raw) else {
+                let name = raw.split(|b| *b == b' ').next().unwrap_or_default();
+                roots.skipped.push(name.to_vec());
+                continue;
+            };
+            let (name, object) = line.split_once(' ').ok_or_else(|| StoreError::Output {
+                what: format!("for-each-ref line {line:?}"),
+            })?;
+            let commit = name
+                .strip_prefix(NAMESPACE)
+                .and_then(|tail| tail.split_once('/'))
+                .filter(|(shard, hex)| {
+                    shard.len() == 2 && hex.starts_with(shard) && !hex.contains('/')
+                })
+                .and_then(|(_, hex)| oid(hex).ok());
+            match commit {
+                Some(commit) => roots.listed.push(Listed {
                     commit,
                     root_commit: oid(object)?,
-                })
-            })
-            .collect()
+                }),
+                None => roots.skipped.push(name.as_bytes().to_vec()),
+            }
+        }
+        Ok(roots)
     }
 
     /// Push the root refs for `commits` to `remote`, never forced, with `env` on the child git

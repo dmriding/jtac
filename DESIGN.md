@@ -325,6 +325,7 @@ refs/jtac/roots/<first two hex of commit>/<commit>
 ```
 
 - One ref per covered tip means no contention between developers pushing different tips at once. Two machines that each check the same tip both write a root for it, and the second push is rejected as a non-fast-forward: the remote already holds a root for that commit, which is reported and is not a failure of the gate.
+- A ref under the namespace that is not `<xx>/<commit>` was not written by jtac. Readers skip it and say so in a note; it never stops the tip from being judged, since the fetch refspec would otherwise spread one stray ref to every clone as a refusal.
 - `jtac init` adds the fetch refspec `+refs/jtac/*:refs/jtac/*` to the remote. It does not add a push refspec, because that would change what a bare `git push` does.
 - The `pre-push` hook pushes the root refs for the commits being pushed, in a separate `git push` with an environment guard against recursion.
 - If the root push fails, the developer's push still proceeds and jtac warns loudly. The commits will read as absent until the roots are pushed. A strict mode that blocks instead is a policy option.
