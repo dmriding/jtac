@@ -489,7 +489,7 @@ Hook rules:
 
 - A hook's stdout is a protocol wire. Nothing prints to stdout except the protocol. Diagnostics go to stderr.
 - A hook that errors internally fails closed for push and open for the advisory.
-- `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it.
+- `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it; a file that ends with that line is kept, and one git cannot execute is made executable. `.jtac` as a symlink is refused: nothing is written through a link.
 - A hook file is `#!/bin/sh`, a marker line that names its version, and `exec '<absolute jtac>' hook pre-push "$@"`: absolute path, single quotes. `jtac hook pre-push` is the entry point and reads what git writes to its stdin.
 
 ### 11.4 Command classification

@@ -1,6 +1,8 @@
 //! The `pre-push` file `jtac init` installs (DESIGN.md section 11.3, hook rules): `#!/bin/sh`,
 //! the version marker, and an `exec` of this binary by absolute path in single quotes. A file
-//! jtac did not write is never edited; its owner gets the line to add.
+//! jtac did not write is never edited; its owner gets the line to add, and a file that ends
+//! with that line is kept. A hook git cannot execute is a gate that is not there, so the mode
+//! is judged with the bytes (`only_a_file_jtac_wrote_or_one_that_execs_it_is_kept`).
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +19,13 @@ pub const MARKER: &str = "# jtac-hook v1";
 pub enum Found {
     /// Nothing.
     Absent,
-    /// A regular file with these bytes.
-    File(Vec<u8>),
+    /// A regular file with these bytes, and whether git can run it.
+    File {
+        /// Its bytes.
+        bytes: Vec<u8>,
+        /// Any execute bit; always true where there is none.
+        executable: bool,
+    },
     /// A symlink, a directory, or anything else jtac did not write.
     Other,
 }
@@ -32,6 +39,8 @@ pub enum Install {
     Write,
     /// A hook jtac wrote, naming a binary that moved.
     Rewrite,
+    /// The right file, not executable.
+    Chmod,
 }
 
 /// The `exec` line that hands git's arguments and stdin to `jtac hook pre-push`.
@@ -47,8 +56,9 @@ pub fn script(exe: &str) -> Result<String, Refusal> {
     Ok(format!("#!/bin/sh\n{MARKER}\n{}\n", exec_line(exe)))
 }
 
-/// Keep, write, or rewrite; `None` when the file is not one jtac wrote. A file with the marker
-/// and anything beyond the three lines was edited by hand and is not rewritten.
+/// Keep, write, rewrite, or chmod; `None` when the file is not one jtac wrote and does not
+/// end with the exec line. A file with the marker and anything beyond the three lines was
+/// edited by hand and is not rewritten.
 pub fn judge(found: &Found, want: &str) -> Option<Install> {
     let ours = |text: &str| {
         let lines: Vec<&str> = text.lines().collect();
@@ -57,11 +67,25 @@ pub fn judge(found: &Found, want: &str) -> Option<Install> {
                 && exec.starts_with("exec '")
                 && exec.ends_with("' hook pre-push \"$@\""))
     };
-    match found {
-        Found::Absent => Some(Install::Write),
-        Found::File(bytes) if bytes == want.as_bytes() => Some(Install::Keep),
-        Found::File(bytes) if std::str::from_utf8(bytes).is_ok_and(ours) => Some(Install::Rewrite),
-        Found::File(_) | Found::Other => None,
+    let exec = want.lines().nth(2).unwrap_or_default();
+    let ends_with_exec =
+        |text: &str| text.lines().rev().find(|l| !l.trim().is_empty()) == Some(exec);
+    let (bytes, executable) = match found {
+        Found::Absent => return Some(Install::Write),
+        Found::Other => return None,
+        Found::File { bytes, executable } => (bytes, *executable),
+    };
+    let text = std::str::from_utf8(bytes).ok()?;
+    if bytes == want.as_bytes() || ends_with_exec(text) {
+        Some(if executable {
+            Install::Keep
+        } else {
+            Install::Chmod
+        })
+    } else if ours(text) {
+        Some(Install::Rewrite)
+    } else {
+        None
     }
 }
 
@@ -95,10 +119,24 @@ pub fn read(path: &Path) -> Result<Found, Refusal> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Found::Absent),
         Err(e) => Err(Refusal::init_io("the pre-push hook", path, &e)),
         Ok(m) if m.is_file() => std::fs::read(path)
-            .map(Found::File)
+            .map(|bytes| Found::File {
+                bytes,
+                executable: executable(&m),
+            })
             .map_err(|e| Refusal::init_io("the pre-push hook", path, &e)),
         Ok(_) => Ok(Found::Other),
     }
+}
+
+#[cfg(unix)]
+fn executable(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    m.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// Write `text` at `path`, executable, creating the hooks directory.
@@ -108,11 +146,18 @@ pub fn write(path: &Path, text: &str) -> Result<(), Refusal> {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
     std::fs::write(path, text).map_err(io)?;
+    chmod(path)
+}
+
+/// Make `path` executable where a mode exists.
+pub fn chmod(path: &Path) -> Result<(), Refusal> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(io)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| Refusal::init_io("the pre-push hook", path, &e))?;
     }
+    let _ = path;
     Ok(())
 }
 
@@ -128,7 +173,8 @@ impl Refusal {
              rewriting it would drop whatever it enforces. Do not delete it to get past this.",
             format!(
                 "Add `{}` as the last line of `{}` (a hook that reads stdin before it leaves \
-                 jtac no refs to judge), then run `jtac init` again.",
+                 jtac no refs to judge), then run `jtac init` again: a file that ends with \
+                 that line is kept.",
                 exec_line(exe),
                 path.to_string_lossy()
             ),
@@ -164,13 +210,31 @@ mod tests {
     }
 
     #[test]
-    fn only_a_file_jtac_wrote_is_kept_or_rewritten() {
+    fn only_a_file_jtac_wrote_or_one_that_execs_it_is_kept() {
         let want = script(EXE).unwrap();
         let moved = script("/workspace/old/jtac").unwrap();
-        let file = |s: &str| Found::File(s.as_bytes().to_vec());
+        let file = |s: &str| Found::File {
+            bytes: s.as_bytes().to_vec(),
+            executable: true,
+        };
+        let plain = |s: &str| Found::File {
+            bytes: s.as_bytes().to_vec(),
+            executable: false,
+        };
+        let integrated = format!("#!/bin/sh\necho mine\n{}\n", exec_line(EXE));
         let rows = [
             (Found::Absent, Some(Install::Write)),
             (file(&want), Some(Install::Keep)),
+            (plain(&want), Some(Install::Chmod)),
+            (file(&integrated), Some(Install::Keep)),
+            (file(&format!("{integrated}\n\n")), Some(Install::Keep)),
+            (plain(&integrated), Some(Install::Chmod)),
+            (
+                file(&integrated.replace("/workspace/bin", "/workspace/old")),
+                None,
+            ),
+            (file(&format!("{integrated}echo after\n")), None),
+            (plain(&moved), Some(Install::Rewrite)),
             (file(&moved), Some(Install::Rewrite)),
             (file(&moved.replace("v1", "v2")), Some(Install::Rewrite)),
             (file(&moved.replace('\n', "\r\n")), Some(Install::Rewrite)),
@@ -183,7 +247,13 @@ mod tests {
             (file(&moved.replace("#!/bin/sh", "#!/bin/bash")), None),
             (file(&moved.replace("pre-push", "pre-commit")), None),
             (file("#!/bin/sh\nexit 0\n"), None),
-            (Found::File(vec![0xff, 0xfe]), None),
+            (
+                Found::File {
+                    bytes: vec![0xff, 0xfe],
+                    executable: true,
+                },
+                None,
+            ),
             (Found::Other, None),
         ];
         for (found, install) in rows {

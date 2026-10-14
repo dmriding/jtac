@@ -15,11 +15,21 @@ use crate::rootpush::{GUARD, Range};
 use crate::{coverage, repo, rootpush, update};
 
 /// What the hook wrote to stderr and how it exited: 0 lets the push proceed, 1 refuses it,
-/// 2 could not answer, which also refuses.
-pub fn pre_push(cwd: &Path, remote: &str, _url: &str, stdin: &str) -> (String, u8) {
+/// 2 could not answer, which also refuses. Stdin that could not be read is 2: an unread
+/// line is an unjudged ref (`non_utf8_stdin_refuses_rather_than_passes`).
+pub fn pre_push(
+    cwd: &Path,
+    remote: &str,
+    _url: &str,
+    stdin: &Result<String, String>,
+) -> (String, u8) {
     if std::env::var_os(GUARD).is_some_and(|v| v == "1") {
         return (String::new(), 0);
     }
+    let stdin = match stdin {
+        Ok(text) => text,
+        Err(why) => return (Refusal::hook_stdin(why).text(), 2),
+    };
     match judge(cwd, remote, stdin) {
         Ok(out) => out,
         Err(r) => (r.text(), 2),
@@ -200,6 +210,20 @@ fn passed(p: &Pass, tip: &str) -> String {
 }
 
 impl Refusal {
+    /// Stdin could not be read as text, so no line can be judged.
+    fn hook_stdin(why: &str) -> Self {
+        Self {
+            kind: "negotiation",
+            what: format!("`jtac hook pre-push` could not read its stdin: {why}."),
+            why: "The hook judges every ref git is about to push; a line it cannot read is a ref \
+                  it cannot judge, and an unjudged ref must not pass."
+                .to_owned(),
+            how: "Ref names this release reads are UTF-8: rename the ref with `git branch -m \
+                  <old> <new>`, then push again."
+                .to_owned(),
+        }
+    }
+
     /// A line on the hook's stdin that is not what git writes.
     fn hook_line(line: &str) -> Self {
         Self {
@@ -376,6 +400,7 @@ mod tests {
         };
         let rows = [
             (Refusal::hook_line("x"), "negotiation"),
+            (Refusal::hook_stdin("it is not UTF-8"), "negotiation"),
             (Refusal::verifier(&spawn), "negotiation"),
             (Refusal::push(&Refuse::Absent, &at), "negotiation"),
             (Refusal::push(&Refuse::Unknown, &at), "negotiation"),

@@ -74,10 +74,10 @@ fn jtac(repo: &Repo, args: &[&str]) -> Ran {
 
 /// The hook as git runs it for `origin`: remote and URL as arguments, the ref lines on stdin.
 fn hook(repo: &Repo, stdin: &str, extra: &[(&str, &str)]) -> Ran {
-    hook_to(repo, "origin", stdin, extra)
+    hook_to(repo, "origin", stdin.as_bytes(), extra)
 }
 
-fn hook_to(repo: &Repo, remote: &str, stdin: &str, extra: &[(&str, &str)]) -> Ran {
+fn hook_to(repo: &Repo, remote: &str, stdin: &[u8], extra: &[(&str, &str)]) -> Ran {
     let mut child = Command::new(env!("CARGO_BIN_EXE_jtac"))
         .args([
             "hook",
@@ -94,13 +94,29 @@ fn hook_to(repo: &Repo, remote: &str, stdin: &str, extra: &[(&str, &str)]) -> Ra
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
     Ran::of(child.wait_with_output().unwrap())
+}
+
+/// A ref name git accepts and this release cannot read must refuse, never pass unjudged.
+#[test]
+fn non_utf8_stdin_refuses_rather_than_passes() {
+    let Checked {
+        origin: _origin,
+        repo,
+        base,
+        covered,
+    } = checked();
+    let mut stdin = b"refs/heads/caf\xe9 ".to_vec();
+    stdin.extend_from_slice(format!("{covered} refs/heads/caf\u{e9} {base}\n").as_bytes());
+    let ran = hook_to(&repo, "origin", &stdin, &[]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("could not read its stdin"),
+        "{}",
+        ran.stderr
+    );
+    assert!(ran.stderr.contains("negotiation: "), "{}", ran.stderr);
 }
 
 /// The script `jtac init` writes, pointing at the binary under test.
@@ -394,7 +410,7 @@ fn every_line_git_can_hand_the_hook_is_judged_as_section_11_3_says() {
         *base,
         "the hook never pushes code"
     );
-    let lost = hook_to(&c.repo, "nowhere", &main(covered, base), &[]);
+    let lost = hook_to(&c.repo, "nowhere", main(covered, base).as_bytes(), &[]);
     assert_eq!(
         lost.code, 0,
         "a root push that fails never refuses: {}",

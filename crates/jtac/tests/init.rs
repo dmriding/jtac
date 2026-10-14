@@ -413,6 +413,62 @@ fn a_foreign_hook_refuses_with_the_exec_line_and_is_left_alone() {
         !env.repo.path().join(".jtac").exists(),
         "a refusal writes nothing"
     );
+    let integrated = format!("#!/bin/sh\necho mine\n{line}\n");
+    std::fs::write(&hook, &integrated).unwrap();
+    executable(&hook);
+    let ran = env.init(&[]);
+    assert!(ran.stdout.contains("kept pre-push hook"), "{}", ran.stdout);
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), integrated);
+}
+
+#[cfg(unix)]
+fn executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(not(unix))]
+fn executable(_: &Path) {}
+
+/// Git skips a hook it cannot execute; init treats the right bytes with the wrong mode as
+/// a step to do, on the first run and on any later one.
+#[cfg(unix)]
+#[test]
+fn a_hook_git_cannot_execute_is_made_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    env.init(&[]);
+    let hook = env.repo.path().join(".git").join("hooks").join("pre-push");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let ran = env.init(&[]);
+    assert!(
+        ran.stdout.contains("wrote pre-push hook") && ran.stdout.contains("made executable"),
+        "{}",
+        ran.stdout
+    );
+    let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
+    assert_eq!(mode & 0o111, 0o111, "{mode:o}");
+    assert_eq!(
+        env.objects().len(),
+        2,
+        "the chmod is a change the lever records"
+    );
+}
+
+/// `create_new` guards the file name only; the directory it sits in must be this
+/// repository's own.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_jtac_directory_is_refused_and_nothing_lands_behind_it() {
+    let env = Env::new();
+    let outside = Repo::empty();
+    std::os::unix::fs::symlink(outside.path(), env.repo.path().join(".jtac")).unwrap();
+    let ran = env.jtac(&["init"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stderr.contains("is a symlink"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("negotiation: "), "{}", ran.stderr);
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    assert!(!env.key().exists(), "a refusal writes nothing");
 }
 
 #[test]

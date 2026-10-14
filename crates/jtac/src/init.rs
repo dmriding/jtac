@@ -70,6 +70,10 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     let key = keydir::plan(&repo)?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let policy_path = repo.join(POLICY_PATH);
+    let jtac_dir = repo.join(".jtac");
+    if jtac_dir.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+        return Err(Refusal::init_symlink(&jtac_dir));
+    }
     let policy = match policy_path.symlink_metadata() {
         Ok(_) => None,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -141,6 +145,12 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
     let hook = slashes(&p.hook);
     match p.install {
         Install::Keep => out.kept("hook", format!("pre-push hook {hook}")),
+        Install::Chmod => {
+            if !dry {
+                hookfile::chmod(&p.hook)?;
+            }
+            out.wrote("hook", format!("pre-push hook {hook} (made executable)"));
+        }
         Install::Write | Install::Rewrite => {
             if !dry {
                 hookfile::write(&p.hook, &p.script)?;
@@ -313,6 +323,20 @@ pub(crate) fn slashes(path: &Path) -> String {
 }
 
 impl Refusal {
+    /// `.jtac` is a symlink, so a write into it would land wherever it points.
+    pub fn init_symlink(path: &Path) -> Self {
+        let path = slashes(path);
+        ask(
+            format!("`{path}` is a symlink."),
+            "`.jtac/` is a protected path: jtac writes into it only as a directory of this \
+             repository, never through a link that can point anywhere on the machine.",
+            format!(
+                "Replace it with a directory, `rm '{path}' && mkdir '{path}'`, commit, then \
+                 run `jtac init` again."
+            ),
+        )
+    }
+
     /// A file or directory init needed could not be read or written.
     pub fn init_io(what: &str, path: &Path, err: &std::io::Error) -> Self {
         let path = slashes(path);
@@ -348,6 +372,7 @@ mod tests {
         let path = Path::new("/workspace/.git/hooks/pre-push");
         let rows = [
             Refusal::init_io("the store", path, &io),
+            Refusal::init_symlink(path),
             Refusal::init_no_remote("up", &["origin".into()]),
             Refusal::init_no_remote("up", &[]),
             Refusal::init_which_remote(&["up".into(), "down".into()]),

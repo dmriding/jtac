@@ -100,7 +100,7 @@ fn version() -> String {
     format!("jtac {}", env!("CARGO_PKG_VERSION"))
 }
 
-fn run(args: &[String], cwd: &Path, stdin: &str) -> Run {
+fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
     let json = args.iter().any(|a| a == "--json");
     let cli =
         match Cli::try_parse_from(std::iter::once("jtac").chain(args.iter().map(String::as_str))) {
@@ -132,9 +132,13 @@ fn run(args: &[String], cwd: &Path, stdin: &str) -> Run {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let mut stdin = String::new();
+    let mut stdin = Ok(String::new());
     if args.first().is_some_and(|a| a == "hook") {
-        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+        let mut bytes = Vec::new();
+        stdin = match std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes) {
+            Ok(_) => String::from_utf8(bytes).map_err(|_| "it is not UTF-8".to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
     }
     let ran = run(&args, &cwd, &stdin);
     print!("{}", ran.stdout);
@@ -153,7 +157,7 @@ mod tests {
     #[test]
     fn no_args_and_version_flags_print_the_version() {
         for args in [&[][..], &["--version"], &["-V"]] {
-            let ran = run(&words(args), Path::new("."), "");
+            let ran = run(&words(args), Path::new("."), &Ok(String::new()));
             assert_eq!(ran, Run::out(format!("{}\n", version()), 0), "{args:?}");
         }
     }
@@ -169,7 +173,7 @@ mod tests {
             (&["check", "--help"], "--preview"),
         ];
         for (args, want) in rows {
-            let ran = run(&words(args), Path::new("."), "");
+            let ran = run(&words(args), Path::new("."), &Ok(String::new()));
             assert_eq!((ran.code, ran.stderr.as_str()), (0, ""), "{args:?}");
             assert!(ran.stdout.contains(want), "{args:?}: {}", ran.stdout);
         }
@@ -183,7 +187,7 @@ mod tests {
             (&["check", "--nope", "--json"], "\"error\""),
         ];
         for (args, want) in rows {
-            let ran = run(&words(args), Path::new("."), "");
+            let ran = run(&words(args), Path::new("."), &Ok(String::new()));
             assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{args:?}");
             assert!(ran.stderr.contains(want), "{args:?}: {}", ran.stderr);
         }
