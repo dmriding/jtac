@@ -158,8 +158,9 @@ impl<'a> Scanner<'a> {
         &self.chars[self.at..]
     }
 
+    /// Index just past the `/` closing a regex read from `i`.
     fn closer(&self, i: usize) -> Option<usize> {
-        self.closers.get(i).copied().flatten()
+        self.closers.get(i).copied().flatten().map(|k| i + k)
     }
 
     fn starts(&self, s: &str) -> bool {
@@ -219,7 +220,8 @@ impl<'a> Scanner<'a> {
                 quote,
             ),
             Quote::Template(depth) => {
-                let (close, depth) = template_close(rest, depth, 0);
+                let closers = self.closers.get(self.at..).unwrap_or(&[]);
+                let (close, depth) = template_close(rest, closers, depth, 0);
                 (close, Quote::Template(depth))
             }
             Quote::Regex => (self.closer(self.at).map(|c| c - self.at), quote),
@@ -353,11 +355,15 @@ const NEST: u32 = 32;
 /// Index just past the backtick closing a JS template, and the `${ }` depth left open. In the
 /// expression braces count and a string, comment, regex (`regex_follows`, closing on the line)
 /// or template on the same line is skipped whole; one left open at the line end still skews
-/// the depth.
-fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, u32) {
+/// the depth. `closers` is the line's `regex_closers` from the same index as `hay`.
+fn template_close(
+    hay: &[char],
+    closers: &[Option<usize>],
+    mut depth: u32,
+    nested: u32,
+) -> (Option<usize>, u32) {
     let mut i = 0;
     let mut seen = String::new();
-    let closers = regex_closers(hay);
     while i < hay.len() {
         let rest = hay.len() - i - 1;
         let mut track = true;
@@ -372,7 +378,8 @@ fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, 
             ('}', 1..) => depth -= 1,
             (q @ ('"' | '\''), 1..) => i += find_unescaped(&hay[i + 1..], q).unwrap_or(rest),
             ('`', 1..) if nested < NEST => {
-                i += template_close(&hay[i + 1..], 0, nested + 1)
+                let inner = closers.get(i + 1..).unwrap_or(&[]);
+                i += template_close(&hay[i + 1..], inner, 0, nested + 1)
                     .0
                     .unwrap_or(rest);
             }
@@ -381,7 +388,9 @@ fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, 
                 i += find(&hay[i + 2..], "*/").map_or(rest, |j| j + 3);
                 track = false;
             }
-            ('/', 1..) if regex_follows(&seen) => i = closers[i + 1].map_or(i, |c| c - 1),
+            ('/', 1..) if regex_follows(&seen) => {
+                i += closers.get(i + 1).copied().flatten().unwrap_or(0);
+            }
             _ => {}
         }
         if let Some(&c) = hay.get(i).filter(|_| track) {
@@ -434,8 +443,8 @@ fn regex_follows(code: &str) -> bool {
 /// Whether `code` ends in a keyword that takes an expression, as `return` does; `.new` is a
 /// member.
 fn keyword(code: &str) -> bool {
-    let head = code.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
-    !head.ends_with('.')
+    let head = code.trim_end_matches(|c: char| c.is_alphanumeric() || "_$#".contains(c));
+    !(head.ends_with('.') && !head.ends_with("..."))
         && [
             "return", "typeof", "case", "do", "else", "in", "of", "throw", "new", "delete", "void",
             "yield", "await",
@@ -443,19 +452,21 @@ fn keyword(code: &str) -> bool {
         .contains(&&code[head.len()..])
 }
 
-/// For each index, the index just past the `/` closing a regex literal read from there outside
-/// a `[...]` class, by one backward pass, so a line is read once however many slashes it holds.
+/// For each index, the length of the regex literal read from there outside a `[...]` class up
+/// to its closing `/`, by one backward pass, so a line is read once however many slashes or
+/// templates it holds; a length holds for any suffix, so a slice of the table serves one.
 fn regex_closers(hay: &[char]) -> Vec<Option<usize>> {
     let n = hay.len();
     let (mut out, mut class) = (vec![None; n + 1], vec![None; n + 1]);
+    let on = |k: Option<usize>, step: usize| k.map(|k| k + step);
     for i in (0..n).rev() {
         let (next, skip) = (i + 1, (i + 2).min(n));
         (out[i], class[i]) = match hay[i] {
-            '\\' => (out[skip], class[skip]),
-            '[' => (class[next], class[next]),
-            ']' => (out[next], out[next]),
-            '/' => (Some(next), class[next]),
-            _ => (out[next], class[next]),
+            '\\' => (on(out[skip], 2), on(class[skip], 2)),
+            '[' => (on(class[next], 1), on(class[next], 1)),
+            ']' => (on(out[next], 1), on(out[next], 1)),
+            '/' => (Some(1), on(class[next], 1)),
+            _ => (on(out[next], 1), on(class[next], 1)),
         };
     }
     out
@@ -796,6 +807,21 @@ mod tests {
                 "c.new / 2; it.only('a', f); p / 3",
                 &["c.new / 2; it.only('', f); p / 3"],
             ),
+            (
+                Lang::Js,
+                "const c = [...typeof /\"/]; it.only('a', f);",
+                &["const c = [...typeof //]; it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "$new / 2; it.only('a', f); p / 3",
+                &["$new / 2; it.only('', f); p / 3"],
+            ),
+            (
+                Lang::Js,
+                "this.#new / 2; it.only('a', f); p / 3",
+                &["this.#new / 2; it.only('', f); p / 3"],
+            ),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();
@@ -810,9 +836,45 @@ mod tests {
     }
 
     #[test]
+    fn regex_closers_agree_with_a_forward_scan_on_every_short_line() {
+        fn forward(hay: &[char]) -> Option<usize> {
+            let (mut i, mut class) = (0, false);
+            while i < hay.len() {
+                match hay[i] {
+                    '\\' => i += 1,
+                    '[' => class = true,
+                    ']' => class = false,
+                    '/' if !class => return Some(i + 1),
+                    _ => {}
+                }
+                i += 1;
+            }
+            None
+        }
+        let alphabet = ['\\', '[', ']', '/', 'a'];
+        for len in 0..=7 {
+            for mut n in 0..alphabet.len().pow(len) {
+                let line: Vec<char> = (0..len)
+                    .map(|_| {
+                        let c = alphabet[n % alphabet.len()];
+                        n /= alphabet.len();
+                        c
+                    })
+                    .collect();
+                let table = regex_closers(&line);
+                for i in 0..=line.len() {
+                    assert_eq!(table[i], forward(&line[i..]), "{line:?} from {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_class_left_open_does_not_rescan_the_line_once_per_slash() {
         let wide = format!("x = `${{{}", "(/[".repeat(50_000));
         assert_eq!(code(Lang::Js, &wide).len(), 1);
+        let many = "a=`x${b}`;".repeat(20_000);
+        assert_eq!(code(Lang::Js, &many).len(), 1);
         let long = format!("const re = /{}\\/*/;\nit.only('b', g);", "a".repeat(1030));
         assert_eq!(code(Lang::Js, &long)[1], "it.only('', g);");
     }
