@@ -27,7 +27,12 @@ pub enum Found {
         /// This user has execute access; always true where there is no such thing.
         executable: bool,
     },
-    /// A symlink, a directory, or anything else jtac did not write.
+    /// A symlink to a regular file, and whether git can run it: git follows the link.
+    Link {
+        /// This user has execute access through the link.
+        executable: bool,
+    },
+    /// A directory, a dangling symlink, or anything else jtac did not write.
     Other,
 }
 
@@ -74,6 +79,9 @@ pub fn judge(found: &Found, want: &str, keep: bool) -> Option<Install> {
     let (bytes, executable) = match found {
         Found::Absent => return Some(Install::Write),
         Found::Other => return None,
+        Found::Link { executable } => {
+            return (keep && *executable).then_some(Install::Foreign);
+        }
         Found::File { bytes, executable } => (bytes, *executable),
     };
     if bytes == want.as_bytes() {
@@ -127,6 +135,9 @@ pub fn read(path: &Path) -> Result<Found, Refusal> {
                 executable: executable(path),
             })
             .map_err(|e| Refusal::init_io("the pre-push hook", path, &e)),
+        Ok(m) if m.is_symlink() && path.metadata().is_ok_and(|t| t.is_file()) => Ok(Found::Link {
+            executable: executable(path),
+        }),
         Ok(_) => Ok(Found::Other),
     }
 }
@@ -232,6 +243,10 @@ mod tests {
         );
         assert_eq!(judge(&plain(&integrated), &want, true), None);
         assert_eq!(judge(&Found::Other, &want, true), None);
+        let link = |executable| Found::Link { executable };
+        assert_eq!(judge(&link(true), &want, true), Some(Install::Foreign));
+        assert_eq!(judge(&link(false), &want, true), None);
+        assert_eq!(judge(&link(true), &want, false), None);
         assert_eq!(judge(&plain(&want), &want, true), Some(Install::Chmod));
         let rows = [
             (Found::Absent, Some(Install::Write)),

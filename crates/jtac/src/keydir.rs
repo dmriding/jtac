@@ -47,8 +47,9 @@ pub fn config_dir(os: &str, var: impl Fn(&str) -> Option<OsString>) -> Option<Pa
     })
 }
 
-/// Decide the key step from git config and the environment; writes nothing. A named key is
-/// probed now, so a broken one refuses before anything is written.
+/// Decide the key step from git config and the environment; writes nothing. A named key's
+/// fingerprint is read now; only a key init makes is also test-signed (`create`), since a
+/// configured key may live in an agent and wait for a touch.
 pub fn plan(repo: &Path) -> Result<Key, Refusal> {
     let cfg = git_config(repo)?;
     let set = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());

@@ -490,7 +490,7 @@ Hook rules:
 - A hook's stdout is a protocol wire. Nothing prints to stdout except the protocol. Diagnostics go to stderr.
 - A hook that errors internally fails closed for push and open for the advisory.
 - `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it; `jtac init --keep-hook` then keeps that file unread, since no reading of a script proves the line is reached, and the owner answers for it. A hook git cannot execute is made executable, judged as git judges it. `.jtac` as a symlink is refused: nothing is written through a link.
-- A mirror push is refused whole: git deletes what the remote has and the clone lacks without a line on the hook's stdin, so a protected branch could vanish unjudged. The hook reads `remote.<name>.mirror` and any line under `refs/remotes/`, which only a mirror sends. A deletion through a symbolic ref on the server is judged by the name pushed; what it points at is the server's to know.
+- A mirror remote is refused whole, before the empty-stdin pass: git deletes what the remote has and the clone lacks without a line on the hook's stdin, so a protected branch could vanish unjudged. The hook reads `remote.<name>.mirror` as git's bool. A bare `git push --mirror` sets no config and is one of section 11.5's bypasses: the hook cannot see it, and the deleted branch reads as deleted. A deletion through a symbolic ref on the server is judged by the name pushed; what it points at is the server's to know.
 - A hook file is `#!/bin/sh`, a marker line that names its version, and `exec '<absolute jtac>' hook pre-push "$@"`: absolute path, single quotes. `jtac hook pre-push` is the entry point and reads what git writes to its stdin.
 
 ### 11.4 Command classification
@@ -507,7 +507,7 @@ Every spelling lives in one table test. A new bypass found later is a new row, w
 
 ### 11.5 Bypass is recorded, not prevented
 
-jtac cannot stop someone from running `git push --no-verify` or uninstalling it. It does not try. The commit simply has no root, and every later reader (`jtac audit`, CI, an auditor) sees it as absent. This is the honest design: the local gate provides speed and early feedback, and the proof of what was and was not checked comes from the evidence chain.
+jtac cannot stop someone from running `git push --no-verify` or uninstalling it. It does not try. The commit simply has no root, and every later reader (`jtac audit`, CI, an auditor) sees it as absent. This is the honest design: the local gate provides speed and early feedback, and the proof of what was and was not checked comes from the evidence chain. A bare `git push --mirror` with no `remote.<name>.mirror` set is in the same class: its deletions reach the hook as no line at all, so the hook cannot judge them, and the branch reads as deleted.
 
 ### 11.6 `jtac waive`
 

@@ -98,9 +98,10 @@ fn hook_to(repo: &Repo, remote: &str, stdin: &[u8], extra: &[(&str, &str)]) -> R
     Ran::of(child.wait_with_output().unwrap())
 }
 
-/// `git push --mirror` deletes remote refs the clone lacks without a line on stdin, so a
-/// protected branch would go unjudged; the lines it does send name `refs/remotes/`, and the
-/// whole push is refused on them or on `remote.<name>.mirror`.
+/// A mirror remote deletes remote refs the clone lacks without a line on stdin, so a
+/// protected branch would go unjudged; the push is refused on `remote.<name>.mirror` in any
+/// of git's spellings, with empty stdin too. A push of a `refs/remotes/` ref by refspec is
+/// not a mirror and passes on its own merits.
 #[test]
 fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
     let Checked {
@@ -112,23 +113,27 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
     install_hook(&repo);
     repo.git(&["switch", "-q", "-c", "topic"]);
     repo.git(&["branch", "-q", "-D", "main"]);
-    let out = repo.command("git", &["push", "--mirror", "origin"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{stderr}");
-    assert!(stderr.contains("mirror push"), "{stderr}");
-    assert_eq!(origin.git(&["rev-parse", "main"]), base, "main survived");
-    repo.git(&["config", "remote.origin.mirror", "true"]);
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    for spelling in ["true", "yes", "on", "1"] {
+        repo.git(&["config", "remote.origin.mirror", spelling]);
+        let out = repo.command("git", &["push", "origin"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{spelling}: {stderr}");
+        assert!(
+            stderr.contains("remote.origin.mirror"),
+            "{spelling}: {stderr}"
+        );
+        assert_eq!(origin.git(&["rev-parse", "main"]), base, "main survived");
+        let ran = hook(&repo, "", &[]);
+        assert_eq!(ran.code, 2, "{spelling}, empty stdin: {}", ran.stderr);
+    }
+    repo.git(&["config", "--unset", "remote.origin.mirror"]);
     let ran = hook(
         &repo,
-        &format!("refs/heads/topic {covered} refs/heads/topic {base}\n"),
+        &format!("refs/remotes/origin/keep {covered} refs/remotes/origin/keep {base}\n"),
         &[],
     );
-    assert_eq!(ran.code, 2, "{}", ran.stderr);
-    assert!(
-        ran.stderr.contains("remote.origin.mirror"),
-        "{}",
-        ran.stderr
-    );
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
 }
 
 /// A ref name git accepts and this release cannot read must refuse, never pass unjudged.

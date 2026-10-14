@@ -73,23 +73,22 @@ struct At<'a> {
     stale: Option<String>,
 }
 
+/// The mirror check comes before the empty-stdin pass: a mirror whose only work is deletion
+/// writes no line at all (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
 fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal> {
     let lines = lines(stdin)?;
+    let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
+    let key = format!("remote.{remote}.mirror");
+    let mirror = repo::probe(&repo, &["config", "--type=bool", "--get", &key], 1)
+        .map_err(|e| Refusal::repository(&e))?;
+    if mirror.as_deref() == Some("true") {
+        return Err(Refusal::mirror(remote));
+    }
     if lines.is_empty() {
         return Ok((String::new(), 0));
     }
-    let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
     if let Some(path) = repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
         return Err(Refusal::grafted(&path));
-    }
-    let mirror = repo::config(&repo, &format!("remote.{remote}.mirror"))
-        .map_err(|e| Refusal::repository(&e))?;
-    if mirror.as_deref() == Some("true")
-        || lines
-            .iter()
-            .any(|l| l.remote_ref.starts_with("refs/remotes/"))
-    {
-        return Err(Refusal::mirror(remote));
     }
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let ctx = Ctx {
@@ -233,23 +232,20 @@ impl Refusal {
         }
     }
 
-    /// A mirror push: git deletes what the remote has and the clone lacks without a line on
-    /// the hook's stdin, so a protected branch would go unjudged
-    /// (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
+    /// A mirror remote: git deletes what the remote has and the clone lacks without a line on
+    /// the hook's stdin, so a protected branch would go unjudged.
     fn mirror(remote: &str) -> Self {
         Self {
             kind: "negotiation",
-            what: format!(
-                "this is a mirror push to `{remote}` (`--mirror`, or `remote.{remote}.mirror`)."
-            ),
+            what: format!("`remote.{remote}.mirror` is set: every push to `{remote}` mirrors."),
             why: "A mirror push deletes every remote ref the clone lacks, and git never writes \
                   those deletions to the pre-push hook; a protected branch could vanish \
                   unjudged, so the whole push is refused."
                 .to_owned(),
             how: format!(
-                "Push branches by name, `git push {remote} <branch>`, and delete by name, `git \
-                 push {remote} :<branch>`, which the hook judges; unset \
-                 `remote.{remote}.mirror` if it is set."
+                "Run `git config --unset remote.{remote}.mirror`, then push branches by name, \
+                 `git push {remote} <branch>`, and delete by name, `git push {remote} \
+                 :<branch>`, which the hook judges."
             ),
         }
     }

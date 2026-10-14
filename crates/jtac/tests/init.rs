@@ -491,6 +491,27 @@ fn a_hook_git_cannot_execute_is_made_executable() {
     }
 }
 
+/// Git runs a hook through a symlink, so `--keep-hook` keeps one it can run and refuses one it
+/// cannot: a link is never jtac's own and is never rewritten in place.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_hook_is_kept_only_when_git_can_run_it() {
+    let env = Env::new();
+    let target = env.repo.path().join("my-hook");
+    std::fs::write(&target, b"#!/bin/sh\nexit 0\n").unwrap();
+    let hook = env.repo.path().join(".git").join("hooks").join("pre-push");
+    std::os::unix::fs::symlink(&target, &hook).unwrap();
+    let ran = env.jtac(&["init", "--keep-hook"]);
+    assert_eq!(ran.code, 2, "not executable: {}", ran.stdout);
+    assert!(ran.stderr.contains("negotiation: "), "{}", ran.stderr);
+    executable(&target);
+    let ran = env.jtac(&["init"]);
+    assert_eq!(ran.code, 2, "without --keep-hook: {}", ran.stdout);
+    let ran = env.init(&["--keep-hook"]);
+    assert!(ran.stdout.contains("yours, unread"), "{}", ran.stdout);
+    assert!(std::fs::symlink_metadata(&hook).unwrap().is_symlink());
+}
+
 /// `create_new` guards the file name only; the directory it sits in must be this
 /// repository's own.
 #[cfg(unix)]
