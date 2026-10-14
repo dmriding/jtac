@@ -155,25 +155,32 @@ impl Refusal {
         )
     }
 
-    /// The repository has a grafts file.
-    pub fn grafted() -> Self {
+    /// A grafts file, or a shallow file that is not a real boundary.
+    pub fn cut_history(what: &str) -> Self {
         Self::new(
-            "the repository has `info/grafts`.",
-            "A graft changes the parents git reports, so the base, the diff, and `covers` \
-             would describe a history the root does not name; replace refs are ignored for \
-             the same reason, but a grafts file cannot be.",
+            format!("{what}."),
+            "A graft or a shallow mark changes the parents git walks, so the base, the diff, \
+             and `covers` would describe a history the root does not name; replace refs are \
+             ignored for the same reason, but these two cannot be.",
             "Remove `.git/info/grafts` (`git replace --convert-graft-file` keeps it as replace \
-             refs, which jtac ignores), then run `jtac check` again.",
+             refs, which jtac ignores), or run `git fetch --unshallow` (a `.git/shallow` \
+             written by hand is simply removed); then run `jtac check` again.",
         )
     }
 
     /// HEAD or the work tree changed between the preflight and the write.
-    pub fn moved() -> Self {
+    pub fn moved(dirty: Option<&str>) -> Self {
+        let what = match dirty {
+            Some(why) => format!("the work tree changed while the checks ran: {why}."),
+            None => "HEAD changed while the checks ran.".to_owned(),
+        };
         Self::new(
-            "HEAD or the work tree changed while the checks ran.",
+            what,
             "The checks read the work tree as it was during the run; a root and a cache entry \
-             name HEAD's tree only when the tree stayed HEAD's from start to end.",
-            "Leave the tree alone while `jtac check` runs, then run it again.",
+             name HEAD's tree only when the tree stayed HEAD's from start to end. A check that \
+             writes into the tree is the usual cause.",
+            "Add what a check writes to `.gitignore` and commit, or leave the tree alone while \
+             `jtac check` runs; then run it again.",
         )
     }
 
@@ -316,8 +323,9 @@ mod tests {
         let rows = [
             Refusal::not_built("status"),
             Refusal::dirty("x"),
-            Refusal::grafted(),
-            Refusal::moved(),
+            Refusal::cut_history("x"),
+            Refusal::moved(None),
+            Refusal::moved(Some("y")),
             Refusal::no_identity(&jtac_sign::ResolveError::NoKey),
             Refusal::no_identity(&jtac_sign::ResolveError::NoPrincipal),
             Refusal::sign(&jtac_sign::SignError::KeyMismatch {

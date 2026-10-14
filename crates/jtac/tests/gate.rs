@@ -658,27 +658,53 @@ fn jtac_in(repo: &Repo, subdir: &str, args: &[&str]) -> Ran {
 fn a_tree_that_changes_under_the_checks_gets_no_root() {
     let repo = passing();
     repo.git(&["branch", "other"]);
-    let mutate = "[checks.mutate]\nrun = [\"git\", \"switch\", \"-q\", \"other\"]\n";
-    repo.write(".jtac/policy.toml", policy(mutate).as_bytes());
-    repo.commit("mutating policy");
+    let rows = [
+        (
+            "[checks.mutate]\nrun = [\"git\", \"switch\", \"-q\", \"other\"]\n",
+            "jtac: HEAD changed while the checks ran.",
+        ),
+        (
+            "[checks.mutate]\nrun = [\"git\", \"init\", \"-q\", \"scratch\"]\n",
+            "jtac: the work tree changed while the checks ran: `git status` shows",
+        ),
+    ];
+    for (mutate, want) in rows {
+        repo.git(&["switch", "-q", "main"]);
+        repo.write(".jtac/policy.toml", policy(mutate).as_bytes());
+        repo.commit("mutating policy");
+        let ran = jtac(&repo, &["check"]);
+        assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+        assert!(ran.stderr.starts_with(want), "{}", ran.stderr);
+        assert!(root_refs(&repo).is_empty());
+        let dir = repo.git(&["rev-parse", "--git-common-dir"]);
+        let state = repo.path().join(dir).join("jtac").join("state.json");
+        assert!(!state.exists());
+        let _ = std::fs::remove_dir_all(repo.path().join("scratch"));
+    }
+}
+
+#[test]
+fn a_hand_written_shallow_file_does_not_hide_the_covered_ancestor() {
+    let repo = Repo::init(&[]);
+    with_policy(&repo, "");
+    repo.write("src/lib.rs", b"#[test]\nfn keeps() {}\nfn a() {}\n");
+    repo.commit("base");
+    keyed(&repo);
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let dropped = repo.commit("drop test");
+    repo.write("b.txt", b"b\n");
+    repo.commit("harmless");
+    repo.write(".git/shallow", format!("{dropped}\n").as_bytes());
     let ran = jtac(&repo, &["check"]);
     assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
     assert!(
-        ran.stderr
-            .starts_with("jtac: HEAD or the work tree changed while the checks ran."),
+        ran.stderr.starts_with("jtac: `shallow` lists "),
         "{}",
         ran.stderr
     );
-    assert!(root_refs(&repo).is_empty());
-    let dir = repo.git(&["rev-parse", "--git-common-dir"]);
-    assert!(
-        !repo
-            .path()
-            .join(dir)
-            .join("jtac")
-            .join("state.json")
-            .exists()
-    );
+    assert!(ran.stderr.contains("--unshallow"), "{}", ran.stderr);
+    assert_eq!(root_refs(&repo).len(), 1);
 }
 
 #[test]

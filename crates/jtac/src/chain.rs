@@ -50,7 +50,7 @@ pub fn covered(repo: &Path, store: &Store, head: &Head) -> Result<BTreeSet<GitOi
 /// The nearest first-parent ancestor with a root, as hex: the base the rules diff from.
 /// Walked as a plain first-parent list, because `--boundary` would also list a merge's
 /// second parent, and a covered branch tip there would hide what the first-parent line
-/// changed (`a_merge_is_judged_against_its_first_parent_line_not_the_merged_branch`).
+/// changed (`the_nearest_covered_ancestor_is_on_the_first_parent_line_or_none_at_all`).
 pub fn nearest(
     repo: &Path,
     covered: &BTreeSet<GitOid>,
