@@ -17,12 +17,16 @@ fn slashes(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// The hook names the binary the way init reads it: canonical, forward slashes.
-fn exe() -> String {
-    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_jtac")).unwrap();
-    let text = slashes(&exe);
+/// A path the way git and init print it: canonical, forward slashes, no verbatim prefix
+/// (a Windows temp dir is an 8.3 short name, and git reports the long one).
+fn canon(p: &Path) -> String {
+    let text = slashes(&std::fs::canonicalize(p).unwrap());
     text.strip_prefix("//?/")
         .map_or(text.clone(), str::to_owned)
+}
+
+fn exe() -> String {
+    canon(Path::new(env!("CARGO_BIN_EXE_jtac")))
 }
 
 fn hook_text(exe: &str) -> String {
@@ -175,7 +179,7 @@ fn a_first_run_writes_every_step_and_the_generated_key_signs_a_root() {
         format!("  wrote signing key {key} (generated, SHA256:"),
         "  wrote store ".to_owned(),
         "  wrote policy .jtac/policy.toml (detected: rust)\n".to_owned(),
-        format!("  wrote pre-push hook {}\n", slashes(&hook)),
+        format!("  wrote pre-push hook {}\n", canon(&hook)),
         format!("  wrote fetch refspec {REFSPEC} on origin\n"),
         "  wrote lever node sha256:".to_owned(),
         "  allowed signer: dev@example.com ssh-ed25519 ".to_owned(),
