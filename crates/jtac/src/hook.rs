@@ -68,16 +68,18 @@ fn lines(stdin: &str) -> Result<Vec<Line<'_>>, Refusal> {
 /// NUL-terminated origin and value in turn since the line form C-quotes a path with a tab or
 /// a non-ASCII byte: one `--file <origin> --unset-all` per file, the path made absolute from
 /// `root` because git prints `.git/config` relative to the hook's cwd and the reader may be
-/// in a subdirectory, since `--unset` fails on a second value and a scope's default file is
-/// not the included or XDG file that holds the value; a `command line:` origin is a `-c` or
-/// `GIT_CONFIG_*` on the push itself (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
+/// in a subdirectory, a leading `/` counting as absolute on Windows too, where git prints
+/// it; `--unset` fails on a second value and a scope's default file is not the included or
+/// XDG file that holds the value; a `command line:` origin is a `-c` or `GIT_CONFIG_*` on
+/// the push itself (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
 fn unsets(key: &str, origins: &str, root: &Path) -> String {
     let key = quoted(key, "<key>");
     let mut seen: Vec<String> = Vec::new();
     for origin in origins.split('\0').step_by(2).filter(|o| !o.is_empty()) {
         let one = match origin.strip_prefix("file:") {
             Some(path) => {
-                let file = match Path::new(path).is_relative() {
+                let relative = !path.starts_with('/') && Path::new(path).is_relative();
+                let file = match relative {
                     true => format!("{}/{path}", root.display()),
                     false => path.to_owned(),
                 };
