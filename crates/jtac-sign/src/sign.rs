@@ -9,7 +9,8 @@ use crate::{Namespace, SignError};
 
 /// Sign `msg` in `ns` as `id`. The empty `-P` is load-bearing (DESIGN.md section 11.8;
 /// test `a_locked_key_never_takes_its_passphrase_from_the_message`). ssh-keygen then
-/// re-reads the signature and must name the identity's key, or nothing is returned.
+/// re-reads the signature and must name the identity's key, or nothing is returned. CRLF
+/// from a Windows stdout is folded so one signature has one spelling on every platform.
 pub fn sign(id: &Identity, ns: Namespace, msg: &[u8]) -> Result<String, SignError> {
     let literal = match &id.key {
         KeyRef::File(_) => None,
@@ -32,10 +33,12 @@ pub fn sign(id: &Identity, ns: Namespace, msg: &[u8]) -> Result<String, SignErro
         "-".as_ref(),
     ];
     let out = id.tool.ok(&args, msg)?;
-    let sig = String::from_utf8(out).map_err(|_| SignError::KeyMismatch {
-        expected: id.signer.fingerprint.clone(),
-        found: "a signature that is not UTF-8".into(),
-    })?;
+    let sig = String::from_utf8(out)
+        .map_err(|_| SignError::KeyMismatch {
+            expected: id.signer.fingerprint.clone(),
+            found: "a signature that is not UTF-8".into(),
+        })?
+        .replace("\r\n", "\n");
     let sig_file = crate::verify::temp("jtac-sig-", sig.as_bytes())?;
     let check = crate::verify::novalidate(&id.tool, ns, &sig_file, msg)?;
     let found = printed(&check.stdout).unwrap_or_else(|| "no key".to_owned());

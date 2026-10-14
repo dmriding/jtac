@@ -268,11 +268,39 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
     let trust = k.trust(&[("dev@example.com", "key", "")]);
     let big = k.path("big");
     std::fs::write(&big, vec![b'\n'; usize::try_from(TRUST_CAP).unwrap() + 1]).unwrap();
-    let mut rows = vec![
-        (k.path("no-such-signers"), "No such file"),
-        (k.path(""), "not a plain file"),
-        (big, "larger than the trust file cap"),
-    ];
+    let missing = k.path("no-such-signers");
+    let err = verify(
+        &id.tool,
+        Some(&missing),
+        &id.signer,
+        Namespace::Root,
+        at(),
+        MSG,
+        &sig,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, SignError::Io { path, source } if *path == missing && source.kind() == std::io::ErrorKind::NotFound),
+        "{err}"
+    );
+    let dir = k.path("");
+    let err = verify(
+        &id.tool,
+        Some(&dir),
+        &id.signer,
+        Namespace::Root,
+        at(),
+        MSG,
+        &sig,
+    )
+    .unwrap_err();
+    let refused_as_directory = match &err {
+        SignError::Trust { what, .. } => *what == "not a plain file",
+        SignError::Io { source, .. } => source.kind() == std::io::ErrorKind::PermissionDenied,
+        _ => false,
+    };
+    assert!(refused_as_directory, "{err}");
+    let mut rows = vec![(big, "larger than the trust file cap")];
     #[cfg(unix)]
     {
         let link = k.path("link");
