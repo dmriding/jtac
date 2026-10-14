@@ -362,11 +362,13 @@ fn rust_char(rest: &[char]) -> Option<usize> {
     }
 }
 
-/// Index just past the backtick closing a JS template, and the `${ }` depth left open; braces
-/// inside the expression count, a backtick there does not.
+/// Index just past the backtick closing a JS template, and the `${ }` depth left open. In the
+/// expression braces count and a string, comment or template on the same line is skipped
+/// whole; a brace in a regex there, or one left open at the line end, still skews the depth.
 fn template_close(hay: &[char], mut depth: u32) -> (Option<usize>, u32) {
     let mut i = 0;
     while i < hay.len() {
+        let rest = hay.len() - i - 1;
         match (hay[i], depth) {
             ('\\', 0) => i += 1,
             ('`', 0) => return (Some(i + 1), 0),
@@ -376,6 +378,12 @@ fn template_close(hay: &[char], mut depth: u32) -> (Option<usize>, u32) {
             }
             ('{', 1..) => depth += 1,
             ('}', 1..) => depth -= 1,
+            (q @ ('"' | '\''), 1..) => i += find_unescaped(&hay[i + 1..], q).unwrap_or(rest),
+            ('`', 1..) => i += template_close(&hay[i + 1..], 0).0.unwrap_or(rest),
+            ('/', 1..) if hay.get(i + 1) == Some(&'/') => return (None, depth),
+            ('/', 1..) if hay.get(i + 1) == Some(&'*') => {
+                i += find(&hay[i + 2..], "*/").map_or(rest, |j| j + 3);
+            }
             _ => {}
         }
         i += 1;
@@ -523,6 +531,7 @@ mod tests {
             (Lang::Rust, "/**/", &[Comment]),
             (Lang::Rust, "/* /*\n */ a\n */ b", &[Comment, Comment, Code]),
             (Lang::Js, "/* /* */ b", &[Code]),
+            (Lang::Go, "/* /* */ x", &[Code]),
             (Lang::Js, "/// a\n/** b */\n// c", &[Comment, Doc, Comment]),
             (
                 Lang::Python,
@@ -616,7 +625,7 @@ mod tests {
             ),
             (
                 Lang::Js,
-                "const t = `${\n`}`; it('{')",
+                "const t = `${\n`}`}`; it('{')",
                 &["const t = `", "`; it('')"],
             ),
             (
@@ -677,6 +686,21 @@ mod tests {
                 &["const s = ``;", "it.only('', f);"],
             ),
             (Lang::Rust, "/* /* */ { */ x", &[" x/* /* */ { */"]),
+            (
+                Lang::Js,
+                "const t = `${1 /* { */}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${'}' + \"`\" + `}`}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${x // }`\n}`; it.only('a', f)",
+                &["const t = `", "`; it.only('', f)"],
+            ),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();

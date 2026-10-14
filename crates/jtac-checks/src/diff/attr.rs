@@ -14,7 +14,8 @@ const LINES: usize = 32;
 /// Added lines as (number, as written, probe text). A line inside a Rust attribute probes the
 /// whole attribute at its opener's line, once per attribute, and not at all when only an inner
 /// line changed and the old file had as many copies of the attribute on the same item as the
-/// new one; any other line probes itself as `View::added` gives it.
+/// new one, or file-wide when that item's own line changed too; any other line probes itself
+/// as `View::added` gives it.
 pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, String)> {
     let mut out: Vec<(u64, &str, String)> = Vec::new();
     let mut copies: Option<(Copies, Copies)> = None;
@@ -31,8 +32,18 @@ pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, 
         let seen = out.iter().any(|p| p.0 == probe.0);
         let kept = probe.0 != n && {
             let (old, new) = copies.get_or_insert_with(|| (attributes(&v.old), attributes(&v.new)));
-            let key = keyed(&v.new, start);
-            old.get(&key) >= new.get(&key)
+            let (attr, at) = (joined(&v.new, start, written), item(&v.new, start));
+            let edited = v.edit.added.iter().any(|(m, _)| *m == number(at));
+            let count = |copies: &Copies| {
+                copies.get(&attr).map_or(0, |items| {
+                    if edited {
+                        items.values().sum()
+                    } else {
+                        items.get(&named(&v.new, at)).copied().unwrap_or(0)
+                    }
+                })
+            };
+            count(old) >= count(new)
         };
         if !seen && !kept {
             out.push(probe);
@@ -41,30 +52,34 @@ pub(crate) fn probes<'v>(v: &'v View<'_>, comments: bool) -> Vec<(u64, &'v str, 
     out
 }
 
-/// Attributes as written with the item each decorates, by number of copies.
-type Copies = BTreeMap<(String, String), usize>;
+/// Attributes as written, then the item each decorates, by number of copies.
+type Copies = BTreeMap<String, BTreeMap<String, usize>>;
 
 fn attributes(lines: &[Line]) -> Copies {
-    let mut copies = BTreeMap::new();
+    let mut copies = Copies::new();
     for i in (0..lines.len()).filter(|&i| opener(&lines[i])) {
-        *copies.entry(keyed(lines, i)).or_insert(0) += 1;
+        let items = copies.entry(joined(lines, i, written)).or_default();
+        *items.entry(named(lines, item(lines, i))).or_insert(0) += 1;
     }
     copies
 }
 
-/// The attribute at `start` as written, with the code line it decorates: the first past it
-/// and any attribute below it that holds code, so a copy moved to another item is new.
-fn keyed(lines: &[Line], start: usize) -> (String, String) {
+/// Index of the code line the attribute at `start` decorates, past it and any attribute below
+/// it, or `lines.len()`. A copy moved to another item is new; an item whose own line changed
+/// is any item, since a move and an edit beside a comment change read the same.
+fn item(lines: &[Line], start: usize) -> usize {
     let mut i = start;
-    let item = loop {
+    loop {
         match lines.get(i) {
-            None => break "",
             Some(l) if opener(l) => i = end(lines, i) + 1,
             Some(l) if l.code.trim().is_empty() => i += 1,
-            Some(l) => break l.code.trim(),
+            _ => return i,
         }
-    };
-    (joined(lines, start, written), item.to_owned())
+    }
+}
+
+fn named(lines: &[Line], i: usize) -> String {
+    lines.get(i).map_or("", |l| l.code.trim()).to_owned()
 }
 
 fn code(l: &Line) -> String {

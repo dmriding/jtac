@@ -47,9 +47,12 @@ static UNBLOCKS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// A GitLab script key opening a list.
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:before_|after_)?script:\s*$").expect("literal"));
-/// A `"` or `'` opening a scalar value.
-static QUOTE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\s*(?:-\s+)*(?:[^\s:#"']+:\s+)?(["'])"#).expect("literal"));
+/// A `"` or `'` opening a scalar value after a key or a dash, past an anchor or tag; one at a
+/// line start continues a plain scalar and opens nothing.
+static QUOTE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:-\s+)*(?:(?:"[^"]*"|'[^']*'|[^\s:#"']+):\s+|-\s+)(?:[&!]\S+\s+)?(["'])"#)
+        .expect("literal")
+});
 /// A command key opening a block scalar.
 static BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -625,6 +628,46 @@ mod tests {
                     None,
                     "steps:\n  - run: |\n      \"a\n",
                     Some("steps:\n  - run: |\n      \"a\n  # never || true\n"),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - name: Check\n      'static lifetimes\n    run: cargo test\n",
+                    Some(
+                        "steps:\n  - name: Check\n      'static lifetimes\n    run: cargo test\n  # never || true\n",
+                    ),
+                ),
+                &[],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: cargo test\n",
+                    Some("steps:\n  - run: &cmd \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - \"run\": cargo test\n",
+                    Some("steps:\n  - \"run\": \"bash -c 'cargo test\n      #' || true\"\n"),
+                ),
+                &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  - run: cargo test\n",
+                    Some(
+                        "steps:\n  - uses: a/b@v1\n    with:\n      message: |\n        \"Nightly build\n        is green\n  # - run: cargo test || true\n  - run: cargo test\n",
+                    ),
                 ),
                 &[],
             ),
