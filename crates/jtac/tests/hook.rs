@@ -551,12 +551,10 @@ fn a_grafts_file_refuses_the_hook_and_status() {
         &[],
     );
     assert_eq!(ran.code, 2, "{}", ran.stderr);
-    assert!(
-        ran.stderr
-            .contains(&grafts.to_string_lossy().replace('\\', "/")),
-        "{}",
-        ran.stderr
-    );
+    let named = std::fs::canonicalize(&grafts).unwrap();
+    let named = named.to_string_lossy().replace('\\', "/");
+    let named = named.strip_prefix("//?/").unwrap_or(&named);
+    assert!(ran.stderr.contains(named), "{named}: {}", ran.stderr);
     let ran = jtac(&repo, &["status"]);
     assert_eq!(ran.code, 2, "{}", ran.stderr);
     assert!(ran.stderr.contains("grafts"), "{}", ran.stderr);
