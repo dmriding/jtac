@@ -235,7 +235,10 @@ impl Refusal {
             format!("could not set `jtac.signingkey` in the global git config: {err}."),
             "The key is named in the global config so every repository signs as the same \
              person; a key nobody names is a key `jtac check` never finds.",
-            format!("Run `git config --global jtac.signingkey '{value}'`, then `jtac init` again."),
+            format!(
+                "Run `git config --global jtac.signingkey {}`, then `jtac init` again.",
+                jtac_checks::git::quoted(value, "<key path>")
+            ),
         )
     }
 }

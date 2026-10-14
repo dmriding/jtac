@@ -12,7 +12,10 @@ request moves them under a dated heading and bumps nothing.
   instead of refusing `check`, `status`, and the hook in every clone that fetched it (issue
   30; DESIGN.md 9.6). Every git child jtac spawns runs without `GIT_CONFIG`, which steers
   `git config` alone, so a config read can no longer differ from what `git push` sees (issue
-  32). The mirror refusal names one `--unset-all` per scope the key is set in (issue 33).
+  32). The mirror refusal names `--file <origin> --unset-all` per file the key is set in
+  (issue 33). A remote, branch, ref, key or path that enters a refusal's command is rendered
+  by one `sh` word renderer: plain as is, quoted otherwise, a placeholder when no code span
+  can show it; the gate printed them bare since M10.
 
 ### Added
 

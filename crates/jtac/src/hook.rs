@@ -73,17 +73,9 @@ fn lines(stdin: &str) -> Result<Vec<Line<'_>>, Refusal> {
 /// `GIT_CONFIG_*` on the push itself (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
 fn unsets(key: &str, origins: &str, root: &Path) -> String {
     let key = quoted(key, "<key>");
-    let mut seen = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for origin in origins.split('\0').step_by(2).filter(|o| !o.is_empty()) {
-        if !seen.contains(&origin) {
-            seen.push(origin);
-        }
-    }
-    if seen.is_empty() {
-        return format!("run `git config --unset-all {key}`");
-    }
-    seen.iter()
-        .map(|origin| match origin.strip_prefix("file:") {
+        let one = match origin.strip_prefix("file:") {
             Some(path) => {
                 let file = match Path::new(path).is_relative() {
                     true => format!("{}/{path}", root.display()),
@@ -94,13 +86,19 @@ fn unsets(key: &str, origins: &str, root: &Path) -> String {
                     quoted(&file, "<the file --show-origin names>")
                 )
             }
-            None if *origin == "command line:" => {
+            None if origin == "command line:" => {
                 format!("drop `{key}` from the push's `-c` flags or `GIT_CONFIG_*` environment")
             }
             None => format!("run `git config --unset-all {key}`"),
-        })
-        .collect::<Vec<_>>()
-        .join(" and ")
+        };
+        if !seen.contains(&one) {
+            seen.push(one);
+        }
+    }
+    if seen.is_empty() {
+        return format!("run `git config --unset-all {key}`");
+    }
+    seen.join(" and ")
 }
 
 /// Where a refused ref was going, for the message.
@@ -201,7 +199,7 @@ impl Ctx {
             return Ok((Decision::Pass(pass), None));
         }
         let at_ref = |r: Refusal| Refusal {
-            what: format!("`{}`: {}", line.remote_ref, r.what),
+            what: format!("`{}`: {}", quoted(line.remote_ref, "<ref>"), r.what),
             ..r
         };
         let tip = local
@@ -283,7 +281,11 @@ impl Refusal {
     fn mirror(remote: &str, unsets: &str) -> Self {
         Self {
             kind: "negotiation",
-            what: format!("`remote.{remote}.mirror` is set: every push to `{remote}` mirrors."),
+            what: format!(
+                "`{}` is set: every push to `{}` mirrors.",
+                quoted(&format!("remote.{remote}.mirror"), "<key>"),
+                quoted(remote, "<remote>")
+            ),
             why: "A mirror push deletes every remote ref the clone lacks, and git never writes \
                   those deletions to the pre-push hook; a protected branch could vanish \
                   unjudged, so the whole push is refused."
@@ -312,12 +314,13 @@ impl Refusal {
 
     /// A ref the decision refused.
     fn push(r: &Refuse, at: &At) -> Self {
-        let branch = at.remote_ref.trim_start_matches("refs/heads/");
+        let branch = quoted(at.remote_ref.trim_start_matches("refs/heads/"), "<branch>");
+        let remote_ref = quoted(at.remote_ref, "<ref>");
         let (what, why, how) = match r {
             Refuse::Absent => (
                 format!(
-                    "`{}`: {} has no root, and no root judged its tree.",
-                    at.remote_ref, at.tip
+                    "`{remote_ref}`: {} has no root, and no root judged its tree.",
+                    at.tip
                 ),
                 "The pre-push hook is the gate: a commit leaves this clone with signed evidence \
                  that the checks ran on its tree, or it does not leave."
@@ -342,7 +345,7 @@ impl Refusal {
             Refuse::Unknown => (
                 format!(
                     "`{}`: the remote's tip {} is not in this clone.",
-                    at.remote_ref, at.old
+                    remote_ref, at.old
                 ),
                 format!(
                     "The branch's own `.jtac/policy.toml` at that tip is half the fence that \
@@ -353,13 +356,13 @@ impl Refusal {
                     "Run `git fetch {} {}`, then push again; if it is then refused as a \
                      rewind, merge or rebase onto the fetched tip first.",
                     quoted(at.remote, "<remote>"),
-                    quoted(branch, "<branch>")
+                    remote_ref
                 ),
             ),
             Refuse::Delete => (
                 format!(
                     "`{}`: this push deletes a protected branch at {}.",
-                    at.remote_ref, at.old
+                    remote_ref, at.old
                 ),
                 "`[fences].force_push_protected` is `deny` in `.jtac/policy.toml` at the \
                  branch's tip: deleting it and pushing it again would rewind it past the \
@@ -369,15 +372,16 @@ impl Refusal {
                     "No command clears this from here, and `--force` does not either. Do not \
                      add `--no-verify`. What would clear it is `[fences]` in \
                      `.jtac/policy.toml` on `{branch}`, changed through review; to retire the \
-                     branch, do that first, then `git push {} :{}`.",
-                    at.remote, at.remote_ref
+                     branch, do that first, then `git push {} {}`.",
+                    quoted(at.remote, "<remote>"),
+                    quoted(&format!(":{}", at.remote_ref), ":<ref>")
                 ),
             ),
             Refuse::Rewind => (
                 format!(
                     "`{}`: this push rewinds a protected branch: the remote's tip {} is not an \
                      ancestor of {}.",
-                    at.remote_ref, at.old, at.tip
+                    remote_ref, at.old, at.tip
                 ),
                 "`[fences].force_push_protected` is `deny` in `.jtac/policy.toml` at the \
                  branch's tip or at yours, and either one holds: history published on a \
@@ -478,7 +482,7 @@ mod tests {
             ),
             ("standard input:\0true\0", "run `git config --unset-all k`"),
             (
-                "file:/w/x`y\0true\0",
+                "file:/w/x`y\0true\0file:/w/c-\u{fffd}\0true\0",
                 "run `git config --file <the file --show-origin names> --unset-all k`",
             ),
         ];
@@ -495,6 +499,64 @@ mod tests {
             "run `git config --file /w/.git/config --unset-all 'remote.x;id;#.mirror'`"
         );
         assert!(unsets("remote.a`b.mirror", "", Path::new("/w")).contains("--unset-all <key>`"));
+        let dash = Path::new("/w");
+        assert_eq!(
+            unsets("remote.-x.mirror", "file:.git/config\0true\0", dash),
+            "run `git config --file /w/.git/config --unset-all remote.-x.mirror`"
+        );
+    }
+
+    /// A remote or branch name git accepts enters a refusal's command only quoted, and a
+    /// name quoting cannot make safe becomes a placeholder.
+    #[test]
+    fn a_hostile_remote_or_branch_name_never_reaches_a_command_bare() {
+        let (tip, old) = ("b".repeat(40), "a".repeat(40));
+        let at = At {
+            remote: "x;id;#",
+            remote_ref: "refs/heads/--upload-pack=printf${IFS}X>&2;false;#",
+            tip: &tip,
+            old: &old,
+            stale: None,
+        };
+        let unknown = Refusal::push(&Refuse::Unknown, &at).how;
+        assert!(
+            unknown.contains(
+                "`git fetch 'x;id;#' 'refs/heads/--upload-pack=printf${IFS}X>&2;false;#'`"
+            ),
+            "{unknown}"
+        );
+        let delete = Refusal::push(&Refuse::Delete, &at).how;
+        assert!(
+            delete.contains(
+                "`git push 'x;id;#' ':refs/heads/--upload-pack=printf${IFS}X>&2;false;#'`"
+            ),
+            "{delete}"
+        );
+        let dash = At {
+            remote: "-x",
+            stale: None,
+            ..at
+        };
+        assert!(
+            Refusal::push(&Refuse::Delete, &dash)
+                .how
+                .contains("`git push <remote> ")
+        );
+        let tick = At {
+            remote_ref: "refs/heads/a`b",
+            stale: None,
+            ..at
+        };
+        assert!(
+            Refusal::push(&Refuse::Unknown, &tick)
+                .how
+                .contains("`git fetch 'x;id;#' <ref>`")
+        );
+        assert!(
+            Refusal::mirror("-x", "run `x`")
+                .how
+                .contains("`git push <remote> <branch>`")
+        );
     }
 
     #[test]
@@ -544,7 +606,10 @@ mod tests {
                 .contains("jtac check")
         );
         let unknown = Refusal::push(&Refuse::Unknown, &at);
-        assert!(unknown.how.contains("git fetch origin main"), "{unknown:?}");
+        assert!(
+            unknown.how.contains("git fetch origin refs/heads/main"),
+            "{unknown:?}"
+        );
         let fence = Refusal::push(&Refuse::Rewind, &at);
         assert!(fence.how.contains("--force") && fence.how.contains("[fences]"));
     }

@@ -157,10 +157,10 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
             .stderr
             .split_once("Clear it: run `git config --file ")
             .unwrap();
-        let (file, rest) = rest
+        let (shown, rest) = rest
             .split_once(" --unset-all remote.origin.mirror`.")
             .unwrap();
-        let file = file.trim_matches('\'').replace("'\\''", "'");
+        let file = shown.trim_matches('\'').replace("'\\''", "'");
         assert!(
             ran.code == 2 && rest.contains("`git push origin <branch>`"),
             "{}",
@@ -170,19 +170,25 @@ fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
             std::path::Path::new(&file).is_absolute() && file.ends_with(ends),
             "{file}"
         );
-        let unset = [
-            "-C",
-            "sub",
-            "config",
-            "--file",
-            &file,
-            "--unset-all",
-            "remote.origin.mirror",
-        ];
-        let out = repo.command("git", &unset);
+        let cmd = format!("git config --file {shown} --unset-all remote.origin.mirror");
+        #[cfg(unix)]
+        let out = repo.command("sh", &["-c", &format!("cd sub && {cmd}")]);
+        #[cfg(not(unix))]
+        let out = repo.command(
+            "git",
+            &[
+                "-C",
+                "sub",
+                "config",
+                "--file",
+                &file,
+                "--unset-all",
+                "remote.origin.mirror",
+            ],
+        );
         assert!(
             out.status.success(),
-            "{}",
+            "{cmd}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(hook(&repo, "", env).code, 0);
@@ -418,7 +424,7 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             "deleting a branch whose tip this clone lacks refuses, naming git fetch",
             format!("(delete) {z} refs/heads/side {unseen}\n"),
             1,
-            &["negotiation: Run `git fetch origin side`"],
+            &["negotiation: Run `git fetch origin refs/heads/side`"],
         ),
         row(
             "a tag passes without evidence",
@@ -472,13 +478,16 @@ fn table(c: &Checked, b: &Branches) -> Vec<Row> {
             "an old oid this clone lacks refuses, naming git fetch",
             main(covered, &unseen),
             1,
-            &["negotiation: Run `git fetch origin main`"],
+            &["negotiation: Run `git fetch origin refs/heads/main`"],
         ),
         row(
             "an old oid this clone lacks refuses on an unprotected branch too",
             format!("refs/heads/side {covered} refs/heads/side {unseen}\n"),
             1,
-            &["half the fence", "negotiation: Run `git fetch origin side`"],
+            &[
+                "half the fence",
+                "negotiation: Run `git fetch origin refs/heads/side`",
+            ],
         ),
         row(
             "an orphan whose policy allows the rewind is still fenced by the branch",

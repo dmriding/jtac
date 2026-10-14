@@ -188,15 +188,17 @@ pub fn git_output(
 
 /// `word` as one `sh` argument inside a backtick span: as is when every character is plain,
 /// single-quoted otherwise, and `placeholder` when it holds a backtick, which no span can
-/// show. A ref, remote or path git accepts can hold `$(`, `;`, `#`, a quote or a backtick,
-/// and a message that names a command to run must not hand them to the shell or let them
-/// end the span (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
+/// show, starts with `-`, which quoting does not stop git from reading as an option, or
+/// holds U+FFFD, the mark of bytes already lost. A ref, remote or path git accepts can hold
+/// `$(`, `;`, `#`, a quote or a backtick, and a message that names a command to run must
+/// not hand them to the shell or let them end the span
+/// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
 pub fn quoted(word: &str, placeholder: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:@+,%".contains(c);
-    if !word.is_empty() && word.chars().all(plain) {
-        word.to_owned()
-    } else if word.contains('`') {
+    if word.starts_with('-') || word.contains('`') || word.contains('\u{fffd}') {
         placeholder.to_owned()
+    } else if !word.is_empty() && word.chars().all(plain) {
+        word.to_owned()
     } else {
         format!("'{}'", word.replace('\'', "'\\''"))
     }

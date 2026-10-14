@@ -1,6 +1,6 @@
 //! The git helper against a real git: stdin, env, and a child that exits before reading.
 
-use jtac_checks::git::{GitError, git_output, git_with};
+use jtac_checks::git::{GitError, git_output, git_with, quoted};
 use jtac_testkit::Repo;
 
 #[test]
@@ -48,4 +48,33 @@ fn stdin_and_env_reach_git_and_an_early_exit_reports_git_not_a_pipe() {
         matches!(&err, GitError::Failed { stderr, .. } if stderr.contains("not a git repository")),
         "{err}"
     );
+}
+
+/// The one renderer for a name that enters a command: every spelling that would run,
+/// end the span, or read as an option is quoted or replaced, bypasses first.
+#[test]
+fn quoted_keeps_a_plain_word_quotes_the_rest_and_replaces_what_no_span_can_hold() {
+    let rows = [
+        ("$(touch${IFS}PWNED)", "'$(touch${IFS}PWNED)'"),
+        ("x;id;#", "'x;id;#'"),
+        ("a|b&c>d<e!f", "'a|b&c>d<e!f'"),
+        ("it's", "'it'\\''s'"),
+        ("a b", "'a b'"),
+        ("a\tb", "'a\tb'"),
+        ("h\u{e9}", "'h\u{e9}'"),
+        ("x`y", "<p>"),
+        ("-x", "<p>"),
+        ("--upload-pack=x", "<p>"),
+        ("lost\u{fffd}", "<p>"),
+        ("", "''"),
+        ("refs/heads/release/1.2", "refs/heads/release/1.2"),
+        ("x;id;#", "'x;id;#'"),
+        ("origin", "origin"),
+        (":refs/heads/main", ":refs/heads/main"),
+        ("/w/.git/config", "/w/.git/config"),
+        ("user@example.com:a+b,c%d", "user@example.com:a+b,c%d"),
+    ];
+    for (word, want) in rows {
+        assert_eq!(quoted(word, "<p>"), want, "{word:?}");
+    }
 }
