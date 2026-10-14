@@ -23,8 +23,8 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if let (Some(why), false) = (&dirty, a.preview) {
         return Err(Refusal::dirty(why));
     }
-    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
-        return Err(Refusal::grafted());
+    if let Some(path) = repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted(&path));
     }
     if !a.preview && repo::shallow(&repo).map_err(|e| Refusal::repository(&e))? {
         return Err(Refusal::shallow());

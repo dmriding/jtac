@@ -79,8 +79,17 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
         return Ok((String::new(), 0));
     }
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
-    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
-        return Err(Refusal::grafted());
+    if let Some(path) = repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted(&path));
+    }
+    let mirror = repo::config(&repo, &format!("remote.{remote}.mirror"))
+        .map_err(|e| Refusal::repository(&e))?;
+    if mirror.as_deref() == Some("true")
+        || lines
+            .iter()
+            .any(|l| l.remote_ref.starts_with("refs/remotes/"))
+    {
+        return Err(Refusal::mirror(remote));
     }
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let ctx = Ctx {
@@ -224,6 +233,27 @@ impl Refusal {
         }
     }
 
+    /// A mirror push: git deletes what the remote has and the clone lacks without a line on
+    /// the hook's stdin, so a protected branch would go unjudged
+    /// (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
+    fn mirror(remote: &str) -> Self {
+        Self {
+            kind: "negotiation",
+            what: format!(
+                "this is a mirror push to `{remote}` (`--mirror`, or `remote.{remote}.mirror`)."
+            ),
+            why: "A mirror push deletes every remote ref the clone lacks, and git never writes \
+                  those deletions to the pre-push hook; a protected branch could vanish \
+                  unjudged, so the whole push is refused."
+                .to_owned(),
+            how: format!(
+                "Push branches by name, `git push {remote} <branch>`, and delete by name, `git \
+                 push {remote} :<branch>`, which the hook judges; unset \
+                 `remote.{remote}.mirror` if it is set."
+            ),
+        }
+    }
+
     /// A line on the hook's stdin that is not what git writes.
     fn hook_line(line: &str) -> Self {
         Self {
@@ -252,12 +282,12 @@ impl Refusal {
                     .to_owned(),
                 match &at.stale {
                     Some(stale) => format!(
-                        "The root ref {} is there and does not count (see the note above), \
-                         and `jtac check` keeps a root it finds: run `git update-ref -d \
-                         {stale}`, then `jtac check` with {} checked out, then push again. Do \
-                         not add `--no-verify`: the commit would land with no root and read as \
-                         absent to every reader.",
-                        at.tip, at.tip
+                        "The root ref {stale} is there and does not count (see the note \
+                         above), and `jtac check` keeps a root it finds: run `git update-ref \
+                         -d {stale}`, then `jtac check` with {} checked out, then push again. \
+                         Do not add `--no-verify`: the commit would land with no root and read \
+                         as absent to every reader.",
+                        at.tip
                     ),
                     None => format!(
                         "Run `jtac check` with {} checked out, then push again. Do not add \
@@ -401,6 +431,7 @@ mod tests {
         let rows = [
             (Refusal::hook_line("x"), "negotiation"),
             (Refusal::hook_stdin("it is not UTF-8"), "negotiation"),
+            (Refusal::mirror("origin"), "negotiation"),
             (Refusal::verifier(&spawn), "negotiation"),
             (Refusal::push(&Refuse::Absent, &at), "negotiation"),
             (Refusal::push(&Refuse::Unknown, &at), "negotiation"),

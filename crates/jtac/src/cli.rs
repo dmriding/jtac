@@ -49,6 +49,9 @@ pub struct InitArgs {
     /// `origin`
     #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
+    /// Keep a pre-push hook jtac did not write, unread: you added the exec line to it
+    #[arg(long)]
+    pub keep_hook: bool,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -117,6 +120,7 @@ mod tests {
             Some(Command::Init(InitArgs {
                 dry_run: true,
                 remote: Some("up".into()),
+                keep_hook: false,
                 json: false,
             }))
         );

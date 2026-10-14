@@ -76,9 +76,10 @@ pub(crate) fn probe(repo: &Path, args: &[&str], absent: i32) -> Result<Option<St
 /// Whether `info/grafts` exists: a graft rewrites the parents git shows, so `check`, the
 /// hook, and `status` refuse rather than read a history the remote will not see
 /// (`a_replace_graft_does_not_hide_the_change`, `a_grafts_file_refuses_the_hook_and_status`).
-pub fn grafted(repo: &Path) -> Result<bool, RepoError> {
+pub fn grafted(repo: &Path) -> Result<Option<PathBuf>, RepoError> {
     let out = git(repo, &["rev-parse", "--git-path", "info/grafts"])?;
-    Ok(repo.join(text(&out)).exists())
+    let path = repo.join(text(&out));
+    Ok(path.exists().then_some(path))
 }
 
 /// One git config value, `None` when unset.

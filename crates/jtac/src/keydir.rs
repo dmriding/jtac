@@ -77,8 +77,10 @@ pub fn plan(repo: &Path) -> Result<Key, Refusal> {
     }
 }
 
-/// Make the key unless it exists, name it in the global config, then resolve it again and ask
-/// ssh-keygen for its fingerprint, so a key that cannot sign refuses here and not at push.
+/// Make the key unless it exists, prove it signs (the fingerprint probe reads only the public
+/// half; an unprotected or passphrased file fails at `-Y sign`), then name it in the global
+/// config, so a key that cannot sign refuses here and names nothing
+/// (`an_unusable_file_at_the_key_path_refuses_and_names_nothing`).
 pub fn create(
     repo: &Path,
     program: &Path,
@@ -96,6 +98,8 @@ pub fn create(
     };
     let r = resolved(repo, &cfg).map_err(|e| Refusal::no_identity(&e))?;
     let id = jtac_sign::identity(r).map_err(|e| Refusal::init_key_file(path, &e))?;
+    jtac_sign::sign(&id, jtac_sign::Namespace::Root, b"jtac init probe")
+        .map_err(|e| Refusal::init_key_file(path, &e))?;
     git(repo, &["config", "--global", "jtac.signingkey", &value])
         .map_err(|e| Refusal::init_config_write(&value, &e))?;
     Ok(id)

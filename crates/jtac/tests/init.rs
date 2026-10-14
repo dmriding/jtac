@@ -324,6 +324,26 @@ fn an_unusable_file_at_the_key_path_refuses_and_names_nothing() {
         ran.stderr
     );
     assert_eq!(env.git(&["config", "--global", "jtac.signingkey"]), "");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::remove_file(env.key()).unwrap();
+        let out = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(env.key())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::set_permissions(env.key(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let ran = env.jtac(&["init"]);
+        assert_eq!(
+            ran.code, 2,
+            "a key ssh-keygen will not sign with: {}",
+            ran.stdout
+        );
+        assert!(ran.stderr.contains("does not work"), "{}", ran.stderr);
+        assert_eq!(env.git(&["config", "--global", "jtac.signingkey"]), "");
+    }
 }
 
 #[test]
@@ -416,9 +436,24 @@ fn a_foreign_hook_refuses_with_the_exec_line_and_is_left_alone() {
     let integrated = format!("#!/bin/sh\necho mine\n{line}\n");
     std::fs::write(&hook, &integrated).unwrap();
     executable(&hook);
-    let ran = env.init(&[]);
-    assert!(ran.stdout.contains("kept pre-push hook"), "{}", ran.stdout);
+    let ran = env.jtac(&["init"]);
+    assert_eq!(ran.code, 2, "the line alone proves nothing: {}", ran.stdout);
+    let ran = env.init(&["--keep-hook"]);
+    assert!(
+        ran.stdout.contains("kept pre-push hook") && ran.stdout.contains("yours, unread"),
+        "{}",
+        ran.stdout
+    );
     assert_eq!(std::fs::read_to_string(&hook).unwrap(), integrated);
+    let bare = Repo::bare(&[]);
+    let url = slashes(bare.path());
+    env.git(&["remote", "set-url", "origin", &url]);
+    env.repo.write("a.txt", b"a\n");
+    env.repo.commit("no root");
+    let out = env.run("git", &["push", "origin", "main"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("has no root"), "{stderr}");
 }
 
 #[cfg(unix)]
@@ -439,20 +474,21 @@ fn a_hook_git_cannot_execute_is_made_executable() {
     let env = Env::new();
     env.init(&[]);
     let hook = env.repo.path().join(".git").join("hooks").join("pre-push");
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let ran = env.init(&[]);
-    assert!(
-        ran.stdout.contains("wrote pre-push hook") && ran.stdout.contains("made executable"),
-        "{}",
-        ran.stdout
-    );
-    let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
-    assert_eq!(mode & 0o111, 0o111, "{mode:o}");
-    assert_eq!(
-        env.objects().len(),
-        2,
-        "the chmod is a change the lever records"
-    );
+    for (n, mode) in [0o644, 0o641, 0o654].into_iter().enumerate() {
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(mode)).unwrap();
+        let ran = env.init(&[]);
+        assert!(
+            ran.stdout.contains("wrote pre-push hook") && ran.stdout.contains("made executable"),
+            "{mode:o}: {}",
+            ran.stdout
+        );
+        let now = std::fs::metadata(&hook).unwrap().permissions().mode();
+        assert_eq!(now & 0o111, 0o111, "{now:o}");
+        assert!(
+            env.objects().len() >= 2,
+            "{n}: the chmod is a change the lever records"
+        );
+    }
 }
 
 /// `create_new` guards the file name only; the directory it sits in must be this

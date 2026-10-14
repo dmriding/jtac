@@ -320,6 +320,7 @@ dependencies = [
  "jtac-sign",
  "jtac-store",
  "jtac-testkit",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",

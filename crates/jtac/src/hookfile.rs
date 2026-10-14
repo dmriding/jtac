@@ -1,8 +1,9 @@
 //! The `pre-push` file `jtac init` installs (DESIGN.md section 11.3, hook rules): `#!/bin/sh`,
 //! the version marker, and an `exec` of this binary by absolute path in single quotes. A file
-//! jtac did not write is never edited; its owner gets the line to add, and a file that ends
-//! with that line is kept. A hook git cannot execute is a gate that is not there, so the mode
-//! is judged with the bytes (`only_a_file_jtac_wrote_or_one_that_execs_it_is_kept`).
+//! jtac did not write is never edited or read for meaning: its owner gets the line to add
+//! and `--keep-hook` to say it is there, since no reading proves the line is reached. A hook
+//! git cannot execute is a gate that is not there, so execute access is judged with the
+//! bytes, the way git's own `access(X_OK)` does (`only_a_file_jtac_wrote_is_kept_or_rewritten`).
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ pub enum Found {
     File {
         /// Its bytes.
         bytes: Vec<u8>,
-        /// Any execute bit; always true where there is none.
+        /// This user has execute access; always true where there is no such thing.
         executable: bool,
     },
     /// A symlink, a directory, or anything else jtac did not write.
@@ -41,6 +42,8 @@ pub enum Install {
     Rewrite,
     /// The right file, not executable.
     Chmod,
+    /// A file jtac did not write, kept on `--keep-hook`.
+    Foreign,
 }
 
 /// The `exec` line that hands git's arguments and stdin to `jtac hook pre-push`.
@@ -56,10 +59,11 @@ pub fn script(exe: &str) -> Result<String, Refusal> {
     Ok(format!("#!/bin/sh\n{MARKER}\n{}\n", exec_line(exe)))
 }
 
-/// Keep, write, rewrite, or chmod; `None` when the file is not one jtac wrote and does not
-/// end with the exec line. A file with the marker and anything beyond the three lines was
-/// edited by hand and is not rewritten.
-pub fn judge(found: &Found, want: &str) -> Option<Install> {
+/// Keep, write, rewrite, or chmod; `None` when the file is not one jtac wrote, unless `keep`
+/// says the owner put the exec line in it, which is kept as `Foreign` only when git can run
+/// it. A file with the marker and anything beyond the three lines was edited by hand and is
+/// not rewritten.
+pub fn judge(found: &Found, want: &str, keep: bool) -> Option<Install> {
     let ours = |text: &str| {
         let lines: Vec<&str> = text.lines().collect();
         matches!(lines[..], ["#!/bin/sh", marker, exec]
@@ -67,23 +71,22 @@ pub fn judge(found: &Found, want: &str) -> Option<Install> {
                 && exec.starts_with("exec '")
                 && exec.ends_with("' hook pre-push \"$@\""))
     };
-    let exec = want.lines().nth(2).unwrap_or_default();
-    let ends_with_exec =
-        |text: &str| text.lines().rev().find(|l| !l.trim().is_empty()) == Some(exec);
     let (bytes, executable) = match found {
         Found::Absent => return Some(Install::Write),
         Found::Other => return None,
         Found::File { bytes, executable } => (bytes, *executable),
     };
-    let text = std::str::from_utf8(bytes).ok()?;
-    if bytes == want.as_bytes() || ends_with_exec(text) {
-        Some(if executable {
+    if bytes == want.as_bytes() {
+        return Some(if executable {
             Install::Keep
         } else {
             Install::Chmod
-        })
-    } else if ours(text) {
+        });
+    }
+    if std::str::from_utf8(bytes).is_ok_and(ours) {
         Some(Install::Rewrite)
+    } else if keep && executable {
+        Some(Install::Foreign)
     } else {
         None
     }
@@ -121,21 +124,22 @@ pub fn read(path: &Path) -> Result<Found, Refusal> {
         Ok(m) if m.is_file() => std::fs::read(path)
             .map(|bytes| Found::File {
                 bytes,
-                executable: executable(&m),
+                executable: executable(path),
             })
             .map_err(|e| Refusal::init_io("the pre-push hook", path, &e)),
         Ok(_) => Ok(Found::Other),
     }
 }
 
+/// `access(X_OK)`, git's own test: an execute bit this user does not hold is not one
+/// (`a_hook_git_cannot_execute_is_made_executable`).
 #[cfg(unix)]
-fn executable(m: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    m.permissions().mode() & 0o111 != 0
+fn executable(path: &Path) -> bool {
+    rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
 }
 
 #[cfg(not(unix))]
-fn executable(_: &std::fs::Metadata) -> bool {
+fn executable(_: &Path) -> bool {
     true
 }
 
@@ -162,21 +166,21 @@ pub fn chmod(path: &Path) -> Result<(), Refusal> {
 }
 
 impl Refusal {
-    /// A hook file at the path that jtac did not write.
+    /// A hook file at the path that jtac did not write, or one `--keep-hook` names that git
+    /// cannot run.
     pub fn init_foreign_hook(path: &Path, exe: &str) -> Self {
+        let path = path.to_string_lossy();
         ask(
+            format!("`{path}` exists and jtac did not write it."),
+            "jtac never edits or reads a hook it did not write: the file is someone's own gate, \
+             rewriting it would drop whatever it enforces, and no reading proves a line in it \
+             is reached. Do not delete it to get past this.",
             format!(
-                "`{}` exists and jtac did not write it.",
-                path.to_string_lossy()
-            ),
-            "jtac never edits a hook it did not write: the file is someone's own gate, and \
-             rewriting it would drop whatever it enforces. Do not delete it to get past this.",
-            format!(
-                "Add `{}` as the last line of `{}` (a hook that reads stdin before it leaves \
-                 jtac no refs to judge), then run `jtac init` again: a file that ends with \
-                 that line is kept.",
-                exec_line(exe),
-                path.to_string_lossy()
+                "Add `{}` as the last line `{path}` reaches (before any `exit`, after any \
+                 read of stdin), make it executable, then run `jtac init --keep-hook`, which \
+                 keeps the file unread; `git push` of a commit with no root must then be \
+                 refused.",
+                exec_line(exe)
             ),
         )
     }
@@ -210,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_file_jtac_wrote_or_one_that_execs_it_is_kept() {
+    fn only_a_file_jtac_wrote_is_kept_or_rewritten() {
         let want = script(EXE).unwrap();
         let moved = script("/workspace/old/jtac").unwrap();
         let file = |s: &str| Found::File {
@@ -222,18 +226,18 @@ mod tests {
             executable: false,
         };
         let integrated = format!("#!/bin/sh\necho mine\n{}\n", exec_line(EXE));
+        assert_eq!(
+            judge(&file(&integrated), &want, true),
+            Some(Install::Foreign)
+        );
+        assert_eq!(judge(&plain(&integrated), &want, true), None);
+        assert_eq!(judge(&Found::Other, &want, true), None);
+        assert_eq!(judge(&plain(&want), &want, true), Some(Install::Chmod));
         let rows = [
             (Found::Absent, Some(Install::Write)),
             (file(&want), Some(Install::Keep)),
             (plain(&want), Some(Install::Chmod)),
-            (file(&integrated), Some(Install::Keep)),
-            (file(&format!("{integrated}\n\n")), Some(Install::Keep)),
-            (plain(&integrated), Some(Install::Chmod)),
-            (
-                file(&integrated.replace("/workspace/bin", "/workspace/old")),
-                None,
-            ),
-            (file(&format!("{integrated}echo after\n")), None),
+            (file(&integrated), None),
             (plain(&moved), Some(Install::Rewrite)),
             (file(&moved), Some(Install::Rewrite)),
             (file(&moved.replace("v1", "v2")), Some(Install::Rewrite)),
@@ -257,7 +261,7 @@ mod tests {
             (Found::Other, None),
         ];
         for (found, install) in rows {
-            assert_eq!(judge(&found, &want), install, "{found:?}");
+            assert_eq!(judge(&found, &want, false), install, "{found:?}");
         }
     }
 

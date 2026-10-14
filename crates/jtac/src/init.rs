@@ -43,7 +43,7 @@ impl Plan {
         matches!(self.key, Key::New { .. })
             || !self.store_there
             || self.policy.is_some()
-            || self.install != Install::Keep
+            || !matches!(self.install, Install::Keep | Install::Foreign)
             || (self.remote.is_some() && !self.refspec_there)
     }
 }
@@ -84,7 +84,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     let exe = hookfile::exe()?;
     let script = hookfile::script(&exe)?;
     let hook = hookfile::dir(&repo)?.join("pre-push");
-    let install = hookfile::judge(&hookfile::read(&hook)?, &script)
+    let install = hookfile::judge(&hookfile::read(&hook)?, &script, a.keep_hook)
         .ok_or_else(|| Refusal::init_foreign_hook(&hook, &exe))?;
     let mut plan = Plan {
         store_there: store.dir().is_dir(),
@@ -145,6 +145,15 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
     let hook = slashes(&p.hook);
     match p.install {
         Install::Keep => out.kept("hook", format!("pre-push hook {hook}")),
+        Install::Foreign => {
+            out.kept("hook", format!("pre-push hook {hook} (yours, unread)"));
+            out.notes.push(
+                "the pre-push hook is not jtac's and was not read: the exec line you added \
+                 is the gate only where the script reaches it; `git push` of a commit with \
+                 no root must be refused"
+                    .to_owned(),
+            );
+        }
         Install::Chmod => {
             if !dry {
                 hookfile::chmod(&p.hook)?;

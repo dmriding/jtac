@@ -70,8 +70,8 @@ pub struct Last {
 /// upstream's tip; with no upstream it creates the branch.
 pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
-    if repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
-        return Err(Refusal::grafted());
+    if let Some(path) = repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
+        return Err(Refusal::grafted(&path));
     }
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let head = repo::peel(&repo, &format, "HEAD").map_err(|e| Refusal::no_head(&e))?;

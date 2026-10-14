@@ -163,14 +163,18 @@ impl Refusal {
     }
 
     /// The repository has a grafts file.
-    pub fn grafted() -> Self {
+    pub fn grafted(path: &std::path::Path) -> Self {
+        let path = path.to_string_lossy().replace('\\', "/");
         Self::new(
-            "the repository has `info/grafts`.",
+            format!("the repository has a grafts file, `{path}`."),
             "A graft changes the parents git reports, so the base, the diff, and `covers` \
              would describe a history the root does not name; replace refs are ignored for \
              the same reason, but a grafts file cannot be.",
-            "Remove `.git/info/grafts` (`git replace --convert-graft-file` keeps it as replace \
-             refs, which jtac ignores), then run `jtac check` again.",
+            format!(
+                "Remove `{path}` (`git replace --convert-graft-file` keeps it as replace refs, \
+                 which jtac ignores; unset `GIT_GRAFT_FILE` if that named it), then run the \
+                 command again."
+            ),
         )
     }
 
@@ -341,7 +345,7 @@ mod tests {
         let rows = [
             Refusal::not_built("status"),
             Refusal::dirty("x"),
-            Refusal::grafted(),
+            Refusal::grafted(std::path::Path::new("/workspace/.git/info/grafts")),
             Refusal::shallow(),
             Refusal::moved(None),
             Refusal::moved(Some("y")),

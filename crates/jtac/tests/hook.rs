@@ -98,6 +98,39 @@ fn hook_to(repo: &Repo, remote: &str, stdin: &[u8], extra: &[(&str, &str)]) -> R
     Ran::of(child.wait_with_output().unwrap())
 }
 
+/// `git push --mirror` deletes remote refs the clone lacks without a line on stdin, so a
+/// protected branch would go unjudged; the lines it does send name `refs/remotes/`, and the
+/// whole push is refused on them or on `remote.<name>.mirror`.
+#[test]
+fn a_mirror_push_is_refused_because_git_hides_its_deletions() {
+    let Checked {
+        origin,
+        repo,
+        base,
+        covered,
+    } = checked();
+    install_hook(&repo);
+    repo.git(&["switch", "-q", "-c", "topic"]);
+    repo.git(&["branch", "-q", "-D", "main"]);
+    let out = repo.command("git", &["push", "--mirror", "origin"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("mirror push"), "{stderr}");
+    assert_eq!(origin.git(&["rev-parse", "main"]), base, "main survived");
+    repo.git(&["config", "remote.origin.mirror", "true"]);
+    let ran = hook(
+        &repo,
+        &format!("refs/heads/topic {covered} refs/heads/topic {base}\n"),
+        &[],
+    );
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("remote.origin.mirror"),
+        "{}",
+        ran.stderr
+    );
+}
+
 /// A ref name git accepts and this release cannot read must refuse, never pass unjudged.
 #[test]
 fn non_utf8_stdin_refuses_rather_than_passes() {
@@ -503,7 +536,7 @@ fn a_grafts_file_refuses_the_hook_and_status() {
     repo.write("c.txt", b"c\n");
     let rework = repo.commit("rework");
     assert_eq!(jtac(&repo, &["check"]).code, 0);
-    repo.write(
+    let grafts = repo.write(
         ".git/info/grafts",
         format!("{rework} {covered}\n").as_bytes(),
     );
@@ -513,7 +546,12 @@ fn a_grafts_file_refuses_the_hook_and_status() {
         &[],
     );
     assert_eq!(ran.code, 2, "{}", ran.stderr);
-    assert!(ran.stderr.contains("grafts"), "{}", ran.stderr);
+    assert!(
+        ran.stderr
+            .contains(&grafts.to_string_lossy().replace('\\', "/")),
+        "{}",
+        ran.stderr
+    );
     let ran = jtac(&repo, &["status"]);
     assert_eq!(ran.code, 2, "{}", ran.stderr);
     assert!(ran.stderr.contains("grafts"), "{}", ran.stderr);

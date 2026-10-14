@@ -30,3 +30,6 @@ jtac-testkit = { workspace = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["fs"] }

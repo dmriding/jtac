@@ -489,7 +489,8 @@ Hook rules:
 
 - A hook's stdout is a protocol wire. Nothing prints to stdout except the protocol. Diagnostics go to stderr.
 - A hook that errors internally fails closed for push and open for the advisory.
-- `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it; a file that ends with that line is kept, and one git cannot execute is made executable. `.jtac` as a symlink is refused: nothing is written through a link.
+- `jtac init` refuses to overwrite a hook file it did not write, and prints the line to add to it; `jtac init --keep-hook` then keeps that file unread, since no reading of a script proves the line is reached, and the owner answers for it. A hook git cannot execute is made executable, judged as git judges it. `.jtac` as a symlink is refused: nothing is written through a link.
+- A mirror push is refused whole: git deletes what the remote has and the clone lacks without a line on the hook's stdin, so a protected branch could vanish unjudged. The hook reads `remote.<name>.mirror` and any line under `refs/remotes/`, which only a mirror sends. A deletion through a symbolic ref on the server is judged by the name pushed; what it points at is the server's to know.
 - A hook file is `#!/bin/sh`, a marker line that names its version, and `exec '<absolute jtac>' hook pre-push "$@"`: absolute path, single quotes. `jtac hook pre-push` is the entry point and reads what git writes to its stdin.
 
 ### 11.4 Command classification

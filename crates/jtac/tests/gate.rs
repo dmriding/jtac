@@ -814,12 +814,14 @@ fn a_replace_graft_does_not_hide_the_change_and_a_grafts_file_refuses() {
     assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
     assert!(
         ran.stderr
-            .starts_with("jtac: the repository has `info/grafts`."),
+            .starts_with("jtac: the repository has a grafts file, `")
+            && ran.stderr.contains("/.git/info/grafts`."),
         "{}",
         ran.stderr
     );
     assert!(
-        ran.stderr.contains("Remove `.git/info/grafts`"),
+        ran.stderr
+            .contains("/.git/info/grafts` (`git replace --convert-graft-file`"),
         "{}",
         ran.stderr
     );
