@@ -48,11 +48,19 @@ static UNBLOCKS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static LIST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:before_|after_)?script:\s*$").expect("literal"));
 /// A `"` or `'` opening a scalar value after a key or a dash, past an anchor or tag; one at a
-/// line start continues a plain scalar and opens nothing.
+/// line start continues a plain scalar and opens nothing, unless the line above was `BARE`.
 static QUOTE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^\s*(?:-\s+)*(?:(?:"[^"]*"|'[^']*'|[^\s:#"']+):\s+|-\s+)(?:[&!]\S+\s+)?(["'])"#)
         .expect("literal")
 });
+/// A key, anchor or tag with its value on the next line.
+static BARE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\s*(?:-\s+)*(?:(?:"[^"]*"|'[^']*'|[^\s:#"']+):\s*)?(?:[&!]\S+)?\s*(?:#.*)?$"#)
+        .expect("literal")
+});
+/// A `"` or `'` opening the value of the key above.
+static VALUE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^\s*(?:[&!]\S+\s+)?(["'])"#).expect("literal"));
 /// A command key opening a block scalar.
 static BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -112,6 +120,7 @@ fn inside(text: &str) -> Vec<bool> {
 /// `a_quoted_scalar_continuing_onto_a_hash_line_is_read`.
 fn shell(text: &str) -> Vec<bool> {
     let mut open: Option<char> = None;
+    let mut bare = false;
     split_lines(text)
         .into_iter()
         .zip(inside(text))
@@ -120,12 +129,17 @@ fn shell(text: &str) -> Vec<bool> {
             let (from, quote) = match open {
                 Some(q) => (0, Some(q)),
                 None if body => (0, None),
-                None => QUOTE
-                    .captures(line)
+                None => bare
+                    .then(|| VALUE.captures(line))
+                    .flatten()
+                    .or_else(|| QUOTE.captures(line))
                     .and_then(|c| c.get(1))
                     .map_or((0, None), |m| (m.end(), m.as_str().chars().next())),
             };
             open = quote.filter(|&q| !closes(&line[from..], q));
+            if !line.trim().is_empty() {
+                bare = open.is_none() && !body && line.contains(':') && BARE.is_match(line);
+            }
             body || was
         })
         .collect()
@@ -659,6 +673,24 @@ mod tests {
                     Some("steps:\n  - \"run\": \"bash -c 'cargo test\n      #' || true\"\n"),
                 ),
                 &[(3, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some("steps:\n  - run:\n      \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(4, "CI step may fail `#' || true\"`")],
+            ),
+            (
+                change(
+                    ".github/workflows/ci.yml",
+                    None,
+                    "steps:\n  - run: exit 1\n",
+                    Some("steps:\n  - run: &c\n\n      \"bash -c 'exit 1\n      #' || true\"\n"),
+                ),
+                &[(5, "CI step may fail `#' || true\"`")],
             ),
             (
                 change(

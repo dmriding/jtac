@@ -207,7 +207,7 @@ impl<'a> Scanner<'a> {
                 quote,
             ),
             Quote::Template(depth) => {
-                let (close, depth) = template_close(rest, depth);
+                let (close, depth) = template_close(rest, depth, 0);
                 (close, Quote::Template(depth))
             }
             Quote::Regex => (regex_close(rest), quote),
@@ -362,11 +362,17 @@ fn rust_char(rest: &[char]) -> Option<usize> {
     }
 }
 
+/// Templates a line may nest before a backtick reads as text, so a crafted line cannot
+/// overflow the stack.
+const NEST: u32 = 32;
+
 /// Index just past the backtick closing a JS template, and the `${ }` depth left open. In the
-/// expression braces count and a string, comment or template on the same line is skipped
-/// whole; a brace in a regex there, or one left open at the line end, still skews the depth.
-fn template_close(hay: &[char], mut depth: u32) -> (Option<usize>, u32) {
+/// expression braces count and a string, comment, regex (a `/` after an operator or opener
+/// that closes on the line) or template on the same line is skipped whole; one left open at
+/// the line end still skews the depth.
+fn template_close(hay: &[char], mut depth: u32, nested: u32) -> (Option<usize>, u32) {
     let mut i = 0;
+    let mut last = ' ';
     while i < hay.len() {
         let rest = hay.len() - i - 1;
         match (hay[i], depth) {
@@ -379,12 +385,22 @@ fn template_close(hay: &[char], mut depth: u32) -> (Option<usize>, u32) {
             ('{', 1..) => depth += 1,
             ('}', 1..) => depth -= 1,
             (q @ ('"' | '\''), 1..) => i += find_unescaped(&hay[i + 1..], q).unwrap_or(rest),
-            ('`', 1..) => i += template_close(&hay[i + 1..], 0).0.unwrap_or(rest),
+            ('`', 1..) if nested < NEST => {
+                i += template_close(&hay[i + 1..], 0, nested + 1)
+                    .0
+                    .unwrap_or(rest);
+            }
             ('/', 1..) if hay.get(i + 1) == Some(&'/') => return (None, depth),
             ('/', 1..) if hay.get(i + 1) == Some(&'*') => {
                 i += find(&hay[i + 2..], "*/").map_or(rest, |j| j + 3);
             }
+            ('/', 1..) if "(,=:[!&|?{};+-*%<>~^".contains(last) => {
+                i += regex_close(&hay[i + 1..]).unwrap_or(0);
+            }
             _ => {}
+        }
+        if let Some(&c) = hay.get(i).filter(|c| !c.is_whitespace()) {
+            last = c;
         }
         i += 1;
     }
@@ -701,11 +717,32 @@ mod tests {
                 "const t = `${x // }`\n}`; it.only('a', f)",
                 &["const t = `", "`; it.only('', f)"],
             ),
+            (
+                Lang::Js,
+                "const t = `${s.replace(/\"/g, '&quot;')}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${u.replace(/^https?:\\/\\//, \"\")}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
+            (
+                Lang::Js,
+                "const t = `${a / b}`;\nit.only('a', f);",
+                &["const t = ``;", "it.only('', f);"],
+            ),
         ];
         for (lang, text, want) in rows {
             let got: Vec<String> = scan(*lang, text).iter().map(Line::visible).collect();
             assert_eq!(got, *want, "{lang:?}: {text:?}");
         }
+    }
+
+    #[test]
+    fn templates_nested_past_the_cap_read_as_text_without_recursing() {
+        let deep = format!("x = `{}", "${`".repeat(20_000));
+        assert_eq!(code(Lang::Js, &deep), ["x = `"]);
     }
 
     #[test]
