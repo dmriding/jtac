@@ -3,22 +3,24 @@
 use jtac_core::{CanonicalError, CheckSpec, Facts, GitOid};
 
 use crate::hash::policy_hash;
-use crate::schema::Policy;
+use crate::schema::{INTEGRITY_CHECK_ID, Policy};
 
-/// What `gate` needs from `policy` for `commit` and `tree`. Checks come out in policy order.
+/// What `gate` needs from `policy` for `commit` and `tree`. Checks come out in policy order
+/// behind the required `integrity` check, which runs first (DESIGN.md section 11.1).
 pub fn facts(policy: &Policy, commit: GitOid, tree: GitOid) -> Result<Facts, CanonicalError> {
     Ok(Facts {
         commit,
         tree,
         policy: policy_hash(policy)?,
-        checks: policy
-            .checks
-            .iter()
-            .map(|(id, c)| CheckSpec {
-                id: id.clone(),
-                required: c.required,
-            })
-            .collect(),
+        checks: std::iter::once(CheckSpec {
+            id: INTEGRITY_CHECK_ID.to_owned(),
+            required: true,
+        })
+        .chain(policy.checks.iter().map(|(id, c)| CheckSpec {
+            id: id.clone(),
+            required: c.required,
+        }))
+        .collect(),
         block_at: policy.integrity.block_at,
     })
 }
@@ -51,6 +53,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                ("integrity", true),
                 ("audit", false),
                 ("fmt", true),
                 ("lint", true),

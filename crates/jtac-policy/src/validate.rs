@@ -5,7 +5,7 @@ use jtac_core::canonical::MAX_SAFE_INTEGER;
 
 use crate::echo::shown;
 use crate::error::PolicyError;
-use crate::schema::{JTAC_DIR_GLOB, Policy};
+use crate::schema::{INTEGRITY_CHECK_ID, JTAC_DIR_GLOB, Policy};
 
 /// Longest check id or tier name, in bytes.
 pub(crate) const MAX_NAME_BYTES: usize = 64;
@@ -30,6 +30,9 @@ pub fn validate(p: &Policy) -> Result<(), PolicyError> {
     for (id, check) in &p.checks {
         if !is_name(id) {
             return Err(PolicyError::CheckId { id: shown(id) });
+        }
+        if id == INTEGRITY_CHECK_ID {
+            return Err(PolicyError::ReservedId { id: id.clone() });
         }
         let id = id.clone();
         if check.run.first().is_none_or(String::is_empty) {

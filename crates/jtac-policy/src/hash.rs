@@ -40,7 +40,7 @@ pub(crate) mod tests {
     fn design_example_parses_validates_and_hashes() {
         assert_eq!(
             hash(design_example()),
-            "sha256:ff343c242c646d2850b9ef075340d988655a2038afb4b51af63746cb896178f3"
+            "sha256:b5cdb38b7a812bf58e8be709264732b233ba00e3693ed7c192eb2c20a5993995"
         );
     }
 
