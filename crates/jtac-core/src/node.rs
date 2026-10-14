@@ -1,5 +1,7 @@
 //! Evidence nodes: one check run, one finding, or one lever pulled (DESIGN.md section 9.2).
 
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
@@ -118,6 +120,17 @@ pub enum Outcome {
     Error,
 }
 
+impl fmt::Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Skipped => "skipped",
+            Self::Error => "error",
+        })
+    }
+}
+
 /// One thing a check reported.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +159,16 @@ pub enum Severity {
     Major,
     /// Recorded, does not block.
     Minor,
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Blocker => "blocker",
+            Self::Major => "major",
+            Self::Minor => "minor",
+        })
+    }
 }
 
 /// A deliberate, signed change to the gate.

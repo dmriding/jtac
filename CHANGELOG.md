@@ -8,6 +8,14 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.9, M6) `jtac check --preview`: the first verdict. The binary reads HEAD and its policy,
+  diffs from `--base`, the upstream, or the default branch (the last commit when that is HEAD), runs the diff-integrity rules into
+  an in-memory `integrity` check node, runs every policy check, calls `gate`, and prints
+  `CLEARED HOT` or `ABORT` with each reason in three parts; `--json` prints the structure the
+  text is rendered from. Exit 0, 1, or 2; nothing is written; a shallow boundary refuses. `--help` and `--version` through
+  clap. `jtac-testkit` holds the throwaway-repository helper for every crate's integration
+  tests. `Rule::from_id`, `diff::git::git`, and `Display` for `Outcome` and `Severity` support
+  the rendering. DESIGN.md 10.3 and 11.1 edited; decision 30.
 - (0.0.8, M5) `jtac-checks::diff`: the eleven diff-integrity rules of DESIGN.md section 10.3 as
   pure functions over a change set (`report(integrity, matchers, changes)`), with per-language
   pattern tables for Rust, Python, Go, and JavaScript/TypeScript, and `diff::git` to gather the

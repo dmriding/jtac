@@ -11,6 +11,6 @@ mod version;
 
 pub use cache::{Cache, CacheKey, MemoryCache, lookup, store};
 pub use env::{allowed, scrub};
-pub use run::{CAPTURE_CAP, Context, Ran, run};
+pub use run::{CAPTURE_CAP, Context, NESTED_VAR, Ran, run};
 pub use spec::{Spec, specs};
 pub use version::{PROBE_TIMEOUT, VERSION_CAP, first_line, probe_argv};

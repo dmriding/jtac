@@ -260,8 +260,9 @@ fn a_signal_death_is_error_with_the_negated_signal() {
     assert_eq!((ran.body.outcome, ran.body.exit), (Outcome::Error, -15));
 }
 
+/// The nesting marker is the one name the runner adds itself.
 #[test]
-fn the_child_sees_only_allowlisted_variables() {
+fn the_child_sees_only_allowlisted_variables_and_the_nesting_marker() {
     let ran = run(&spec(shell("env", "set"), MINUTE), &ctx(CAPTURE_CAP));
     assert_eq!(ran.body.outcome, Outcome::Pass);
     let out = String::from_utf8_lossy(&ran.stdout);
@@ -275,7 +276,15 @@ fn the_child_sees_only_allowlisted_variables() {
         "{out}"
     );
     assert!(!names.iter().any(|n| n.starts_with("CARGO_PKG")), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l == format!("{}=1", jtac_checks::NESTED_VAR)),
+        "{out}"
+    );
     for name in names {
+        if name == jtac_checks::NESTED_VAR {
+            continue;
+        }
         let shell_made = ["PWD", "OLDPWD", "SHLVL", "_", "PROMPT", "COMSPEC"]
             .iter()
             .any(|s| s.eq_ignore_ascii_case(name));

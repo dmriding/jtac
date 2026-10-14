@@ -1,0 +1,16 @@
+[package]
+name = "jtac-testkit"
+description = "Throwaway git repositories for the workspace's integration tests. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

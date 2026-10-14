@@ -1,67 +1,10 @@
 //! `diff::git` against a throwaway repository: paths, renames, blobs, binaries, and refusals.
 //! No real git config is read.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use jtac_checks::diff::git::{GitError, changes, merge_base};
 use jtac_checks::diff::{Blob, Change, report};
 use jtac_policy::Integrity;
-
-struct Repo {
-    dir: tempfile::TempDir,
-}
-
-impl Repo {
-    fn init(options: &[&str]) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = Self { dir };
-        let mut args = vec!["init", "-q", "-b", "main"];
-        args.extend(options);
-        repo.git(&args);
-        repo
-    }
-
-    fn path(&self) -> &Path {
-        self.dir.path()
-    }
-
-    fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(self.path())
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.path())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "example")
-            .env("GIT_AUTHOR_EMAIL", "example@example.com")
-            .env("GIT_COMMITTER_NAME", "example")
-            .env("GIT_COMMITTER_EMAIL", "example@example.com")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    }
-
-    fn write(&self, path: &str, bytes: &[u8]) -> PathBuf {
-        let full = self.path().join(path);
-        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-        std::fs::write(&full, bytes).unwrap();
-        full
-    }
-
-    fn commit(&self, message: &str) -> String {
-        self.git(&["add", "-A"]);
-        self.git(&["commit", "-q", "--no-gpg-sign", "-m", message]);
-        self.git(&["rev-parse", "HEAD"])
-    }
-}
+use jtac_testkit::Repo;
 
 #[test]
 fn changes_pair_renames_read_both_blobs_and_mark_binaries() {
@@ -75,7 +18,7 @@ fn changes_pair_renames_read_both_blobs_and_mark_binaries() {
     repo.write("img.bin", b"\x00\x01\x02");
     let base = repo.commit("base");
     repo.write("src/a.rs", b"fn a() {}\nfn b() {}\n");
-    std::fs::remove_file(repo.path().join("src/gone.rs")).unwrap();
+    repo.remove("src/gone.rs");
     std::fs::rename(
         repo.path().join("docs/old.md"),
         repo.path().join("docs/new.md"),
@@ -136,8 +79,8 @@ fn a_sha256_repository_and_a_gitlink_read_as_absent_sides() {
     repo.write("lib", b"x\n");
     let base = repo.commit("base");
     assert_eq!(base.len(), 64);
-    std::fs::remove_file(repo.path().join("alpha.txt")).unwrap();
-    std::fs::remove_file(repo.path().join("lib")).unwrap();
+    repo.remove("alpha.txt");
+    repo.remove("lib");
     repo.git(&["rm", "-q", "--cached", "alpha.txt", "lib"]);
     let gitlink = format!("160000,{base},lib");
     repo.git(&["update-index", "--add", "--cacheinfo", &gitlink]);
@@ -188,7 +131,7 @@ fn a_bad_revision_and_a_missing_repository_refuse() {
         }
         other => panic!("{other:?}"),
     }
-    let empty = tempfile::tempdir().unwrap();
+    let empty = Repo::empty();
     assert!(matches!(
         merge_base(empty.path(), "a", "b"),
         Err(GitError::Failed {

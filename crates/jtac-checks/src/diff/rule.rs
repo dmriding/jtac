@@ -29,6 +29,26 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Every rule in table order.
+    pub const ALL: [Rule; 11] = [
+        Rule::Prot001,
+        Rule::Test001,
+        Rule::Test002,
+        Rule::Test003,
+        Rule::Sup001,
+        Rule::Ci001,
+        Rule::Sec001,
+        Rule::Size001,
+        Rule::Size002,
+        Rule::Cmt001,
+        Rule::Add001,
+    ];
+
+    /// The rule an evidence id names, if any.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.id() == id)
+    }
+
     /// The id as evidence spells it.
     pub fn id(self) -> &'static str {
         match self {
@@ -142,19 +162,7 @@ impl Rule {
 mod tests {
     use super::*;
 
-    const ALL: [Rule; 11] = [
-        Rule::Prot001,
-        Rule::Test001,
-        Rule::Test002,
-        Rule::Test003,
-        Rule::Sup001,
-        Rule::Ci001,
-        Rule::Sec001,
-        Rule::Size001,
-        Rule::Size002,
-        Rule::Cmt001,
-        Rule::Add001,
-    ];
+    const ALL: [Rule; 11] = Rule::ALL;
 
     #[test]
     fn every_rule_has_a_distinct_id_a_reason_and_a_fix_in_table_order() {
@@ -174,6 +182,8 @@ mod tests {
                 "{rule:?}"
             );
             assert!(!rule.fix().contains('{'), "{rule:?}: unfilled value");
+            assert_eq!(Rule::from_id(rule.id()), Some(rule));
         }
+        assert_eq!(Rule::from_id("JT-TEST-004"), None);
     }
 }
