@@ -7,7 +7,7 @@ use std::path::Path;
 
 use jtac_checks::git::{git, git_with};
 use jtac_core::{Covers, GitOid, Parent};
-use jtac_store::Store;
+use jtac_store::{Roots, Store};
 
 use crate::refuse::Refusal;
 use crate::repo::{Head, RepoError};
@@ -27,11 +27,10 @@ pub struct Chain {
 /// Commits with a root in this clone that are proper ancestors of HEAD. A root for HEAD
 /// itself, for a descendant, or for a commit this clone lacks would make HEAD uninteresting
 /// to rev-list or stop it (`a_root_for_a_descendant_or_a_missing_commit_does_not_block_head`).
-pub fn covered(repo: &Path, store: &Store, head: &Head) -> Result<BTreeSet<GitOid>, Refusal> {
-    let listed: BTreeSet<GitOid> = store
-        .roots()
-        .map_err(Refusal::store)?
-        .into_iter()
+pub fn covered(repo: &Path, roots: &Roots, head: &Head) -> Result<BTreeSet<GitOid>, Refusal> {
+    let listed: BTreeSet<GitOid> = roots
+        .listed
+        .iter()
         .map(|l| l.commit)
         .filter(|c| *c != head.commit)
         .collect();

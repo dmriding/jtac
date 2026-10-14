@@ -115,7 +115,7 @@ fn a_root_written_on_one_clone_is_fetched_and_read_on_another() {
         assert_eq!(store_b.local_root(&id).unwrap(), None);
         assert_eq!(store_b.manifest(&id).unwrap(), None);
         assert_eq!(store_b.node(&leaf).unwrap(), None);
-        let listed = store_b.roots().unwrap();
+        let listed = store_b.roots().unwrap().listed;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].commit, root_a.commit);
         assert_eq!(
@@ -465,8 +465,10 @@ fn the_file_cache_round_trips_and_a_bad_file_is_a_miss() {
     assert!(cache.put(name, original).is_err());
 }
 
+/// A ref nobody wrote through jtac is noise: listing it as skipped keeps every reader
+/// judging the tip, and the writer's own refs still list (issue 30).
 #[test]
-fn roots_refuses_a_ref_in_the_namespace_the_writer_would_not_write() {
+fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
     let repo = with_commit(&[]);
     let s = Store::open(repo.path()).unwrap();
     let head = repo.git(&["rev-parse", "HEAD"]);
@@ -485,11 +487,19 @@ fn roots_refuses_a_ref_in_the_namespace_the_writer_would_not_write() {
             "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
         ),
     ];
+    repo.git(&["update-ref", &good, &head]);
     for name in rows {
         repo.git(&["update-ref", name, &head]);
-        assert!(refused(&s.roots().unwrap_err()), "{name}");
+        let roots = s.roots().unwrap();
+        assert_eq!(roots.skipped, vec![name.to_owned()]);
+        assert_eq!(roots.listed.len(), 1, "{name}");
+        let note = roots.notes().next().unwrap();
+        assert!(
+            note.contains(name) && note.contains("git update-ref -d"),
+            "{note}"
+        );
         repo.git(&["update-ref", "-d", name]);
     }
-    repo.git(&["update-ref", &good, &head]);
-    assert_eq!(s.roots().unwrap().len(), 1);
+    let roots = s.roots().unwrap();
+    assert!(roots.skipped.is_empty() && roots.listed.len() == 1);
 }

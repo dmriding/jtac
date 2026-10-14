@@ -73,6 +73,7 @@ fn commits(
     let rooted: BTreeSet<GitOid> = store
         .roots()
         .map_err(|e| e.to_string())?
+        .listed
         .into_iter()
         .map(|l| l.commit)
         .collect();

@@ -63,6 +63,29 @@ fn lines(stdin: &str) -> Result<Vec<Line<'_>>, Refusal> {
         .collect()
 }
 
+/// The commands that clear every copy of `key`, from `git config --show-scope --get-all`
+/// lines: one `--unset-all` per scope, since `--unset` fails on a second value and the
+/// repository's config cannot clear a global one; a `command` scope is a `-c` on the push
+/// itself (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
+fn unsets(key: &str, scopes: &str) -> String {
+    let mut seen = Vec::new();
+    for scope in scopes.lines().filter_map(|l| l.split('\t').next()) {
+        if !seen.contains(&scope) {
+            seen.push(scope);
+        }
+    }
+    if seen.is_empty() {
+        seen.push("local");
+    }
+    seen.iter()
+        .map(|scope| match *scope {
+            "command" => format!("drop `-c {key}=...` from the push command"),
+            scope => format!("`git config --{scope} --unset-all {key}`"),
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
 /// Where a refused ref was going, for the message.
 struct At<'a> {
     remote: &'a str,
@@ -82,7 +105,12 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
     let mirror = repo::probe(&repo, &["config", "--type=bool", "--get", &key], 1)
         .map_err(|e| Refusal::repository(&e))?;
     if mirror.as_deref() == Some("true") {
-        return Err(Refusal::mirror(remote));
+        let scopes = repo::probe(&repo, &["config", "--show-scope", "--get-all", &key], 1)
+            .map_err(|e| Refusal::repository(&e))?;
+        return Err(Refusal::mirror(
+            remote,
+            &unsets(&key, &scopes.unwrap_or_default()),
+        ));
     }
     if lines.is_empty() {
         return Ok((String::new(), 0));
@@ -234,7 +262,7 @@ impl Refusal {
 
     /// A mirror remote: git deletes what the remote has and the clone lacks without a line on
     /// the hook's stdin, so a protected branch would go unjudged.
-    fn mirror(remote: &str) -> Self {
+    fn mirror(remote: &str, unsets: &str) -> Self {
         Self {
             kind: "negotiation",
             what: format!("`remote.{remote}.mirror` is set: every push to `{remote}` mirrors."),
@@ -243,9 +271,8 @@ impl Refusal {
                   unjudged, so the whole push is refused."
                 .to_owned(),
             how: format!(
-                "Run `git config --unset remote.{remote}.mirror`, then push branches by name, \
-                 `git push {remote} <branch>`, and delete by name, `git push {remote} \
-                 :<branch>`, which the hook judges."
+                "Run {unsets}, then push branches by name, `git push {remote} <branch>`, and \
+                 delete by name, `git push {remote} :<branch>`, which the hook judges."
             ),
         }
     }
@@ -404,6 +431,29 @@ mod tests {
     }
 
     #[test]
+    fn unsets_name_every_scope_once_and_the_push_command_for_a_dash_c() {
+        let rows = [
+            ("", "`git config --local --unset-all k`"),
+            ("local\ttrue", "`git config --local --unset-all k`"),
+            (
+                "local\ttrue\nlocal\tyes",
+                "`git config --local --unset-all k`",
+            ),
+            (
+                "global\ttrue\nlocal\t1",
+                "`git config --global --unset-all k` and `git config --local --unset-all k`",
+            ),
+            (
+                "worktree\ton\ncommand\ttrue",
+                "`git config --worktree --unset-all k` and drop `-c k=...` from the push command",
+            ),
+        ];
+        for (scopes, want) in rows {
+            assert_eq!(unsets("k", scopes), want, "{scopes:?}");
+        }
+    }
+
+    #[test]
     fn every_hook_refusal_has_three_parts_names_a_command_and_says_its_kind() {
         let (tip, old) = ("b".repeat(40), "a".repeat(40));
         let at = At {
@@ -427,7 +477,7 @@ mod tests {
         let rows = [
             (Refusal::hook_line("x"), "negotiation"),
             (Refusal::hook_stdin("it is not UTF-8"), "negotiation"),
-            (Refusal::mirror("origin"), "negotiation"),
+            (Refusal::mirror("origin", &unsets("k", "")), "negotiation"),
             (Refusal::verifier(&spawn), "negotiation"),
             (Refusal::push(&Refuse::Absent, &at), "negotiation"),
             (Refusal::push(&Refuse::Unknown, &at), "negotiation"),

@@ -6,6 +6,14 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.0.14) A ref under `refs/jtac/roots/` that is not `<xx>/<commit>` is skipped with a note
+  instead of refusing `check`, `status`, and the hook in every clone that fetched it (issue
+  30; DESIGN.md 9.6). Every git child jtac spawns runs without `GIT_CONFIG`, which steers
+  `git config` alone, so a config read can no longer differ from what `git push` sees (issue
+  32). The mirror refusal names one `--unset-all` per scope the key is set in (issue 33).
+
 ### Added
 
 - (0.0.13, M10) The push gate goes live. `jtac_gate::decide` is the one push decision: delete,

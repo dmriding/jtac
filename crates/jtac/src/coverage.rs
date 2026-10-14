@@ -46,8 +46,10 @@ pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
     let mut notes = Vec::new();
     let mut found = counted(store, tool, tip, &tip.commit, &mut notes)?.map(|r| (tip.commit, r));
     let own_stale = found.is_none() && !notes.is_empty();
+    let roots = store.roots().map_err(Refusal::store)?;
+    notes.extend(roots.notes());
     if found.is_none() {
-        for listed in store.roots().map_err(Refusal::store)? {
+        for listed in roots.listed {
             if listed.commit == tip.commit {
                 continue;
             }
