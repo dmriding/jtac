@@ -36,6 +36,8 @@ Nothing is "released" because it merged.
 
 Semver, pre-1.0: a breaking change to the CLI, a policy key, a hook, or an
 evidence format is a minor bump; anything else is a patch. Every pull request
-bumps the version and adds its `[Unreleased]` entry. Shipped evidence and
+bumps the version, in `[workspace.package]` and in every `[workspace.dependencies]`
+path entry (the published `jtac` crate needs a version on each, and `cargo deny`
+refuses a bare path), and adds its `[Unreleased]` entry. Shipped evidence and
 policy schemas are never edited: a change is a new schema version with a
 reader for the old one, whatever the crate version does.

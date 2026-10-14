@@ -30,7 +30,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Path dependencies between workspace crates report "*"; they are private and exempt.
+# Path dependencies between private workspace crates may omit a version; the published
+# `jtac` crate may not, so every workspace path entry carries one (docs/RELEASING.md).
 allow-wildcard-paths = true
 
 [sources]
