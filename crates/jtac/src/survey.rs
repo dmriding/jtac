@@ -49,7 +49,7 @@ pub fn survey(
         range.to_vec()
     };
     let commits = range::commits(&repo, &format, command, &range)?;
-    let ledger = ledger::gather(&repo, &store, &tool, &signers, &format, &commits)?;
+    let ledger = ledger::gather(&repo, &store, &tool, &signers, command, &format, &commits)?;
     let facts: Vec<CommitFact> = commits
         .iter()
         .map(|c| CommitFact {

@@ -50,11 +50,15 @@ impl Signers {
     }
 
     /// A verifier error as a refusal: a `--signers` file that could not be read is about
-    /// the file, anything else is about ssh-keygen.
-    pub fn refusal(&self, err: &SignError) -> Refusal {
+    /// the file; an `Io` elsewhere (the verifier's temp dir) and all else is about ssh-keygen
+    /// (`a_signers_refusal_is_about_the_file_only_when_the_file_failed`).
+    pub fn refusal(&self, command: &str, err: &SignError) -> Refusal {
         match (self, err) {
-            (Self::File(path), SignError::Trust { .. } | SignError::Io { .. }) => {
-                Refusal::signers_file(path, err)
+            (Self::File(file), SignError::Trust { .. }) => {
+                Refusal::signers_file(command, file, err)
+            }
+            (Self::File(file), SignError::Io { path, .. }) if path == file => {
+                Refusal::signers_file(command, file, err)
             }
             _ => Refusal::verifier(err),
         }
@@ -67,5 +71,29 @@ impl Signers {
             Self::Head(_) => format!("HEAD:{TRUST_PATH}"),
             Self::None => format!("none (HEAD has no {TRUST_PATH}; every signer is unknown)"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signers_refusal_is_about_the_file_only_when_the_file_failed() {
+        let file = PathBuf::from("/workspace/s");
+        let io = |path: &str| SignError::Io {
+            path: path.into(),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        let signers = Signers::File(file.clone());
+        let own = signers.refusal("replay", &io("/workspace/s"));
+        assert!(
+            own.how.contains("`jtac replay --signers /workspace/s`"),
+            "{own:?}"
+        );
+        let temp = signers.refusal("replay", &io("/workspace/tmp"));
+        assert!(temp.how.contains("ssh-keygen"), "{temp:?}");
+        let head = Signers::Head(Vec::new()).refusal("verify", &io("/workspace/s"));
+        assert!(head.how.contains("ssh-keygen"), "{head:?}");
     }
 }

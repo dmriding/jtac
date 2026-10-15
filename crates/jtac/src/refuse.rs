@@ -298,8 +298,9 @@ impl Refusal {
         )
     }
 
-    /// A rev that does not name a commit. The rev is rendered as a shell word, never raw:
-    /// a newline in it would forge a line of the three-part message.
+    /// A rev that does not name a commit. The rev is rendered as a shell word, never raw
+    /// (`every_refusal_has_three_non_empty_parts_and_names_the_next_command` forges a
+    /// line with one).
     pub fn rev(rev: &str) -> Self {
         let rev = quoted(rev, "REV");
         Self::new(
@@ -313,7 +314,7 @@ impl Refusal {
     }
 
     /// `--signers` names a file that could not be read as a trust file.
-    pub fn signers_file(path: &std::path::Path, err: &jtac_sign::SignError) -> Self {
+    pub fn signers_file(command: &str, path: &std::path::Path, err: &jtac_sign::SignError) -> Self {
         let path = quoted(&path.to_string_lossy(), "FILE");
         Self::new(
             format!("`--signers` could not be read: {err}."),
@@ -321,7 +322,7 @@ impl Refusal {
              signer nobody could look up would otherwise pass as unknown.",
             format!(
                 "Give `--signers` a plain allowed-signers file, or drop it to read `{TRUST_PATH}` \
-                 at HEAD: `jtac verify --signers {path}` named this one."
+                 at HEAD: `jtac {command} --signers {path}` named this one."
             ),
         )
     }
@@ -495,6 +496,7 @@ mod tests {
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),
             Refusal::rev("no such\nnegotiation: forged"),
             Refusal::signers_file(
+                "verify",
                 std::path::Path::new("/workspace/s"),
                 &jtac_sign::SignError::Trust {
                     path: "/workspace/s".into(),
@@ -512,6 +514,7 @@ mod tests {
             assert!(r.how.contains("jtac ") || r.how.contains("git "), "{r:?}");
             assert!(r.text().starts_with("jtac: "), "{r:?}");
             assert!(r.text().contains("\nnegotiation: "), "{r:?}");
+            assert_eq!(r.text().lines().count(), 3, "{r:?}: a value forged a line");
             assert!(!r.how.contains("<rev>"), "{r:?}: unfilled value");
             assert!(r.json().contains("\"error\""), "{r:?}");
         }

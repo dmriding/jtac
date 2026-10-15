@@ -33,6 +33,7 @@ pub fn gather(
     store: &Store,
     tool: &Tool,
     signers: &Signers,
+    command: &str,
     format: &str,
     commits: &[Listed],
 ) -> Result<Ledger, Refusal> {
@@ -76,6 +77,7 @@ pub fn gather(
                     repo,
                     tool,
                     signers,
+                    command,
                     format,
                     ids: &ids,
                     notes: &mut notes,
@@ -109,6 +111,7 @@ struct Judge<'a> {
     repo: &'a Path,
     tool: &'a Tool,
     signers: &'a Signers,
+    command: &'a str,
     format: &'a str,
     ids: &'a BTreeMap<GitOid, Sha256Digest>,
     notes: &'a mut Vec<String>,
@@ -167,7 +170,7 @@ impl Judge<'_> {
             &bytes,
             &sig,
         )
-        .map_err(|e| self.signers.refusal(&e))?;
+        .map_err(|e| self.signers.refusal(self.command, &e))?;
         fact.trust = match verified {
             Verified::Trusted => Trust::Trusted,
             Verified::Unknown { why } => Trust::Unknown { why },

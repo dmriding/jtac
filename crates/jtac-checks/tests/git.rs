@@ -61,6 +61,8 @@ fn quoted_keeps_a_plain_word_quotes_the_rest_and_replaces_what_no_span_can_hold(
         ("it's", "'it'\\''s'"),
         ("a b", "'a b'"),
         ("a\tb", "'a\tb'"),
+        ("a\nnegotiation: forged", "<p>"),
+        ("a\u{1b}[0m", "<p>"),
         ("h\u{e9}", "'h\u{e9}'"),
         ("x`y", "<p>"),
         ("-x", "<p>"),

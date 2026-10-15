@@ -458,10 +458,11 @@ fn a_missing_parent_root_is_a_note_and_a_clone_with_roots_but_no_nodes_cannot_re
     assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
     assert!(ran.stderr.is_empty(), "{}", ran.stderr);
     assert!(
-        ran.stdout.starts_with("MISMATCH: ")
+        ran.stdout.starts_with("INVALID: ")
             && ran.stdout.contains("signature invalid")
             && ran.stdout.contains("nothing recomputed")
-            && !ran.stdout.contains("verifies"),
+            && !ran.stdout.contains("verifies")
+            && !ran.stdout.contains("ABORT"),
         "{}",
         ran.stdout
     );

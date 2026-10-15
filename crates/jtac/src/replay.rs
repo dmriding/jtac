@@ -92,7 +92,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &bytes,
         &String::from_utf8_lossy(&stored.sig),
     )
-    .map_err(|e| signers.refusal(&e))?;
+    .map_err(|e| signers.refusal("replay", &e))?;
     let mut mismatches = Vec::new();
     let mut notes = vec![format!("signers {}", signers.describe())];
     let signature = match verified {
@@ -265,14 +265,18 @@ fn brief(r: &Reason) -> String {
 
 fn render(o: &ReplayOut) -> String {
     let mut s = String::new();
-    let _ = writeln!(
-        s,
-        "{}: {} replays to {} from {} nodes",
-        if o.matches { "REPLAYED" } else { "MISMATCH" },
-        o.commit.hex(),
-        if o.pass { "CLEARED HOT" } else { "ABORT" },
-        o.nodes
-    );
+    let _ = if o.state.is_none() {
+        writeln!(s, "INVALID: {} is not replayed", o.commit.hex())
+    } else {
+        writeln!(
+            s,
+            "{}: {} replays to {} from {} nodes",
+            if o.matches { "REPLAYED" } else { "MISMATCH" },
+            o.commit.hex(),
+            if o.pass { "CLEARED HOT" } else { "ABORT" },
+            o.nodes
+        )
+    };
     let _ = writeln!(s, "  root      {}", o.root);
     let _ = writeln!(
         s,
