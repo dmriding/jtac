@@ -9,9 +9,16 @@ use jtac_store::{Store, StoreError};
 use crate::judge::Judged;
 use crate::refuse::Refusal;
 
-/// Keep every capture and node, and only then each fresh pass in the cache, so an interrupted
-/// run never leaves a cache entry whose evidence is missing.
-pub fn evidence(store: &Store, j: &Judged, cache: &mut dyn Cache) -> Result<(), Refusal> {
+/// Keep the resolved policy (its name is the policy hash, what `replay` reads it by), every
+/// capture and node, and only then each fresh pass in the cache, so an interrupted run never
+/// leaves a cache entry whose evidence is missing.
+pub fn evidence(
+    store: &Store,
+    policy: &[u8],
+    j: &Judged,
+    cache: &mut dyn Cache,
+) -> Result<(), Refusal> {
+    store.put_blob(policy).map_err(Refusal::store)?;
     for bytes in &j.captures {
         store.put_blob(bytes).map_err(Refusal::store)?;
     }

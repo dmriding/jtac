@@ -31,13 +31,24 @@ pub enum Verified {
     },
 }
 
-/// Verify `sig` over `msg` in `ns` as `signer`, with the keys in `trust` (`.jtac/signers`,
-/// `None` when the tree has none) judged at `at`. The key ssh-keygen names must be the
-/// signer's. A named trust file that is not a plain readable file is an error; ssh-keygen
-/// is given a private copy of the bytes that passed that check.
+/// Where the allowed-signers lines come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trust<'a> {
+    /// The tree has no trust file: every signer is unknown.
+    None,
+    /// A trust file on disk, read through [`TRUST_CAP`] and the plain-file checks.
+    File(&'a Path),
+    /// The file's bytes, already read by a caller that applied its own checks.
+    Bytes(&'a [u8]),
+}
+
+/// Verify `sig` over `msg` in `ns` as `signer`, with the keys in `trust` judged at `at`.
+/// The key ssh-keygen names must be the signer's. A named trust file that is not a plain
+/// readable file is an error; ssh-keygen is given a private copy of the bytes that passed
+/// that check.
 pub fn verify(
     tool: &Tool,
-    trust: Option<&Path>,
+    trust: Trust<'_>,
     signer: &Signer,
     ns: Namespace,
     at: Ts,
@@ -45,8 +56,9 @@ pub fn verify(
     sig: &str,
 ) -> Result<Verified, SignError> {
     let trust = match trust {
-        Some(path) => Some(temp("jtac-trust-", &read_trust(path)?)?),
-        None => None,
+        Trust::File(path) => Some(temp("jtac-trust-", &read_trust(path)?)?),
+        Trust::Bytes(bytes) => Some(temp("jtac-trust-", bytes)?),
+        Trust::None => None,
     };
     let sig_file = temp("jtac-sig-", sig.as_bytes())?;
     let out = novalidate(tool, ns, &sig_file, msg)?;

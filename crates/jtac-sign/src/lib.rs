@@ -18,7 +18,7 @@ pub use key::{GitConfig, KeyRef, ResolveError, Resolved, resolve};
 pub use namespace::Namespace;
 pub use sign::sign;
 pub use tool::Tool;
-pub use verify::{TRUST_CAP, Verified, verify, verify_time};
+pub use verify::{TRUST_CAP, Trust, Verified, verify, verify_time};
 
 /// Why signing or verifying could not run; a signature that fails is a [`Verified`].
 #[derive(Debug, thiserror::Error)]

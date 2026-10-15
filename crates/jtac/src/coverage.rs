@@ -7,7 +7,7 @@ use std::path::Path;
 
 use jtac_core::{GitOid, Root, Sha256Digest};
 use jtac_gate::Coverage;
-use jtac_sign::{Namespace, SignError, Tool, Verified};
+use jtac_sign::{Namespace, SignError, Tool, Trust, Verified};
 use jtac_store::Store;
 
 use crate::refuse::Refusal;
@@ -112,7 +112,7 @@ fn counted(
     let sig = String::from_utf8_lossy(&stored.sig);
     let verified = jtac_sign::verify(
         tool,
-        None,
+        Trust::None,
         &root.signer,
         Namespace::Root,
         root.ts,

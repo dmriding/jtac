@@ -2,11 +2,13 @@
 //! with exit 2. A refusal is never a verdict: the gate could not answer. Every refusal here
 //! is a negotiation; the hooks build the fences with `fence`.
 
-use jtac_checks::diff::git::GitError;
+use jtac_checks::diff::git::{GitError, quoted};
 use jtac_policy::{POLICY_PATH, PolicyError};
+use jtac_sign::TRUST_CAP;
 use serde::Serialize;
 
 use crate::repo::RepoError;
+use crate::trust::TRUST_PATH;
 
 /// The three parts, in order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -47,8 +49,9 @@ impl Refusal {
         Self::new(
             format!("`{command}` is not a command in this release."),
             format!(
-                "jtac {} ships `init`, `check`, `status`, `why`, and `hook`; exiting zero on anything else \
-                 would let a hook treat \"not built\" as \"passed\".",
+                "jtac {} ships `init`, `check`, `status`, `why`, `verify`, `replay`, `audit`, `show`, \
+                 and `hook`; exiting zero on anything else would let a hook treat \"not built\" as \
+                 \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),
             "Run `jtac check` for a verdict, `jtac check --preview` for one that writes \
@@ -276,6 +279,122 @@ impl Refusal {
         )
     }
 
+    /// A range git could not list.
+    pub fn range(command: &str, specs: &[String], err: &GitError) -> Self {
+        let spec: Vec<String> = specs.iter().map(|w| quoted(w, "RANGE")).collect();
+        let spec = spec.join(" ");
+        let said = match err {
+            GitError::Failed { stderr, .. } => stderr.clone(),
+            e => e.to_string(),
+        };
+        Self::new(
+            format!("`{spec}` is not a range git can list: {said}"),
+            "`verify`, `audit`, and `show` walk exactly the commits git names, so a range git \
+             cannot resolve is refused rather than read as empty.",
+            format!(
+                "Run `git rev-list {spec}` to see what git says, then `jtac {command}` with a \
+                 range it lists."
+            ),
+        )
+    }
+
+    /// A rev that does not name a commit. The rev is rendered as a shell word, never raw
+    /// (`every_refusal_has_three_non_empty_parts_and_names_the_next_command` forges a
+    /// line with one).
+    pub fn rev(rev: &str) -> Self {
+        let rev = quoted(rev, "REV");
+        Self::new(
+            format!("`{rev}` does not name a commit."),
+            "A root is replayed for one commit; a rev git cannot resolve has no root to \
+             replay.",
+            format!(
+                "Run `git rev-parse {rev}` to see what git says, then `jtac replay` with a commit it names."
+            ),
+        )
+    }
+
+    /// `--signers` names a file that could not be read as a trust file.
+    pub fn signers_file(command: &str, path: &std::path::Path, err: &jtac_sign::SignError) -> Self {
+        let path = quoted(&path.to_string_lossy(), "FILE");
+        Self::new(
+            format!("`--signers` could not be read: {err}."),
+            "A trust file that cannot be read must not read as empty trust: a root whose \
+             signer nobody could look up would otherwise pass as unknown.",
+            format!(
+                "Give `--signers` a plain allowed-signers file, or drop it to read `{TRUST_PATH}` \
+                 at HEAD: `jtac {command} --signers {path}` named this one."
+            ),
+        )
+    }
+
+    /// `show` with no range and no upstream.
+    pub fn no_upstream() -> Self {
+        Self::new(
+            "HEAD has no upstream, so what the next push carries is not known.",
+            "`jtac show` prints the roots a push would send; without an upstream there is no \
+             push to describe.",
+            "Run `git push -u origin HEAD` once, or `jtac show main..HEAD` with the range to \
+             describe.",
+        )
+    }
+
+    /// `.jtac/signers` at HEAD is not a readable trust file.
+    pub fn trust(what: &str) -> Self {
+        Self::new(
+            format!("`{TRUST_PATH}` at HEAD is {what}."),
+            "Verification reads the trust file from HEAD's tree, never the work tree, so a link \
+             or an edit there cannot change who is trusted; a file that cannot be read must \
+             not read as empty trust.",
+            format!(
+                "Commit a plain `{TRUST_PATH}` under {TRUST_CAP} bytes, or run `jtac verify \
+                 --signers FILE` with a file of your own."
+            ),
+        )
+    }
+
+    /// `replay` on a commit with no root ref.
+    pub fn no_root(commit: &str) -> Self {
+        Self::new(
+            format!("{commit} has no root in this clone."),
+            "`jtac replay` recomputes a root from its nodes; a commit without a root has \
+             nothing to replay, and a commit covered by a later root is replayed through that \
+             root's tip.",
+            format!(
+                "Run `jtac audit {commit}` to see which root covers it, or `git fetch origin \
+                 +refs/jtac/*:refs/jtac/*` if the root was written elsewhere."
+            ),
+        )
+    }
+
+    /// `replay` on a root whose nodes this clone never wrote.
+    pub fn not_local(commit: &str, what: &str) -> Self {
+        Self::new(
+            format!("the root for {commit} verifies, but {what}."),
+            "Only roots and signatures travel; the nodes stay on the machine that wrote the \
+             root, so replay there is the only full recomputation.",
+            format!(
+                "Run `jtac verify {commit}` here, or `jtac replay {commit}` on the machine that \
+                 ran `jtac check`."
+            ),
+        )
+    }
+
+    /// `replay` could not rebuild the facts: the policy the root names is not here.
+    pub fn policy_differs(commit: &str, hash: &str) -> Self {
+        Self::new(
+            format!(
+                "the root for {commit} names policy {hash}, which this clone cannot rebuild: \
+                 the policy file at its tree resolves to another hash under this build."
+            ),
+            "The verdict is a function of the resolved policy; recomputing it under a policy \
+             that differs would compare two different questions.",
+            format!(
+                "Run `jtac replay {commit}` on the machine that wrote the root, where the \
+                 resolved policy is stored, or with the jtac release that wrote it."
+            ),
+        )
+    }
+
     /// Something this binary should have been able to do, and could not.
     pub fn internal(what: impl std::fmt::Display) -> Self {
         Self::new(
@@ -335,6 +454,11 @@ mod tests {
             argv: vec!["git".into()],
             source: std::io::Error::other("nope"),
         });
+        let git_failed = || GitError::Failed {
+            argv: vec!["git".into(), "rev-list".into()],
+            status: Some(128),
+            stderr: "fatal: bad revision".into(),
+        };
         let failed = RepoError::Git(GitError::Failed {
             argv: vec!["git".into(), "status".into()],
             status: Some(128),
@@ -369,12 +493,28 @@ mod tests {
             Refusal::policy_bytes(),
             Refusal::internal("hash"),
             Refusal::arguments(&args),
+            Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),
+            Refusal::rev("no such\nnegotiation: forged"),
+            Refusal::signers_file(
+                "verify",
+                std::path::Path::new("/workspace/s"),
+                &jtac_sign::SignError::Trust {
+                    path: "/workspace/s".into(),
+                    what: "not a plain file",
+                },
+            ),
+            Refusal::no_upstream(),
+            Refusal::trust("not a regular file"),
+            Refusal::no_root("abc"),
+            Refusal::not_local("abc", "its nodes are not in this clone's store"),
+            Refusal::policy_differs("abc", "sha256:0"),
         ];
         for r in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");
             assert!(r.how.contains("jtac ") || r.how.contains("git "), "{r:?}");
             assert!(r.text().starts_with("jtac: "), "{r:?}");
             assert!(r.text().contains("\nnegotiation: "), "{r:?}");
+            assert_eq!(r.text().lines().count(), 3, "{r:?}: a value forged a line");
             assert!(!r.how.contains("<rev>"), "{r:?}: unfilled value");
             assert!(r.json().contains("\"error\""), "{r:?}");
         }
