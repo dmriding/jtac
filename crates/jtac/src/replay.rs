@@ -1,7 +1,8 @@
 //! `jtac replay` (DESIGN.md sections 7.1 and 11.9, decisions 14 and 19): the root's nodes
 //! from the local store, the Merkle root, the counts and the verdict recomputed with the
 //! root's `ts` as `now`, each against what the root recorded. Any mismatch invalidates it.
-//! Where the nodes are not local, the root's signature is the answer and the detail is not.
+//! Where the nodes are not local, the root's signature is the answer and the detail is not;
+//! a signature that does not hold ends it: nothing is recomputed for an invalid root.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -36,17 +37,18 @@ pub struct ReplayOut {
     pub signer: Signer,
     /// `trusted`, `unknown`, or `invalid`.
     pub signature: &'static str,
-    /// `store` when the resolved policy was kept by hash, `tree` when read from the commit.
+    /// `store` when the resolved policy was kept by hash, `tree` when read from the commit,
+    /// `none` when nothing was recomputed because the signature does not hold.
     pub policy_from: &'static str,
     /// Leaves replayed.
     pub nodes: u64,
-    /// Merkle root, recorded and recomputed.
-    pub evidence: Pair<Sha256Digest>,
+    /// Merkle root, recorded and recomputed; absent when nothing was recomputed.
+    pub evidence: Option<Pair<Sha256Digest>>,
     /// Counts, recorded and recomputed.
-    pub counts: Pair<Counts>,
+    pub counts: Option<Pair<Counts>>,
     /// State, recorded and recomputed.
-    pub state: Pair<State>,
-    /// Whether the recomputed verdict passes.
+    pub state: Option<Pair<State>>,
+    /// Whether the recomputed verdict passes; false when nothing was recomputed.
     pub pass: bool,
     /// Each disagreement.
     pub mismatches: Vec<String>,
@@ -70,7 +72,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
-    let target = repo::peel(&repo, &format, &a.commit).map_err(|e| Refusal::rev(&a.commit, &e))?;
+    let target = repo::peel(&repo, &format, &a.commit).map_err(|_| Refusal::rev(&a.commit))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let stored = store
         .root(&target.commit)
@@ -90,7 +92,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &bytes,
         &String::from_utf8_lossy(&stored.sig),
     )
-    .map_err(|e| Refusal::verifier(&e))?;
+    .map_err(|e| signers.refusal(&e))?;
     let mut mismatches = Vec::new();
     let mut notes = vec![format!("signers {}", signers.describe())];
     let signature = match verified {
@@ -111,6 +113,9 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         ));
     }
     let commit = target.commit.hex();
+    if signature == "invalid" {
+        return printed(a, unverified(&root, id, mismatches, notes));
+    }
     let mut leaves = store
         .manifest(&id)
         .map_err(Refusal::store)?
@@ -172,23 +177,53 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         signature,
         policy_from,
         nodes: nodes.len() as u64,
-        evidence: Pair {
+        evidence: Some(Pair {
             recorded: root.evidence,
             recomputed: evidence,
-        },
-        counts: Pair {
+        }),
+        counts: Some(Pair {
             recorded: root.counts.clone(),
             recomputed: recounted,
-        },
-        state: Pair {
+        }),
+        state: Some(Pair {
             recorded: root.state,
             recomputed: verdict.state,
-        },
+        }),
         pass: verdict.pass,
         matches: mismatches.is_empty(),
         mismatches,
         notes,
     };
+    printed(a, out)
+}
+
+/// A root whose signature does not hold: nothing recomputed, one mismatch.
+fn unverified(
+    root: &jtac_core::Root,
+    id: Sha256Digest,
+    mismatches: Vec<String>,
+    notes: Vec<String>,
+) -> ReplayOut {
+    ReplayOut {
+        v: 1,
+        command: "replay",
+        commit: root.commit,
+        root: id,
+        signer: root.signer.clone(),
+        signature: "invalid",
+        policy_from: "none",
+        nodes: 0,
+        evidence: None,
+        counts: None,
+        state: None,
+        pass: false,
+        matches: false,
+        mismatches,
+        notes,
+    }
+}
+
+fn printed(a: &ReplayArgs, out: ReplayOut) -> Result<Printed, Refusal> {
     let text = if a.json {
         crate::render::json(&out)?
     } else {
@@ -244,22 +279,17 @@ fn render(o: &ReplayOut) -> String {
         "  signature {} ({}, {})",
         o.signature, o.signer.principal, o.signer.fingerprint
     );
-    let _ = writeln!(s, "  policy    from the {}", o.policy_from);
-    let _ = writeln!(
-        s,
-        "  evidence  {}",
-        same(o.evidence.recorded == o.evidence.recomputed)
-    );
-    let _ = writeln!(
-        s,
-        "  counts    {}",
-        same(o.counts.recorded == o.counts.recomputed)
-    );
-    let _ = writeln!(
-        s,
-        "  state     {}",
-        same(o.state.recorded == o.state.recomputed)
-    );
+    if let (Some(e), Some(c), Some(st)) = (&o.evidence, &o.counts, &o.state) {
+        let _ = writeln!(s, "  policy    from the {}", o.policy_from);
+        let _ = writeln!(s, "  evidence  {}", same(e.recorded == e.recomputed));
+        let _ = writeln!(s, "  counts    {}", same(c.recorded == c.recomputed));
+        let _ = writeln!(s, "  state     {}", same(st.recorded == st.recomputed));
+    } else {
+        let _ = writeln!(
+            s,
+            "  nothing recomputed: a root whose signature does not hold is invalid as it stands"
+        );
+    }
     for m in &o.mismatches {
         let _ = writeln!(s, "  mismatch  {m}");
     }

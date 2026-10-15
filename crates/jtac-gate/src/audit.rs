@@ -175,8 +175,9 @@ mod tests {
     }
 
     /// Rows: own root, a covers entry, a tree match inheriting declared_off, absent, an
-    /// invalid own root still covered by a later root's covers, an invalid root matching
-    /// nothing, and the first root in order winning a tree match.
+    /// invalid own root still covered by a later root's covers, a tree matched only by an
+    /// invalid root (absent), the first root in order winning a tree match and a covers
+    /// collision.
     #[test]
     fn each_commit_takes_its_own_root_then_a_covers_entry_then_a_tree_match_else_absent() {
         let roots = [
@@ -191,6 +192,8 @@ mod tests {
             ),
             fact(8, 80, &[7, 8], State::Covered, None),
             fact(9, 50, &[9], State::Covered, None),
+            fact(12, 120, &[11, 12], State::Covered, None),
+            fact(13, 130, &[11, 13], State::Covered, None),
         ];
         let commits = [
             commit(1, 10),
@@ -200,6 +203,8 @@ mod tests {
             commit(6, 60),
             commit(7, 70),
             commit(8, 80),
+            commit(10, 70),
+            commit(11, 110),
         ];
         let got = rows(&commits, &roots);
         let want = [
@@ -228,6 +233,14 @@ mod tests {
                 Some("its signature does not hold"),
             ),
             (8, Some(State::Covered), Some(Via::Own), Some(3), None),
+            (10, None, None, None, None),
+            (
+                11,
+                Some(State::Covered),
+                Some(Via::Covers { tip: oid(12) }),
+                Some(5),
+                None,
+            ),
         ];
         assert_eq!(got.len(), want.len());
         for (row, (c, state, via, root, invalid)) in got.into_iter().zip(want) {

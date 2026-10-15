@@ -4,6 +4,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
+use jtac_checks::git::quoted;
 use jtac_core::{GitOid, Sha256Digest};
 use jtac_gate::Trust;
 use serde::Serialize;
@@ -143,7 +144,11 @@ fn render(o: &VerifyOut) -> String {
             s,
             "  fix     run `jtac check` on each absent commit, or `jtac audit {}` for the \
              table",
-            o.range.join(" ")
+            o.range
+                .iter()
+                .map(|w| quoted(w, "RANGE"))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
     }
     for note in &o.notes {

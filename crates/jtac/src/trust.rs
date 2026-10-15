@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use jtac_sign::TRUST_CAP;
+use jtac_sign::{SignError, TRUST_CAP};
 
 use crate::refuse::Refusal;
 use crate::repo::{Head, RepoError, blob_at};
@@ -46,6 +46,17 @@ impl Signers {
             Self::File(path) => jtac_sign::Trust::File(path),
             Self::Head(bytes) => jtac_sign::Trust::Bytes(bytes),
             Self::None => jtac_sign::Trust::None,
+        }
+    }
+
+    /// A verifier error as a refusal: a `--signers` file that could not be read is about
+    /// the file, anything else is about ssh-keygen.
+    pub fn refusal(&self, err: &SignError) -> Refusal {
+        match (self, err) {
+            (Self::File(path), SignError::Trust { .. } | SignError::Io { .. }) => {
+                Refusal::signers_file(path, err)
+            }
+            _ => Refusal::verifier(err),
         }
     }
 

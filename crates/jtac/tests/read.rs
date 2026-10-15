@@ -383,6 +383,13 @@ fn a_tampered_root_is_invalid_for_the_reason_verify_names_and_its_commits_read_a
             "{}",
             ran.stdout
         );
+        let span = format!("{}..{}", h.base, h.two);
+        let (code, v) = json(&h.repo, &["verify", "--json", &span]);
+        assert_eq!(code, 1, "{want}: {v}");
+        assert_eq!(v["invalid"][0]["commit"], format!("sha1:{}", h.three));
+        let (_, v) = json(&h.repo, &["audit", "--json", &span]);
+        assert_eq!(rows(&v)[0].1, "absent");
+        assert!(v["rows"][0]["invalid"].is_null());
         h.repo.git(&["update-ref", &name, &kept]);
     }
     assert_eq!(jtac(&h.repo, &["verify"]).code, 0);
@@ -436,6 +443,33 @@ fn a_missing_parent_root_is_a_note_and_a_clone_with_roots_but_no_nodes_cannot_re
         ran.stdout.contains(&format!("note    {note}")),
         "{}",
         ran.stdout
+    );
+
+    let name = root_ref(&h.three);
+    let json_text = blob(&other, &format!("{name}:root.json"));
+    replace_root(
+        &other,
+        &h.key,
+        &h.three,
+        &json_text,
+        Some("not a signature\n"),
+    );
+    let ran = jtac(&other, &["replay", &h.three]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stderr.is_empty(), "{}", ran.stderr);
+    assert!(
+        ran.stdout.starts_with("MISMATCH: ")
+            && ran.stdout.contains("signature invalid")
+            && ran.stdout.contains("nothing recomputed")
+            && !ran.stdout.contains("verifies"),
+        "{}",
+        ran.stdout
+    );
+    let (code, v) = json(&other, &["replay", "--json", &h.three]);
+    assert_eq!(code, 1);
+    assert!(
+        v["evidence"].is_null() && v["policy_from"] == "none" && v["nodes"] == 0,
+        "{v}"
     );
 }
 
@@ -534,7 +568,7 @@ fn show_prints_each_root_ref_byte_for_byte_and_defaults_to_the_unpushed_range() 
     assert_eq!(ran.code, 0, "{}", ran.stderr);
     assert!(
         ran.stdout.starts_with(
-            "SHOW refs/remotes/origin/main..HEAD: 2 roots would be sent; 1 commits have no root \
+            "SHOW refs/remotes/origin/main..HEAD: 2 refs would be sent; 1 commits have no root \
              ref of their own\n"
         ),
         "{}",
@@ -561,6 +595,53 @@ fn show_prints_each_root_ref_byte_for_byte_and_defaults_to_the_unpushed_range() 
             && ran.stderr.contains("`jtac show main..HEAD`"),
         "{}",
         ran.stderr
+    );
+
+    let span = format!("{}..twin", h.base);
+    let (code, v) = json(&h.repo, &["show", "--json", &span]);
+    assert_eq!(code, 0);
+    let shown = v["roots"].as_array().unwrap();
+    assert_eq!(shown.len(), 1, "{v}");
+    assert_eq!(shown[0]["commit"], format!("sha1:{}", h.three));
+    assert!(
+        shown[0]["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("sent for the tip's tree"),
+        "{v}"
+    );
+    assert_eq!(
+        v["without_ref"],
+        serde_json::json!([format!("sha1:{}", h.twin)])
+    );
+    let garbage = h.repo.write(".git/garbage", b"not a root\n");
+    let blob_id = h
+        .repo
+        .git(&["hash-object", "-w", "--", garbage.to_str().unwrap()]);
+    h.repo.git(&["update-ref", &root_ref(&h.two), &blob_id]);
+    let (code, v) = json(&h.repo, &["show", "--json", "main"]);
+    assert_eq!(code, 0);
+    let sent: Vec<&str> = v["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["commit"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            format!("sha1:{}", h.three),
+            format!("sha1:{}", h.two),
+            format!("sha1:{}", h.one)
+        ]
+    );
+    assert!(
+        v["roots"][1]["note"]
+            .as_str()
+            .unwrap()
+            .contains("does not hold a root")
+            && v["roots"][1]["root_json"] == "",
+        "{v}"
     );
 }
 
@@ -644,6 +725,20 @@ fn signers_are_read_from_head_not_the_work_tree_and_a_file_overrides_them() {
             ran.stderr
         );
     }
+
+    let ran = jtac(
+        &h.repo,
+        &["verify", "--signers", "/nonexistent/signers", "HEAD~1"],
+    );
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr.contains("`--signers` could not be read")
+            && ran
+                .stderr
+                .contains("negotiation: Give `--signers` a plain allowed-signers file"),
+        "{}",
+        ran.stderr
+    );
 }
 
 #[test]
@@ -683,4 +778,106 @@ fn a_range_is_what_rev_list_reads_and_an_option_or_a_bad_rev_is_refused() {
     );
     assert_eq!((code, v["totals"]["commits"].as_u64()), (0, Some(0)));
     assert_eq!(v["totals"]["percent_covered"], 0);
+}
+
+/// The hook sends the root that covered a tip by tree even when that root's commit stays on
+/// an unpushed branch; a clone then holds the root and not the commit.
+#[test]
+fn a_root_for_a_commit_the_clone_lacks_counts_for_a_tree_match_only() {
+    let h = history();
+    h.repo.git(&["switch", "-q", "-c", "lane"]);
+    h.repo.write("d.txt", b"d\n");
+    let lane = h.repo.commit("lane");
+    assert_eq!(jtac(&h.repo, &["check"]).code, 0);
+    let same = h.repo.git(&[
+        "commit-tree",
+        &format!("{lane}^{{tree}}"),
+        "-p",
+        &h.three,
+        "-m",
+        "same",
+    ]);
+    h.repo.git(&["switch", "-q", "main"]);
+    h.repo.git(&["merge", "-q", "--ff-only", &same]);
+    h.repo
+        .git(&["push", "-q", "origin", "main", "+refs/jtac/*:refs/jtac/*"]);
+    let other = Repo::clone_of(&h.origin);
+    other.git(&["fetch", "-q", "origin", "+refs/jtac/*:refs/jtac/*"]);
+    assert!(
+        other
+            .command("git", &["cat-file", "-e", &lane])
+            .status
+            .code()
+            != Some(0)
+    );
+    let (code, v) = json(&other, &["verify", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["invalid"].as_array().map(Vec::len), Some(0));
+    let note = format!(
+        "{lane}'s root is for a commit this clone does not hold; it counts for a tree match only"
+    );
+    assert!(
+        v["notes"].as_array().unwrap().contains(&Value::from(note)),
+        "{v}"
+    );
+    let (_, v) = json(&other, &["audit", "--json"]);
+    assert_eq!(
+        rows(&v)[0],
+        (same.clone(), "covered".into(), "tree".into(), lane.clone())
+    );
+    let span = format!("{}..main", h.three);
+    let (_, v) = json(&other, &["show", "--json", &span]);
+    assert_eq!(v["roots"][0]["commit"], format!("sha1:{lane}"));
+    assert!(
+        v["roots"][0]["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("sent for the tip's tree")
+    );
+}
+
+/// Past the bound the root names only its two ends; a reader counts the commits on a path
+/// between them and nothing else, so a side line merged in reads absent, never covered.
+#[test]
+fn a_range_form_root_covers_the_paths_from_base_to_tip_and_not_a_side_line() {
+    let repo = Repo::init(&[]);
+    with_policy(&repo);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let base = repo.commit("base");
+    keyed(&repo);
+    repo.git(&["switch", "-q", "-c", "side"]);
+    repo.write("side.txt", b"s\n");
+    let side = repo.commit("side");
+    repo.git(&["switch", "-q", "main"]);
+    let mut line = Vec::new();
+    for i in 0..258 {
+        repo.write("n.txt", format!("{i}\n").as_bytes());
+        line.push(repo.commit(&format!("n{i}")));
+    }
+    repo.git(&["merge", "-q", "--no-ff", "--no-edit", "side"]);
+    let tip = repo.git(&["rev-parse", "HEAD"]);
+    let ran = jtac(&repo, &["check", "--base", &base]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let root: Value =
+        serde_json::from_str(&blob(&repo, &format!("{}:root.json", root_ref(&tip)))).unwrap();
+    let range_base = root["covers"]["base"]
+        .as_str()
+        .expect("past the bound the root records a range")
+        .trim_start_matches("sha1:")
+        .to_owned();
+    let ran = jtac(&repo, &["verify"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let (_, v) = json(&repo, &["audit", "--json"]);
+    let got = rows(&v);
+    let state = |c: &str| got.iter().find(|r| r.0 == c).map(|r| r.1.clone()).unwrap();
+    assert_eq!(state(&tip), "covered");
+    assert_eq!(state(&range_base), "covered");
+    assert_eq!(state(&base), "absent");
+    let (on_path, off_path) = if range_base == line[0] {
+        (&line[257], &side)
+    } else {
+        (&side, &line[0])
+    };
+    assert_eq!(state(on_path), "covered", "{range_base} {on_path}");
+    assert_eq!(state(off_path), "absent", "{range_base} {off_path}");
 }

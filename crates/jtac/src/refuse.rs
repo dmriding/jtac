@@ -298,15 +298,30 @@ impl Refusal {
         )
     }
 
-    /// A rev that does not name a commit.
-    pub fn rev(rev: &str, err: &RepoError) -> Self {
+    /// A rev that does not name a commit. The rev is rendered as a shell word, never raw:
+    /// a newline in it would forge a line of the three-part message.
+    pub fn rev(rev: &str) -> Self {
         let rev = quoted(rev, "REV");
         Self::new(
-            format!("`{rev}` does not name a commit: {err}."),
+            format!("`{rev}` does not name a commit."),
             "A root is replayed for one commit; a rev git cannot resolve has no root to \
              replay.",
             format!(
                 "Run `git rev-parse {rev}` to see what git says, then `jtac replay` with a commit it names."
+            ),
+        )
+    }
+
+    /// `--signers` names a file that could not be read as a trust file.
+    pub fn signers_file(path: &std::path::Path, err: &jtac_sign::SignError) -> Self {
+        let path = quoted(&path.to_string_lossy(), "FILE");
+        Self::new(
+            format!("`--signers` could not be read: {err}."),
+            "A trust file that cannot be read must not read as empty trust: a root whose \
+             signer nobody could look up would otherwise pass as unknown.",
+            format!(
+                "Give `--signers` a plain allowed-signers file, or drop it to read `{TRUST_PATH}` \
+                 at HEAD: `jtac verify --signers {path}` named this one."
             ),
         )
     }
@@ -478,7 +493,14 @@ mod tests {
             Refusal::internal("hash"),
             Refusal::arguments(&args),
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),
-            Refusal::rev("no such", &failed),
+            Refusal::rev("no such\nnegotiation: forged"),
+            Refusal::signers_file(
+                std::path::Path::new("/workspace/s"),
+                &jtac_sign::SignError::Trust {
+                    path: "/workspace/s".into(),
+                    what: "not a plain file",
+                },
+            ),
             Refusal::no_upstream(),
             Refusal::trust("not a regular file"),
             Refusal::no_root("abc"),

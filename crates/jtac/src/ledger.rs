@@ -2,7 +2,8 @@
 //! against its commit's, its signature against the signers, each `covers` entry on the chain
 //! from its parents to its tip, each parent's root id against the one this clone holds. A
 //! root the range does not touch is read for its shape only, so a long namespace costs one
-//! git child, not a signature check per root.
+//! git child, not a signature check per root. A root for a commit the clone lacks has no tree
+//! to compare and no chain to walk: it counts for a tree match only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -50,13 +51,7 @@ pub fn gather(
         ids.insert(r.listed.commit, s.root.id().map_err(Refusal::internal)?);
         covers.push(match &s.root.covers {
             Covers::List(list) => list.clone(),
-            Covers::Range { base, tip } => {
-                let mut all: Vec<GitOid> = range::reachable(repo, format, tip, &[*base])?
-                    .into_iter()
-                    .collect();
-                all.push(*base);
-                all
-            }
+            Covers::Range { base, tip } => range::between(repo, format, base, tip)?,
         });
     }
     let touched: Vec<usize> = (0..reads.len())
@@ -145,7 +140,14 @@ impl Judge<'_> {
             Ok(fact)
         };
         match tree {
-            None => return invalid(fact, "its commit is not in this clone".to_owned()),
+            None => {
+                fact.covers.clear();
+                self.notes.push(format!(
+                    "{}'s root is for a commit this clone does not hold; it counts for a tree \
+                     match only",
+                    root.commit.hex()
+                ));
+            }
             Some(t) if t != root.tree => {
                 return invalid(
                     fact,
@@ -165,7 +167,7 @@ impl Judge<'_> {
             &bytes,
             &sig,
         )
-        .map_err(|e| Refusal::verifier(&e))?;
+        .map_err(|e| self.signers.refusal(&e))?;
         fact.trust = match verified {
             Verified::Trusted => Trust::Trusted,
             Verified::Unknown { why } => Trust::Unknown { why },
@@ -174,8 +176,11 @@ impl Judge<'_> {
             }
         };
         let parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
-        let chain = range::reachable(self.repo, self.format, &root.commit, &parents)?;
-        if let Some(off) = covers.iter().find(|c| !chain.contains(c)) {
+        let chain = match tree {
+            Some(_) => range::reachable(self.repo, self.format, &root.commit, &parents)?,
+            None => BTreeSet::new(),
+        };
+        if let Some(off) = fact.covers.iter().find(|c| !chain.contains(c)).copied() {
             return invalid(
                 fact,
                 format!(

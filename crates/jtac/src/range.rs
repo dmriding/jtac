@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use jtac_checks::git::{git, git_with};
+use jtac_checks::git::{GitError, git, git_with};
 use jtac_core::GitOid;
 
 use crate::refuse::Refusal;
@@ -114,6 +114,33 @@ pub fn reachable(
         .lines()
         .map(|hex| oid(format, hex))
         .collect()
+}
+
+/// What a `Covers::Range` root vouches for: every commit on a path from `base` to `tip`,
+/// both included. The writer's exact set is not recoverable from the two ends (DESIGN.md
+/// section 9.4); a side line merged in between them is not on such a path and reads absent,
+/// never covered. A pair git cannot walk (a planted root naming a blob) vouches for nothing.
+pub fn between(
+    repo: &Path,
+    format: &str,
+    base: &GitOid,
+    tip: &GitOid,
+) -> Result<Vec<GitOid>, Refusal> {
+    let span = format!("{}..{}", base.hex(), tip.hex());
+    let out = match git(
+        repo,
+        &["rev-list", "--ancestry-path", "--end-of-options", &span],
+    ) {
+        Ok(out) => out,
+        Err(GitError::Failed { .. }) => return Ok(Vec::new()),
+        Err(e) => return Err(Refusal::repository(&RepoError::Git(e))),
+    };
+    let mut all = String::from_utf8_lossy(&out)
+        .lines()
+        .map(|hex| oid(format, hex))
+        .collect::<Result<Vec<GitOid>, Refusal>>()?;
+    all.push(*base);
+    Ok(all)
 }
 
 fn oid(format: &str, hex: &str) -> Result<GitOid, Refusal> {
