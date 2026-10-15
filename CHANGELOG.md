@@ -24,6 +24,12 @@ request moves them under a dated heading and bumps nothing.
   by one `sh` word renderer: plain as is, quoted otherwise, a placeholder when no code span
   can show it; the gate printed them bare since M10.
 
+### Changed
+
+- (0.0.16) The Windows test job runs on a push to `main`, a release tag and a manual
+  dispatch, not on a pull request, so a pull request bills one Ubuntu test leg; the required
+  check is `test`.
+
 ### Added
 
 - (0.0.13, M10) The push gate goes live. `jtac_gate::decide` is the one push decision: delete,
