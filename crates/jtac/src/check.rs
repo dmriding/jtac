@@ -73,7 +73,8 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if let Some(why) = repo::dirty(&repo).map_err(|e| Refusal::repository(&e))? {
         return Err(Refusal::moved(Some(&why)));
     }
-    write::evidence(&store, &j, cache)?;
+    let policy = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
+    write::evidence(&store, &policy, &j, cache)?;
     let root_id = match (&existing, j.verdict.pass) {
         (Some(stored), true) => {
             notes.push("HEAD already has a root; it stands, and this run wrote none".to_owned());

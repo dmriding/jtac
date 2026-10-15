@@ -1,6 +1,7 @@
 //! The `jtac` binary. Impure: gathers facts, renders verdicts, decides nothing. Exit 0 is
 //! `CLEARED HOT`, 1 is `ABORT`, 2 is a refusal: the gate could not answer.
 
+mod audit;
 mod chain;
 mod check;
 mod cli;
@@ -13,18 +14,25 @@ mod init;
 mod initout;
 mod judge;
 mod keydir;
+mod ledger;
 mod output;
 mod policy;
+mod range;
 mod reason;
 mod refspec;
 mod refuse;
 mod render;
+mod replay;
 mod repo;
 mod root;
 mod rootpush;
+mod show;
 mod state;
 mod status;
+mod survey;
+mod trust;
 mod update;
+mod verify;
 mod why;
 mod write;
 
@@ -126,6 +134,10 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         }
         Some(Command::Status(a)) => Run::verdict(status::status(cwd, a.json), a.json),
         Some(Command::Why(a)) => Run::verdict(why::why(cwd, a.json), a.json),
+        Some(Command::Verify(a)) => Run::verdict(verify::verify(&a, cwd), a.json),
+        Some(Command::Replay(a)) => Run::verdict(replay::replay(&a, cwd), a.json),
+        Some(Command::Audit(a)) => Run::verdict(audit::audit(&a, cwd), a.json),
+        Some(Command::Show(a)) => Run::verdict(show::show(&a, cwd), a.json),
     }
 }
 
@@ -164,8 +176,10 @@ mod tests {
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 6] = [
+        let rows: [(&[&str], &str); 8] = [
             (&["--help"], "check"),
+            (&["--help"], "audit"),
+            (&["verify", "--help"], "--require-coverage"),
             (&["--help"], "status"),
             (&["-h"], "why"),
             (&["--help"], "init"),
@@ -182,7 +196,7 @@ mod tests {
     #[test]
     fn unbuilt_commands_and_bad_flags_are_refused_with_exit_two() {
         let rows: [(&[&str], &str); 3] = [
-            (&["verify"], "`verify` is not a command"),
+            (&["waive"], "`waive` is not a command"),
             (&["check", "--nope"], "--nope"),
             (&["check", "--nope", "--json"], "\"error\""),
         ];

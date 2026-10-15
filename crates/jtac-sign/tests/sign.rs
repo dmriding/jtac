@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use jtac_core::{Signer, Ts};
 use jtac_sign::{
-    GitConfig, Identity, KeyRef, Namespace, Resolved, SignError, TRUST_CAP, Tool, Verified,
+    GitConfig, Identity, KeyRef, Namespace, Resolved, SignError, TRUST_CAP, Tool, Trust, Verified,
     identity, resolve, sign, verify,
 };
 
@@ -108,6 +108,7 @@ fn at() -> Ts {
 }
 
 fn check(id: &Identity, trust: Option<&Path>, ns: Namespace, msg: &[u8], sig: &str) -> Verified {
+    let trust = trust.map_or(Trust::None, Trust::File);
     verify(&id.tool, trust, &id.signer, ns, at(), msg, sig).unwrap()
 }
 
@@ -238,7 +239,7 @@ fn a_signer_whose_fingerprint_is_not_the_signing_key_is_invalid() {
     };
     let got = verify(
         &id.tool,
-        Some(&trust),
+        Trust::File(&trust),
         &claimed,
         Namespace::Root,
         at(),
@@ -271,7 +272,7 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
     let missing = k.path("no-such-signers");
     let err = verify(
         &id.tool,
-        Some(&missing),
+        Trust::File(&missing),
         &id.signer,
         Namespace::Root,
         at(),
@@ -286,7 +287,7 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
     let dir = k.dir.path().to_path_buf();
     let err = verify(
         &id.tool,
-        Some(&dir),
+        Trust::File(&dir),
         &id.signer,
         Namespace::Root,
         at(),
@@ -320,7 +321,7 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
     for (path, want) in rows {
         let err = verify(
             &id.tool,
-            Some(&path),
+            Trust::File(&path),
             &id.signer,
             Namespace::Root,
             at(),
@@ -490,6 +491,15 @@ fn a_missing_ssh_keygen_is_a_spawn_error_for_both_operations() {
         sign(&id, Namespace::Root, MSG).unwrap_err(),
         SignError::Spawn { .. }
     ));
-    let err = verify(&id.tool, None, &id.signer, Namespace::Root, at(), MSG, &sig).unwrap_err();
+    let err = verify(
+        &id.tool,
+        Trust::None,
+        &id.signer,
+        Namespace::Root,
+        at(),
+        MSG,
+        &sig,
+    )
+    .unwrap_err();
     assert!(matches!(err, SignError::Spawn { .. }), "{err}");
 }

@@ -3,6 +3,7 @@
 //! Impure: gathers facts and decides nothing. Every read re-hashes what it finds, so a file
 //! that is not what its name says is an error, never a document.
 
+mod batch;
 mod cache;
 mod fs;
 mod objects;
@@ -15,8 +16,10 @@ use std::path::{Path, PathBuf};
 use jtac_checks::git::{GitError, git};
 use jtac_core::{CanonicalError, ReadError};
 
+pub use batch::Read;
 pub use cache::FileCache;
 pub use refs::{Listed, PushOutcome, Pushed, Roots, ref_name};
+pub use roots::StoredRoot;
 
 /// One clone's store: `<git common dir>/jtac/`, shared by every linked worktree.
 #[derive(Clone, Debug)]

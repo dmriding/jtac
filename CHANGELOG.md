@@ -32,6 +32,14 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.17, M11) Reading evidence. `jtac verify` judges every root that bears on a range:
+  shape, tree, signature against `.jtac/signers` at HEAD or `--signers`, each `covers` entry
+  on the chain, each parent id against the clone; exit 1 on an invalid root or, with
+  `--require-coverage`, an absent commit. `jtac audit` prints the coverage table, tree
+  fallback included. `jtac replay` recomputes a root's Merkle root, counts and verdict from
+  the local nodes and the stored resolved policy. `jtac show` prints the root refs a push
+  would send, byte for byte. A range is a `rev-list` expression. `check` keeps the resolved
+  policy in the store by its hash (DESIGN.md 11.9, decision 35). Closes issue 25.
 - (0.0.13, M10) The push gate goes live. `jtac_gate::decide` is the one push decision: delete,
   tag, and `refs/jtac/` pass; a non-fast-forward update or a deletion of a protected branch
   is the fence, judged from the tip's policy joined with the branch's old tip's; an old oid
