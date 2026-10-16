@@ -9,6 +9,7 @@ use jtac_store::Store;
 
 use crate::cli::CheckArgs;
 use crate::refuse::Refusal;
+use crate::survey::state_name;
 use crate::{Printed, chain, identity, judge, lever, output, render, repo, root, state, write};
 
 /// The rendered verdict. A root, once written, is reported even when `state.json` is not.
@@ -76,15 +77,16 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     }
     let policy = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &policy, &j, cache)?;
-    let mut standing = None;
     let root_id = match (&existing, j.verdict.pass) {
         (Some(stored), true) => {
-            notes.push(
-                "HEAD already has a root; it stands, and this run wrote none: the state and \
-                 waivers shown are the root's"
-                    .to_owned(),
-            );
-            standing = Some(&stored.root);
+            notes.push(format!(
+                "HEAD already has a root; it stands, and this run wrote none: it records {} with \
+                 {} waivers, this run judged {} with {}",
+                state_name(Some(stored.root.state)),
+                stored.root.levers.len(),
+                state_name(Some(j.verdict.state)),
+                j.levers.len()
+            ));
             Some(stored.root.id().map_err(Refusal::internal)?)
         }
         (None, true) => {
@@ -114,15 +116,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }
         (_, false) => None,
     };
-    let mut out = output::output(&j, notes, false, root_id);
-    if let Some(root) = standing {
-        out.state = root.state;
-        out.waivers = root
-            .levers
-            .iter()
-            .filter_map(output::WaiverOut::of)
-            .collect();
-    }
+    let out = output::output(&j, notes, false, root_id);
     let mut printed = Printed::verdict(render::render(&out, a.json)?, out.pass);
     printed.warn = state::write(&store, &out).err();
     Ok(printed)

@@ -15,7 +15,7 @@ use jtac_store::{Store, StoredRoot};
 
 use crate::range::{self, Listed};
 use crate::refuse::Refusal;
-use crate::trust::Signers;
+use crate::{output, trust::Signers};
 
 /// The touched roots as facts, with the stored form of each readable one beside it.
 pub struct Ledger {
@@ -208,8 +208,9 @@ impl Judge<'_> {
             });
             if let Some(marker) = &body.agent {
                 self.notes.push(format!(
-                    "{}'s root applies a waiver written under an agent session ({marker})",
-                    root.commit.hex()
+                    "{}'s root applies a waiver written under an agent session ({})",
+                    root.commit.hex(),
+                    output::plain(marker)
                 ));
             }
         }

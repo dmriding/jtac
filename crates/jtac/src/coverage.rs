@@ -130,6 +130,21 @@ fn counted(
 }
 
 impl Refusal {
+    /// ssh-keygen could not run to check a stored waiver's signature before a verdict.
+    pub fn lever_verifier(err: &SignError) -> Self {
+        Self {
+            kind: "negotiation",
+            what: format!("cannot check a stored waiver's signature: {err}."),
+            why: "A waiver is applied only when its signature holds; one nobody could check must \
+                  not be applied, and silently skipping it would judge without a waiver the \
+                  person wrote."
+                .to_owned(),
+            how: "Install OpenSSH's ssh-keygen, or name it with `git config gpg.ssh.program \
+                  <path to ssh-keygen>`, then run `jtac check` again."
+                .to_owned(),
+        }
+    }
+
     /// ssh-keygen could not run to check a root's signature.
     pub fn verifier(err: &SignError) -> Self {
         Self {

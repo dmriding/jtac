@@ -364,13 +364,67 @@ fn a_commit_waiver_turns_the_gate_off_for_one_commit_and_keeps_the_reasons() {
     assert_eq!(ran.code, 0, "{}", ran.stderr);
     let (code, v) = json(repo, &["check", "--json"]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["state"], "covered", "the standing root's state: {v}");
-    assert!(v["waivers"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["state"], "declared_off", "this run's state: {v}");
+    assert_eq!(v["waivers"][0]["reason"], "late", "{v}");
     let notes = v["notes"].to_string();
     assert!(
-        notes.contains("the state and waivers shown are the root's"),
+        notes.contains("it records covered with 0 waivers, this run judged declared_off with 1"),
         "{v}"
     );
+}
+
+/// A control character in any word is refused before any other refusal could quote it, so no
+/// refusal prints one; the flag at fault is named.
+#[test]
+fn a_control_character_in_any_word_of_a_waiver_is_refused_before_it_is_quoted() {
+    let a = adopting();
+    let repo = &a.repo;
+    let rows: [(&[&str], &str); 3] = [
+        (
+            &[
+                "waive",
+                "--rule",
+                "JT-TEST-001",
+                "--path",
+                "src\r\x1b[1A\x1b[2K",
+                "--expires",
+                "3d",
+                "--reason",
+                "x",
+            ],
+            "`--path` is blank or holds a control character",
+        ),
+        (
+            &[
+                "waive",
+                "--rule",
+                "JT-TEST-001\rJT-NOPE",
+                "--path",
+                "src",
+                "--expires",
+                "3d",
+                "--reason",
+                "x",
+            ],
+            "`--rule` is blank or holds a control character",
+        ),
+        (
+            &["waive", "HEAD", "--expires", "3d", "--reason", "a\tb"],
+            "`--reason` is blank or holds a control character",
+        ),
+    ];
+    for (args, want) in rows {
+        let ran = jtac(repo, args);
+        assert_eq!(ran.code, 2, "{args:?}: {}{}", ran.stdout, ran.stderr);
+        assert!(ran.stderr.contains(want), "{args:?}: {}", ran.stderr);
+        assert_eq!(ran.stderr.lines().count(), 3, "{args:?}: {}", ran.stderr);
+        assert!(
+            !ran.stderr.chars().any(|c| c.is_control() && c != '\n'),
+            "{args:?}: {:?}",
+            ran.stderr
+        );
+    }
+    assert!(!repo.path().join(".git/jtac/levers").exists());
 }
 
 /// Every refusal is three lines with the next command, and the lever store stays empty.
@@ -452,7 +506,7 @@ fn a_waiver_with_no_scope_a_bad_expiry_a_bad_path_a_blank_reason_or_a_bad_rev_is
         (&["waive", "HEAD", "--reason", "  "], "`--reason` is blank"),
         (
             &["waive", "HEAD", "--reason", "x\r  waiver  forged"],
-            "holds a control character",
+            "`--reason` is blank or holds a control character",
         ),
     ];
     for (args, want) in rows {
@@ -708,6 +762,48 @@ fn a_waiver_whose_signature_does_not_hold_invalidates_the_root_that_carries_it()
         !status.contains("  waiver  ") && status.contains("is not applied"),
         "{status}"
     );
+    let other = repo.path().join(".git").join("other");
+    let out = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&other)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let node_hex = sig_file.file_stem().unwrap().to_str().unwrap().to_owned();
+    let node_path = repo.path().join(".git/jtac/objects").join(node_hex);
+    let out = Command::new("ssh-keygen")
+        .args(["-Y", "sign", "-n", "jtac-lever-v1", "-P", "", "-f"])
+        .arg(&other)
+        .arg(&node_path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let other_key = node_path.with_extension("sig");
+    std::fs::write(&sig_file, std::fs::read(&other_key).unwrap()).unwrap();
+    std::fs::remove_file(other_key).unwrap();
+    let ran = jtac(repo, &["check"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout
+            .contains("is not applied: its signature does not hold"),
+        "{}",
+        ran.stdout
+    );
+    repo.git(&["config", "gpg.ssh.program", "/nonexistent/ssh-keygen"]);
+    let ran = jtac(repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr
+            .starts_with("jtac: cannot check a stored waiver's signature"),
+        "{}",
+        ran.stderr
+    );
+    assert!(!ran.stderr.contains("push"), "{}", ran.stderr);
+    repo.git(&["config", "--unset", "gpg.ssh.program"]);
     std::fs::write(&sig_file, good).unwrap();
     let ran = jtac(repo, &["check"]);
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);

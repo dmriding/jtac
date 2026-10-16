@@ -38,7 +38,7 @@ pub fn offered(
             &bytes,
             &lever.sig,
         )
-        .map_err(|e| Refusal::verifier(&e))?;
+        .map_err(|e| Refusal::lever_verifier(&e))?;
         match verified {
             Verified::Invalid { what } => notes.push(format!(
                 "waiver {} is not applied: its signature does not hold ({what}); remove `{}` \

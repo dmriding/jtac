@@ -46,6 +46,15 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
+    for (flag, value) in [
+        ("--reason", Some(&a.reason)),
+        ("--rule", a.rule.as_ref()),
+        ("--path", a.path.as_ref()),
+    ] {
+        if value.is_some_and(|v| v.trim().is_empty() || v.chars().any(char::is_control)) {
+            return Err(Refusal::waive_text(flag));
+        }
+    }
     let (scope, tree, expires) = match (&a.rev, &a.rule, &a.path) {
         (Some(rev), None, None) => {
             if a.expires.is_some() {
@@ -72,9 +81,6 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }
         _ => return Err(Refusal::waive_scope()),
     };
-    if a.reason.trim().is_empty() || a.reason.chars().any(char::is_control) {
-        return Err(Refusal::waive_reason());
-    }
     let loaded = policy::load(&repo, &head)?;
     let id = identity::identity(&repo)?;
     let store = Store::open(&repo).map_err(Refusal::store)?;

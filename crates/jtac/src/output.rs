@@ -103,24 +103,29 @@ impl WaiverOut {
         })
     }
 
-    /// One line: scope, signer, marker, reason. A control character in a hand-written
-    /// node's reason is a space, so it cannot overwrite the marker before it.
+    /// One line: scope, signer, marker, reason, every word through [`plain`].
     pub fn line(&self) -> String {
         let scope = match &self.scope {
             Scope::Commit { commit } => format!("commit {}", commit.hex()),
-            Scope::Rule { rule, path } => format!("{rule} under {path}"),
+            Scope::Rule { rule, path } => format!("{} under {}", plain(rule), plain(path)),
         };
-        let agent = self
-            .agent
-            .as_deref()
-            .map_or(String::new(), |m| format!(" under agent session {m}"));
-        let reason: String = self
-            .reason
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        format!("{scope} by {}{agent}: {reason}", self.principal)
+        let agent = self.agent.as_deref().map_or(String::new(), |m| {
+            format!(" under agent session {}", plain(m))
+        });
+        format!(
+            "{scope} by {}{agent}: {}",
+            plain(&self.principal),
+            plain(&self.reason)
+        )
     }
+}
+
+/// A stored word with every control character a space: a hand-written node cannot erase the
+/// line that flags it or the one above (`a_waiver_line_prints_no_control_character_from_any_field`).
+pub fn plain(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// A check as shown.
@@ -221,5 +226,31 @@ pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256
         waivers,
         added_lines: p.report.as_ref().map(|r| r.added_lines),
         tiers: p.report.as_ref().map(|r| r.tiers.iter().cloned().collect()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiver_line_prints_no_control_character_from_any_field() {
+        let w = WaiverOut {
+            lever: Sha256Digest::of(b""),
+            scope: Scope::Rule {
+                rule: "JT-X\r".into(),
+                path: "src\x1b[2K".into(),
+            },
+            principal: "a\nb".into(),
+            reason: "r\tr".into(),
+            expires: None,
+            agent: Some("M\x7f".into()),
+        };
+        let line = w.line();
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert_eq!(
+            line,
+            "JT-X  under src [2K by a b under agent session M : r r"
+        );
     }
 }

@@ -367,14 +367,15 @@ impl Refusal {
         )
     }
 
-    /// `--reason` is blank or holds a control character, which a terminal would act on.
-    pub fn waive_reason() -> Self {
+    /// `--reason`, `--rule` or `--path` is blank or holds a control character, which a
+    /// terminal would act on.
+    pub fn waive_text(flag: &str) -> Self {
         Self::new(
-            "`--reason` is blank or holds a control character.",
-            "The reason travels in the root verbatim and is printed by every reader; a blank one \
-             judges nothing, and a carriage return or escape in it could overwrite the line that \
-             flags the waiver.",
-            "Run `jtac waive` again with `--reason <why the gate is wrong here>` on one line.",
+            format!("`{flag}` is blank or holds a control character."),
+            "Every word of a waiver travels in the root verbatim and is printed by every \
+             reader; a blank one names nothing, and a carriage return or escape in one could \
+             overwrite the line that flags the waiver.",
+            format!("Run `jtac waive` again with `{flag}` as plain text on one line."),
         )
     }
 
@@ -580,7 +581,7 @@ mod tests {
             Refusal::waive_expires("JT-SUP-001", "src", "x", None),
             Refusal::waive_expires("JT-SUP-001", "src", "x", Some("31d\nnegotiation: forged")),
             Refusal::commit_expires("HEAD~1", "base only\nnegotiation: forged"),
-            Refusal::waive_reason(),
+            Refusal::waive_text("--reason"),
             Refusal::waive_path("JT-SUP-001", "../x", "x"),
             Refusal::signers_file(
                 "verify",
