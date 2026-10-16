@@ -26,12 +26,25 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.0.18) The README says what the gate does today, command by command, how to adopt it,
+  and the roadmap by version; the preview-only status is gone.
 - (0.0.16) The Windows test job runs on a push to `main`, a release tag and a manual
   dispatch, not on a pull request, so a pull request bills one Ubuntu test leg; the required
   check is `test`.
 
 ### Added
 
+- (0.0.18, M12) `jtac waive`: a signed `lever` node scoped to one commit (`declared_off`)
+  or to one rule under one path for `--expires <days>d`, at most 30, kept in the store
+  until a verdict applies it. `check` offers every stored waiver to the verdict and embeds
+  the applied ones in the root as `levers`, leaves and all; `verify` judges each
+  `levers[].sig` and lists the waivers with their trust; `audit` totals them; `status`
+  prints the waivers a check on HEAD would apply; the push hook names the waivers behind a
+  passing ref; `replay` recomputes with them. Under an agent session the command runs,
+  records the marker in the lever node's new optional `agent` field, warns on stderr with
+  the file that withdraws it, and every reader flags it (DESIGN.md 9.2, 11.6, 11.9). The
+  adoption commit of this repository, which trips `JT-PROT-001` on `.jtac/`, is the first
+  rule waiver's use.
 - (0.0.17, M11) Reading evidence. `jtac verify` judges every root that bears on a range:
   shape, tree, signature against `.jtac/signers` at HEAD or `--signers`, each `covers` entry
   on the chain, each parent id against the clone; exit 1 on an invalid root or, with

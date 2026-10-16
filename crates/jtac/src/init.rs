@@ -280,6 +280,7 @@ fn lever_step(
             reason: format!("jtac init wrote {}", out.written().join(", ")),
             scope: None,
             expires: None,
+            agent: None,
         }),
     };
     let node_id = p.store.put_node(&node).map_err(Refusal::store)?;

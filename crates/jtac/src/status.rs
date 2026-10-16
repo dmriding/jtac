@@ -1,15 +1,16 @@
 //! `jtac status` (DESIGN.md sections 7.1, 11.9): whether a push of HEAD to its upstream
 //! would pass, asked of the decision the `pre-push` hook asks, the unpushed commits with their
-//! coverage, and the last verdict. Waivers arrive with `jtac waive`.
+//! coverage, the waivers in effect for HEAD, and the last verdict.
 
 use std::fmt::Write;
 use std::path::Path;
 
-use jtac_core::{GitOid, Sha256Digest, Ts};
+use jtac_core::{GitOid, Sha256Digest, Ts, scope_at};
 use jtac_gate::{Decision, Refuse};
 use jtac_store::Store;
 use serde::Serialize;
 
+use crate::output::WaiverOut;
 use crate::refuse::Refusal;
 use crate::{Printed, chain, coverage, repo, state, update};
 
@@ -32,6 +33,8 @@ pub struct StatusOut {
     pub upstream: Option<String>,
     /// Commits on HEAD and not on the upstream, oldest first.
     pub unpushed: Vec<Unpushed>,
+    /// Stored waivers a `jtac check` on HEAD now would apply.
+    pub waivers: Vec<WaiverOut>,
     /// The last verdict, when a check has run in this clone.
     pub last: Option<Last>,
     /// What could not be read, such as a `state.json` another version wrote.
@@ -124,7 +127,13 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
             .collect(),
         None => Vec::new(),
     };
+    let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut notes = g.tip.notes;
+    let waivers = crate::lever::offered(&repo, &store, &mut notes)?
+        .iter()
+        .filter(|l| scope_at(&l.node, &head.commit, now).is_ok())
+        .filter_map(WaiverOut::of)
+        .collect();
     let last = match state::read(&store) {
         Ok(last) => last.map(|o| Last {
             commit: o.commit,
@@ -146,6 +155,7 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
         tree_match,
         upstream: upstream.map(|u| u.trim_start_matches("refs/remotes/").to_owned()),
         unpushed,
+        waivers,
         last,
         notes,
         refused: match &decision {
@@ -222,6 +232,9 @@ fn render(o: &StatusOut) -> String {
         None => {
             let _ = writeln!(s, "  upstream none: unpushed commits are not counted");
         }
+    }
+    for w in &o.waivers {
+        let _ = writeln!(s, "  waiver  {}", w.line());
     }
     for note in &o.notes {
         let _ = writeln!(s, "  note    {note}");

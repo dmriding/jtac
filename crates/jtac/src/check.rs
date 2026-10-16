@@ -9,7 +9,8 @@ use jtac_store::Store;
 
 use crate::cli::CheckArgs;
 use crate::refuse::Refusal;
-use crate::{Printed, chain, identity, judge, output, render, repo, root, state, write};
+use crate::survey::state_name;
+use crate::{Printed, chain, identity, judge, lever, output, render, repo, root, state, write};
 
 /// The rendered verdict. A root, once written, is reported even when `state.json` is not.
 pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
@@ -50,7 +51,8 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut file_cache = store.cache();
     let cache: Option<&mut dyn Cache> = signer.as_ref().map(|_| &mut file_cache as &mut dyn Cache);
-    let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref())?;
+    let waivers = lever::offered(&repo, &store, &mut notes)?;
+    let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref(), &waivers)?;
     if let Some(why) = dirty {
         notes.push(format!(
             "the work tree is not HEAD's tree ({why}): the checks ran on it, the diff-integrity \
@@ -77,7 +79,14 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     write::evidence(&store, &policy, &j, cache)?;
     let root_id = match (&existing, j.verdict.pass) {
         (Some(stored), true) => {
-            notes.push("HEAD already has a root; it stands, and this run wrote none".to_owned());
+            notes.push(format!(
+                "HEAD already has a root; it stands, and this run wrote none: it records {} with \
+                 {} waivers, this run judged {} with {}",
+                state_name(Some(stored.root.state)),
+                stored.root.levers.len(),
+                state_name(Some(j.verdict.state)),
+                j.levers.len()
+            ));
             Some(stored.root.id().map_err(Refusal::internal)?)
         }
         (None, true) => {

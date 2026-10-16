@@ -225,6 +225,9 @@ impl Ctx {
             }
         }
         let decision = jtac_gate::decide(&g.update);
+        if let (Decision::Pass(_), Some((counted, _))) = (&decision, g.tip.counted) {
+            self.waivers(&counted, out)?;
+        }
         if let (Decision::Pass(_), Some((counted, _)), Some(tip)) = (&decision, g.tip.counted, &tip)
         {
             let known = matches!(g.update.history, History::FastForward | History::Rewinds);
@@ -238,6 +241,23 @@ impl Ctx {
             .filter(|_| g.tip.own_stale)
             .map(|t| jtac_store::ref_name(&t.commit));
         Ok((decision, stale))
+    }
+
+    /// Every waiver the counted root applies, so a push that rides on one says so
+    /// (DESIGN.md section 11.6).
+    fn waivers(&self, counted: &GitOid, out: &mut String) -> Result<(), Refusal> {
+        let Some(stored) = self.store.root(counted).map_err(Refusal::store)? else {
+            return Ok(());
+        };
+        for w in stored
+            .root
+            .levers
+            .iter()
+            .filter_map(crate::output::WaiverOut::of)
+        {
+            let _ = writeln!(out, "jtac: waiver: {}", w.line());
+        }
+        Ok(())
     }
 
     /// `None` for the null oid, in this repository's format.

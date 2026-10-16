@@ -31,4 +31,4 @@ pub use schema::V1;
 pub use signer::Signer;
 pub use time::{Ts, TsError};
 pub use verdict::{CheckSpec, Facts, Reason, Verdict, gate};
-pub use waiver::{MAX_WAIVER_SECS, OutOfScope, covers_finding, scope_at};
+pub use waiver::{MAX_WAIVER_SECS, OutOfScope, clean_prefix, covers_finding, scope_at};

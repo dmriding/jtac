@@ -286,7 +286,10 @@ fn a_second_check_on_a_covered_head_keeps_the_root_and_the_next_commits_chain_to
         .collect();
     assert_eq!(
         notes,
-        ["HEAD already has a root; it stands, and this run wrote none"]
+        [
+            "HEAD already has a root; it stands, and this run wrote none: it records covered \
+             with 0 waivers, this run judged covered with 0"
+        ]
     );
     assert_eq!(root_refs(&repo).len(), 1);
     repo.write("src/lib.rs", b"fn a() {}\nfn b() {}\n");

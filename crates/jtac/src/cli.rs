@@ -20,7 +20,7 @@ pub struct Cli {
 }
 
 /// Every command the parser accepts; `init`, `check`, `status`, `why`, `verify`, `replay`,
-/// `audit`, `show`, and `hook` run in this release.
+/// `audit`, `show`, `waive`, and `hook` run in this release.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Set this repository up: signing key, local store, policy, the pre-push hook, the
@@ -42,6 +42,8 @@ pub enum Command {
     Audit(RangeArgs),
     /// The root refs a push of the range would send, byte for byte
     Show(ShowArgs),
+    /// The signed off-switch: waive one commit, or one rule under one path for up to 30 days
+    Waive(WaiveArgs),
     /// A git hook entry point; git runs it, `jtac init` installs it
     #[command(subcommand)]
     Hook(Hook),
@@ -92,6 +94,29 @@ pub struct CheckArgs {
     /// the upstream, or the default branch
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
+    /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `jtac waive` flags.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct WaiveArgs {
+    /// The commit to turn the gate off for; its root reads `declared_off`
+    #[arg(value_name = "REV")]
+    pub rev: Option<String>,
+    /// The rule to waive, with `--path`; the root stays `covered`
+    #[arg(long, value_name = "RULE")]
+    pub rule: Option<String>,
+    /// The path prefix the rule is waived under, whole components
+    #[arg(long, value_name = "PREFIX")]
+    pub path: Option<String>,
+    /// How long a rule waiver runs from now: `14d`, at most `30d`
+    #[arg(long, value_name = "DAYS")]
+    pub expires: Option<String>,
+    /// Why, verbatim, for every reader of the root
+    #[arg(long, value_name = "TEXT")]
+    pub reason: String,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -202,14 +227,28 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "hook", "pre-push"]).is_err());
-        let cli = Cli::try_parse_from(["jtac", "waive", "--reason", "x"]).unwrap();
+        let cli = Cli::try_parse_from(["jtac", "bench", "--reason", "x"]).unwrap();
         assert_eq!(
             cli.command,
             Some(Command::Other(vec![
-                "waive".into(),
+                "bench".into(),
                 "--reason".into(),
                 "x".into()
             ]))
+        );
+        let cli =
+            Cli::try_parse_from(["jtac", "waive", "HEAD", "--expires", "3d", "--reason", "x"])
+                .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Waive(WaiveArgs {
+                rev: Some("HEAD".into()),
+                rule: None,
+                path: None,
+                expires: Some("3d".into()),
+                reason: "x".into(),
+                json: false,
+            }))
         );
         let cli = Cli::try_parse_from([
             "jtac",

@@ -4,13 +4,12 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use jtac_gate::Trust;
 use serde::Serialize;
 
 use crate::Printed;
 use crate::cli::RangeArgs;
 use crate::refuse::Refusal;
-use crate::survey::{RowOut, survey, via_text};
+use crate::survey::{RowOut, WaiverRow, survey, via_text};
 
 /// What `jtac audit` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -25,6 +24,8 @@ pub struct AuditOut {
     pub signers: String,
     /// One per commit, newest first.
     pub rows: Vec<RowOut>,
+    /// Every waiver a valid root applies.
+    pub waivers: Vec<WaiverRow>,
     /// The totals.
     pub totals: Totals,
     /// Skipped refs, parent roots this clone lacks.
@@ -46,8 +47,12 @@ pub struct Totals {
     pub by_tree: u64,
     /// Roots that bear on the range and do not count.
     pub invalid_roots: u64,
-    /// Roots whose signer no trust file names.
+    /// Roots whose signer, or a waiver's signer, no trust file names.
     pub unknown_signers: u64,
+    /// Waivers the valid roots apply.
+    pub waivers: u64,
+    /// Those written under an agent session.
+    pub agent_waivers: u64,
     /// `covered` plus `declared_off` as a whole percentage of `commits`, rounded down.
     pub percent_covered: u64,
 }
@@ -58,6 +63,7 @@ pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let (covered, declared_off, absent) = s.totals();
     let commits = s.rows.len() as u64;
     let rows = s.rows_out();
+    let waivers = s.waivers_out();
     let out = AuditOut {
         v: 1,
         command: "audit",
@@ -75,17 +81,15 @@ pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
                 .iter()
                 .filter(|r| r.invalid.is_some())
                 .count() as u64,
-            unknown_signers: s
-                .ledger
-                .roots
-                .iter()
-                .filter(|r| r.invalid.is_none() && !matches!(r.trust, Trust::Trusted))
-                .count() as u64,
+            unknown_signers: s.unknown_signers(),
+            waivers: waivers.len() as u64,
+            agent_waivers: waivers.iter().filter(|w| w.waiver.agent.is_some()).count() as u64,
             percent_covered: ((covered + declared_off) * 100)
                 .checked_div(commits)
                 .unwrap_or_default(),
         },
         rows,
+        waivers,
         notes: s.ledger.notes,
     };
     let text = if a.json {
@@ -130,6 +134,9 @@ fn render(o: &AuditOut) -> String {
             r.state,
             via_text(r)
         );
+    }
+    for w in &o.waivers {
+        let _ = writeln!(s, "  waiver  {}", w.line());
     }
     for note in &o.notes {
         let _ = writeln!(s, "  note    {note}");

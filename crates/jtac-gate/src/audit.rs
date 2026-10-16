@@ -33,6 +33,9 @@ pub struct RootFact {
     pub signer: Option<Signer>,
     /// Whether the trust file names the signer.
     pub trust: Trust,
+    /// One per `levers` entry, in order: whether the trust file names the waiver's signer.
+    /// A waiver whose signature does not hold made the root invalid instead.
+    pub waiver_trust: Vec<Trust>,
     /// `policy.version`.
     pub policy_version: u32,
     /// `gate.version`.
@@ -161,6 +164,7 @@ mod tests {
             covers: covers.iter().map(|c| oid(*c)).collect(),
             signer: None,
             trust: Trust::Unchecked,
+            waiver_trust: Vec::new(),
             policy_version: 1,
             gate_version: "0.0.17".into(),
             invalid: invalid.map(str::to_owned),

@@ -72,7 +72,8 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
     let format = repo::format(&repo).map_err(|e| Refusal::repository(&e))?;
     let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
-    let target = repo::peel(&repo, &format, &a.commit).map_err(|_| Refusal::rev(&a.commit))?;
+    let target =
+        repo::peel(&repo, &format, &a.commit).map_err(|_| Refusal::rev("replay", &a.commit))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let stored = store
         .root(&target.commit)

@@ -76,14 +76,20 @@ pub fn covers_finding(body: &LeverBody, finding: &FindingBody) -> bool {
 
 fn under(path: &str, prefix: &str) -> bool {
     let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
-    clean(prefix)
+    clean_prefix(prefix)
         && clean(path)
         && path
             .strip_prefix(prefix)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-// A `..` component would let a waiver on `src/ffi` cover `src/ffi/../auth`.
+/// Whether a waiver prefix can cover anything, one trailing `/` allowed: a `..` component
+/// would let a waiver on `src/ffi` cover `src/ffi/../auth`, so `waive` refuses what the
+/// verdict would ignore.
+pub fn clean_prefix(prefix: &str) -> bool {
+    clean(prefix.strip_suffix('/').unwrap_or(prefix))
+}
+
 fn clean(path: &str) -> bool {
     !path.is_empty()
         && !path.contains('\\')

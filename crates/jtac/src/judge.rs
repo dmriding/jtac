@@ -11,7 +11,8 @@ use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Report, report};
 use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
-    Body, Capture, CheckBody, Facts, FindingBody, Node, Outcome, Sha256Digest, Ts, Verdict, gate,
+    Body, Capture, CheckBody, Facts, FindingBody, Node, Outcome, Sha256Digest, SignedLever, Ts,
+    Verdict, gate,
 };
 use jtac_policy::{INTEGRITY_CHECK_ID, facts};
 
@@ -29,8 +30,11 @@ pub struct Judged {
     pub facts: Facts,
     /// The instant every node carries and `gate` was given.
     pub now: Ts,
-    /// Check and finding nodes, `integrity` first.
+    /// Check and finding nodes, `integrity` first, then the waivers the verdict applied: the
+    /// root's leaves, in order.
     pub nodes: Vec<Node>,
+    /// The applied waivers with their signatures, the root's `levers`.
+    pub levers: Vec<SignedLever>,
     /// Every captured stream of a fresh run, for the store; a hit's were kept before its
     /// entry was (`write::evidence`).
     pub captures: Vec<Vec<u8>>,
@@ -42,7 +46,8 @@ pub struct Judged {
     pub verdict: Verdict,
 }
 
-/// Run the rules and the checks on `head` and decide.
+/// Run the rules and the checks on `head` and decide. Every stored waiver is offered; the
+/// verdict keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -50,6 +55,7 @@ pub fn judge(
     base: Base,
     now: Ts,
     cache: Option<&dyn Cache>,
+    waivers: &[SignedLever],
 ) -> Result<Judged, Refusal> {
     let facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
     let node = |body: Body| Node {
@@ -105,13 +111,24 @@ pub fn judge(
             }
         }
     }
+    let evidence = nodes.len();
+    nodes.extend(waivers.iter().map(|w| w.node.clone()));
     let verdict = gate(&facts, &nodes, now);
+    let levers: Vec<SignedLever> = verdict
+        .applied
+        .iter()
+        .filter_map(|&i| i.checked_sub(evidence))
+        .map(|i| waivers[i].clone())
+        .collect();
+    nodes.truncate(evidence);
+    nodes.extend(levers.iter().map(|l| l.node.clone()));
     Ok(Judged {
         head,
         base,
         facts,
         now,
         nodes,
+        levers,
         captures,
         integrity_error,
         report,

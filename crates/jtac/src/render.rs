@@ -45,14 +45,19 @@ pub fn text(o: &Output) -> String {
     for note in &o.notes {
         let _ = writeln!(s, "  note    {note}");
     }
+    for w in &o.waivers {
+        let _ = writeln!(s, "  waiver  {}", w.line());
+    }
     for (i, r) in o.reasons.iter().enumerate() {
         let _ = writeln!(s, "  {}. {}", i + 1, r.what);
         let _ = writeln!(s, "     why  {}", r.why);
         let _ = writeln!(s, "     fix  {}", r.how);
     }
-    if !o.advisory.is_empty() {
-        let _ = writeln!(s, "  advisory");
-        for f in &o.advisory {
+    for (head, findings) in [("waived", &o.waived), ("advisory", &o.advisory)] {
+        if !findings.is_empty() {
+            let _ = writeln!(s, "  {head}");
+        }
+        for f in findings {
             let line = finding_line(&f.rule, f.severity, &f.path, f.line, &f.message);
             let _ = writeln!(s, "     {line}");
         }
@@ -100,7 +105,13 @@ fn summary(o: &Output) -> String {
         0 => String::new(),
         n => format!(", {n} advisory"),
     };
-    if o.pass {
+    if o.state == jtac_core::State::DeclaredOff {
+        format!(
+            "declared off by a commit waiver, {} reasons overridden; {passed} of {total} checks \
+             pass{advisory}",
+            o.reasons.len()
+        )
+    } else if o.pass {
         format!("{passed} of {total} checks pass, nothing blocks{advisory}")
     } else {
         format!("{} reasons block{advisory}", o.reasons.len())
