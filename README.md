@@ -67,7 +67,7 @@ jtac init                     # key, store, .jtac/policy.toml, hook, refspec;
 echo '<that line>' > .jtac/signers
 git add .jtac && git commit -m "Adopt jtac"
 jtac check                    # ABORT: adding .jtac/ is itself a protected-path finding
-jtac waive --rule JT-PROT-001 --path .jtac/ --expires 14d --reason "adopting jtac"
+jtac waive --rule JT-PROT-001 --path .jtac/ --expires 1d --reason "adopting jtac"
 jtac check                    # CLEARED HOT, root written, waiver recorded in it
 git push                      # the hook pushes the root ref ahead of the code
 ```

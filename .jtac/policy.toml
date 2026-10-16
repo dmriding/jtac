@@ -37,6 +37,28 @@ run = [
 required = true
 timeout_secs = 1200
 
+[checks.rust-doc]
+run = [
+    "cargo",
+    "doc",
+    "--workspace",
+    "--no-deps",
+    "--all-features",
+    "--locked",
+]
+required = true
+timeout_secs = 600
+
+[checks.loc-cap-test]
+run = ["sh", "scripts/loc-cap-test.sh"]
+required = true
+timeout_secs = 600
+
+[checks.loc-cap]
+run = ["sh", "scripts/loc-cap.sh"]
+required = true
+timeout_secs = 600
+
 [integrity]
 block_at = "major"
 max_new_suppressions = 0
@@ -50,6 +72,9 @@ paths = [
     ".jtac/**",
     ".github/**",
     "scripts/**",
+    ".cargo/**",
+    "rustfmt.toml",
+    ".rustfmt.toml",
     ".gitlab-ci.yml",
     ".circleci/**",
     ".buildkite/**",

@@ -3,3 +3,4 @@
 *.private.md
 .env
 .DS_Store
+/.nyx/
