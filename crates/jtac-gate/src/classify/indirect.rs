@@ -2,7 +2,7 @@
 //! the programs that run a string this reader will not open.
 
 use super::program::{base_name, dashed_git, names_a_shell, names_git, runs_a_string};
-use super::{Action, MAX_NESTING, Unread, classify_at, sealed};
+use super::{Action, Dir, MAX_NESTING, Unread, classify_at, place, sealed};
 use crate::shell::{Simple, Word};
 
 fn unreadable(cmd: &Simple, why: Unread) -> Vec<Action> {
@@ -25,7 +25,7 @@ fn unplaced(actions: Vec<Action>) -> Vec<Action> {
 
 /// The script a shell, `eval` or `trap` runs, classified as the script it is. `eval` runs in
 /// this shell, so its `cd` stands unless the `eval` itself may not run; a child shell's dies
-/// with it; a trap body runs at exit, after everything here.
+/// with it; a trap body runs at exit, after every `cd` here, so its pushes name no directory.
 pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
     if depth >= MAX_NESTING {
         return unreadable(cmd, Unread::Nesting);
@@ -35,7 +35,10 @@ pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
         return match trap_script(cmd, first) {
             None => Vec::new(),
             Some(w) if w.unresolved => unreadable(cmd, Unread::ShellString),
-            Some(w) => sealed(classify_at(&w.text, depth + 1)),
+            Some(w) => sealed(classify_at(&w.text, depth + 1))
+                .into_iter()
+                .map(|a| place(a, &Dir::Unknown))
+                .collect(),
         };
     }
     if program.eq_ignore_ascii_case("eval") {

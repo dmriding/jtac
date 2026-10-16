@@ -420,6 +420,7 @@ pub(crate) enum Chdir {
 /// The chdir a wrapper performs before running what it wraps, walking the wrapper chain.
 pub(crate) fn wrapper_chdir(cmd: &Simple) -> Option<Chdir> {
     let mut i = 0;
+    let mut moved: Option<Chdir> = None;
     while let Some(w) = cmd.words.get(i) {
         let t = w.text.as_str();
         if is_assignment(t) {
@@ -427,21 +428,34 @@ pub(crate) fn wrapper_chdir(cmd: &Simple) -> Option<Chdir> {
             continue;
         }
         let Some(Named::Wrapper(spec)) = named(t) else {
-            return None;
+            break;
         };
-        if let Some(found) = chdir_options(cmd, i + 1, spec) {
-            return Some(found);
+        match chdir_options(cmd, i + 1, spec) {
+            Some(Chdir::Split) => return Some(Chdir::Split),
+            Some(next) => moved = Some(chain(moved, next)),
+            None => {}
         }
         match after_wrapper(cmd, i + 1, spec) {
             After::Command(n) => i = n,
-            After::Script(_) | After::Nothing => return None,
+            After::Script(_) | After::Nothing => break,
         }
     }
-    None
+    moved
+}
+
+// `env -C a env -C b`: the inner wrapper starts where the outer one moved to.
+fn chain(moved: Option<Chdir>, next: Chdir) -> Chdir {
+    match (moved, next) {
+        (None, next) => next,
+        (Some(Chdir::To(a)), Chdir::To(b)) => Chdir::To(join_dir(&a, &b)),
+        (Some(_), Chdir::To(b)) if is_absolute(&b) => Chdir::To(b),
+        _ => Chdir::Unnamed,
+    }
 }
 
 // `env -C`/`--chdir`, `env -S`, `sudo -D`/`--chdir`, `sudo -R`/`--chroot`; `doas -C` is a
-// config file. Read left to right so an option's value is never read as another option.
+// config file. Read left to right so an option's value is never read as another option; a
+// repeated directory option keeps the last one, as the wrappers do.
 fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
     if !matches!(spec.name, "env" | "sudo") {
         return None;
@@ -452,10 +466,11 @@ fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
         ('D', 'R')
     };
     let mut i = from;
+    let mut found = None;
     while let Some(w) = cmd.words.get(i) {
         let t = w.text.as_str();
         if t == "--" || !(t.starts_with('-') || is_assignment(t)) {
-            return None;
+            return found;
         }
         if let Some(long) = t.strip_prefix("--") {
             let (name, value) = long
@@ -475,13 +490,14 @@ fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
                     Chdir::Unnamed
                 });
             } else if "chdir".starts_with(name) {
-                return Some(match value {
+                found = Some(match value {
                     Some(v) => chdir_to(&Word {
                         text: v.to_string(),
                         unresolved: w.unresolved,
                     }),
                     None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
                 });
+                i += if value.is_none() { 2 } else { 1 };
             } else {
                 i += if value.is_none() && takes_a_value(spec, name) {
                     2
@@ -502,7 +518,10 @@ fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
                     });
                 }
                 if c == dir_letter {
-                    return Some(attached_or_next(cmd, i, &short[k + 1..], w.unresolved));
+                    let rest = &short[k + 1..];
+                    found = Some(attached_or_next(cmd, i, rest, w.unresolved));
+                    step = if rest.is_empty() { 2 } else { 1 };
+                    break;
                 }
                 if spec.short.contains(c) {
                     step = if k + 1 == short.len() { 2 } else { 1 };
@@ -514,7 +533,7 @@ fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
         }
         i += 1;
     }
-    None
+    found
 }
 
 fn chdir_to(w: &Word) -> Chdir {

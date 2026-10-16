@@ -8,7 +8,7 @@ use shuck_ast::{
     BourneParameterExpansion, BuiltinCommand, Command, CommandSubstitutionSyntax, CompoundCommand,
     ConditionalExpr, DeclClause, DeclOperand, HeredocBodyPart, ParameterExpansion,
     ParameterExpansionSyntax, Pattern, PatternPart, Redirect, RedirectKind, RedirectTarget,
-    SimpleCommand, Span, Stmt, StmtSeq, StmtTerminator, Word as AstWord, WordPart,
+    SimpleCommand, Span, Stmt, StmtSeq, StmtTerminator, VarRef, Word as AstWord, WordPart,
     static_command_name_text,
 };
 use shuck_parser::parser::{ParseStatus, Parser};
@@ -278,7 +278,7 @@ impl Walk<'_> {
         }
         self.words(extra);
         for a in assignments {
-            self.assignment(a.target.name.as_ref(), &a.value);
+            self.assignment(&a.target, &a.value);
         }
     }
 
@@ -317,7 +317,7 @@ impl Walk<'_> {
     fn simple(&mut self, c: &SimpleCommand, span: Span, conditional: bool, heredoc: Option<Word>) {
         let mut words = Vec::with_capacity(c.assignments.len() + 1 + c.args.len());
         for a in &c.assignments {
-            words.push(self.assignment(a.target.name.as_ref(), &a.value));
+            words.push(self.assignment(&a.target, &a.value));
         }
         let name = self.word(&c.name);
         if !name.text.is_empty() || name.unresolved {
@@ -340,7 +340,7 @@ impl Walk<'_> {
                     text: v.name.as_ref().to_string(),
                     unresolved: false,
                 },
-                DeclOperand::Assignment(a) => self.assignment(a.target.name.as_ref(), &a.value),
+                DeclOperand::Assignment(a) => self.assignment(&a.target, &a.value),
             });
         }
         self.push(words, span, conditional, None);
@@ -356,13 +356,15 @@ impl Walk<'_> {
         }));
     }
 
-    fn assignment(&mut self, key: &str, value: &AssignmentValue) -> Word {
+    fn assignment(&mut self, target: &VarRef, value: &AssignmentValue) -> Word {
+        let key = target.name.as_ref();
+        let subscript = self.reference(target);
         match value {
             AssignmentValue::Scalar(w) => {
                 let w = self.word(w);
                 Word {
                     text: format!("{key}={}", w.text),
-                    unresolved: w.unresolved,
+                    unresolved: w.unresolved || subscript,
                 }
             }
             AssignmentValue::Compound(arr) => {
@@ -430,21 +432,37 @@ impl Walk<'_> {
             }
             WordPart::Parameter(p) => self.parameter(p),
             WordPart::ParameterExpansion {
-                operand_word_ast, ..
+                reference,
+                operand_word_ast,
+                ..
             }
             | WordPart::IndirectExpansion {
-                operand_word_ast, ..
-            } => self.optional(operand_word_ast.as_deref()),
+                reference,
+                operand_word_ast,
+                ..
+            } => {
+                self.reference(reference);
+                self.optional(operand_word_ast.as_deref());
+            }
+            WordPart::Length(r)
+            | WordPart::ArrayAccess(r)
+            | WordPart::ArrayLength(r)
+            | WordPart::ArrayIndices(r) => {
+                self.reference(r);
+            }
             WordPart::Substring {
+                reference,
                 offset_word_ast,
                 length_word_ast,
                 ..
             }
             | WordPart::ArraySlice {
+                reference,
                 offset_word_ast,
                 length_word_ast,
                 ..
             } => {
+                self.reference(reference);
                 self.word(offset_word_ast);
                 self.optional(length_word_ast.as_deref());
             }
@@ -457,21 +475,51 @@ impl Walk<'_> {
             return;
         };
         match b {
+            BourneParameterExpansion::Access { reference }
+            | BourneParameterExpansion::Length { reference }
+            | BourneParameterExpansion::Indices { reference }
+            | BourneParameterExpansion::Transformation { reference, .. } => {
+                self.reference(reference);
+            }
             BourneParameterExpansion::Indirect {
-                operand_word_ast, ..
+                reference,
+                operand_word_ast,
+                ..
             }
             | BourneParameterExpansion::Operation {
-                operand_word_ast, ..
-            } => self.optional(operand_word_ast.as_deref()),
+                reference,
+                operand_word_ast,
+                ..
+            } => {
+                self.reference(reference);
+                self.optional(operand_word_ast.as_deref());
+            }
             BourneParameterExpansion::Slice {
+                reference,
                 offset_word_ast,
                 length_word_ast,
                 ..
             } => {
+                self.reference(reference);
                 self.word(offset_word_ast);
                 self.optional(length_word_ast.as_deref());
             }
-            _ => {}
+            BourneParameterExpansion::PrefixMatch { .. } => {}
+        }
+    }
+
+    // A subscript runs too: `a[$(cmd)]=1`, `${a[$(cmd)]}`. True when it holds an expansion.
+    fn reference(&mut self, r: &VarRef) -> bool {
+        let Some(sub) = r.subscript.as_deref() else {
+            return false;
+        };
+        match (sub.word_ast(), sub.arithmetic_ast.as_ref()) {
+            (Some(w), _) => self.word(w).unresolved,
+            (None, Some(a)) => {
+                self.arith(Some(a));
+                true
+            }
+            (None, None) => false,
         }
     }
 
@@ -503,7 +551,18 @@ impl Walk<'_> {
                                 unresolved = true;
                                 self.substitution(body, *syntax, span);
                             }
-                            _ => unresolved = true,
+                            HeredocBodyPart::ArithmeticExpansion {
+                                expression_word_ast,
+                                ..
+                            } => {
+                                unresolved = true;
+                                self.word(expression_word_ast);
+                            }
+                            HeredocBodyPart::Parameter(p) => {
+                                unresolved = true;
+                                self.parameter(p);
+                            }
+                            HeredocBodyPart::Variable(_) => unresolved = true,
                         }
                     }
                     if on_stdin {

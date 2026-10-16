@@ -484,6 +484,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
     let mut flags_done = false;
     let mut skip_next = false;
     let mut take_repo = false;
+    let (mut lease, mut mirror) = (false, false);
     for w in args {
         let t = w.text.as_str();
         if skip_next {
@@ -498,10 +499,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
             positional.push(t);
             continue;
         }
-        if let Some(short) = t
-            .strip_prefix('-')
-            .filter(|s| !t.starts_with("--") && s.chars().all(|c| c.is_ascii_alphanumeric()))
-        {
+        if let Some(short) = t.strip_prefix('-').filter(|_| !t.starts_with("--")) {
             for (k, c) in short.char_indices() {
                 match c {
                     'f' => p.force = Force::Force,
@@ -527,18 +525,28 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
             Some("--mirror") => {
                 p.all_refs = true;
                 p.force = Force::Force;
+                mirror = true;
             }
             Some("--all" | "--branches") => p.all_refs = true,
             Some("--no-all" | "--no-branches" | "--no-mirror") => p.all_refs = false,
             Some("--dry-run") => p.dry_run = true,
             Some("--no-dry-run") => p.dry_run = false,
             Some("--force-with-lease") => {
+                lease = true;
                 if p.force == Force::No {
                     p.force = Force::WithLease;
                 }
             }
             Some("--force") => p.force = Force::Force,
-            Some("--no-force" | "--no-force-with-lease") => p.force = Force::No,
+            Some("--no-force") if p.force == Force::Force && !mirror => {
+                p.force = if lease { Force::WithLease } else { Force::No };
+            }
+            Some("--no-force-with-lease") => {
+                lease = false;
+                if p.force == Force::WithLease {
+                    p.force = Force::No;
+                }
+            }
             Some("--delete") => {
                 p.delete = true;
                 delete_flag = true;
