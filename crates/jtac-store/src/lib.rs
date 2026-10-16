@@ -6,6 +6,7 @@
 mod batch;
 mod cache;
 mod fs;
+mod levers;
 mod objects;
 mod refs;
 mod roots;

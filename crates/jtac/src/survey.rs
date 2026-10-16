@@ -10,6 +10,7 @@ use jtac_store::Store;
 use serde::Serialize;
 
 use crate::ledger::{self, Ledger};
+use crate::output::WaiverOut;
 use crate::range;
 use crate::refuse::Refusal;
 use crate::trust::Signers;
@@ -91,6 +92,37 @@ pub struct RowOut {
     pub invalid: Option<String>,
 }
 
+/// One waiver a valid root in the range applies, as shown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WaiverRow {
+    /// The commit whose root applies it.
+    pub commit: GitOid,
+    /// The waiver.
+    #[serde(flatten)]
+    pub waiver: WaiverOut,
+    /// `trusted` or `unknown`: what the trust file said about the waiver's signer.
+    pub trust: &'static str,
+}
+
+impl WaiverRow {
+    /// One line: the commit, then the waiver's own line, then trust.
+    pub fn line(&self) -> String {
+        format!(
+            "{} {} ({})",
+            short(&self.commit),
+            self.waiver.line(),
+            self.trust
+        )
+    }
+}
+
+fn trust_name(t: &Trust) -> &'static str {
+    match t {
+        Trust::Trusted => "trusted",
+        _ => "unknown",
+    }
+}
+
 /// The name a state prints as.
 pub fn state_name(state: Option<State>) -> &'static str {
     match state {
@@ -122,16 +154,45 @@ impl Survey {
                     },
                     root: fact.and_then(|f| f.id),
                     signer: fact.and_then(|f| f.signer.clone()),
-                    trust: fact.map(|f| match f.trust {
-                        Trust::Trusted => "trusted",
-                        _ => "unknown",
-                    }),
+                    trust: fact.map(|f| trust_name(&f.trust)),
                     policy_version: fact.map(|f| f.policy_version),
                     gate_version: fact.map(|f| f.gate_version.clone()),
                     invalid: r.invalid.clone(),
                 }
             })
             .collect()
+    }
+
+    /// Every waiver a valid root applies, in root order.
+    pub fn waivers_out(&self) -> Vec<WaiverRow> {
+        let mut out = Vec::new();
+        for (fact, stored) in self.ledger.roots.iter().zip(&self.ledger.stored) {
+            let Some(s) = stored.as_ref().filter(|_| fact.invalid.is_none()) else {
+                continue;
+            };
+            for (lever, trust) in s.root.levers.iter().zip(&fact.waiver_trust) {
+                if let Some(waiver) = WaiverOut::of(lever) {
+                    out.push(WaiverRow {
+                        commit: fact.commit,
+                        waiver,
+                        trust: trust_name(trust),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Valid roots whose signer, or any of whose waivers' signers, no trust file names.
+    pub fn unknown_signers(&self) -> u64 {
+        let unknown = |t: &Trust| !matches!(t, Trust::Trusted);
+        self.ledger
+            .roots
+            .iter()
+            .filter(|r| {
+                r.invalid.is_none() && (unknown(&r.trust) || r.waiver_trust.iter().any(unknown))
+            })
+            .count() as u64
     }
 
     /// Commits by state: covered, declared off, absent.

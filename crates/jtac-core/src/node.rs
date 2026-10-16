@@ -187,6 +187,10 @@ pub struct LeverBody {
     /// When a waiver stops applying, compared against the root's `ts`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<Ts>,
+    /// The environment marker of the agent session the lever was pulled in; absent when
+    /// none was set (DESIGN.md section 11.6). Audited, never a lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Lever actions.
@@ -318,6 +322,7 @@ pub(crate) mod tests {
                 reason: "example reason".into(),
                 scope: Some(scope),
                 expires: expires.map(|e| e.parse().unwrap()),
+                agent: None,
             }),
             ..check_node()
         }

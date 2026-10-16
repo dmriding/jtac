@@ -50,7 +50,8 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut file_cache = store.cache();
     let cache: Option<&mut dyn Cache> = signer.as_ref().map(|_| &mut file_cache as &mut dyn Cache);
-    let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref())?;
+    let waivers = store.levers().map_err(Refusal::store)?;
+    let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref(), &waivers)?;
     if let Some(why) = dirty {
         notes.push(format!(
             "the work tree is not HEAD's tree ({why}): the checks ran on it, the diff-integrity \

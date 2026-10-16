@@ -6,13 +6,12 @@ use std::path::Path;
 
 use jtac_checks::git::quoted;
 use jtac_core::{GitOid, Sha256Digest};
-use jtac_gate::Trust;
 use serde::Serialize;
 
 use crate::Printed;
 use crate::cli::VerifyArgs;
 use crate::refuse::Refusal;
-use crate::survey::survey;
+use crate::survey::{WaiverRow, survey};
 
 /// What `jtac verify` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -39,8 +38,12 @@ pub struct VerifyOut {
     pub roots: u64,
     /// Those that do not count, with why.
     pub invalid: Vec<Invalid>,
-    /// Those whose signer no trust file names.
+    /// Those whose signer, or a waiver's signer, no trust file names.
     pub unknown_signers: u64,
+    /// Every waiver a valid root applies.
+    pub waivers: Vec<WaiverRow>,
+    /// Those written under an agent session.
+    pub agent_waivers: u64,
     /// Whether absence fails.
     pub require_coverage: bool,
     /// Skipped refs, parent roots this clone lacks.
@@ -86,6 +89,7 @@ pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
         Vec::new()
     };
     let pass = invalid.is_empty() && absent_commits.is_empty();
+    let waivers = s.waivers_out();
     let out = VerifyOut {
         v: 1,
         command: "verify",
@@ -97,12 +101,9 @@ pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
         absent,
         absent_commits,
         roots: s.ledger.roots.len() as u64,
-        unknown_signers: s
-            .ledger
-            .roots
-            .iter()
-            .filter(|r| r.invalid.is_none() && !matches!(r.trust, Trust::Trusted))
-            .count() as u64,
+        unknown_signers: s.unknown_signers(),
+        agent_waivers: waivers.iter().filter(|w| w.waiver.agent.is_some()).count() as u64,
+        waivers,
         invalid,
         require_coverage: a.require_coverage,
         notes: s.ledger.notes,
@@ -133,6 +134,9 @@ fn render(o: &VerifyOut) -> String {
         o.unknown_signers
     );
     let _ = writeln!(s, "  signers {}", o.signers);
+    for w in &o.waivers {
+        let _ = writeln!(s, "  waiver  {}", w.line());
+    }
     for i in &o.invalid {
         let _ = writeln!(s, "  invalid {} {}", i.commit.hex(), i.why);
     }

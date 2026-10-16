@@ -1,6 +1,7 @@
 //! The `jtac` binary. Impure: gathers facts, renders verdicts, decides nothing. Exit 0 is
 //! `CLEARED HOT`, 1 is `ABORT`, 2 is a refusal: the gate could not answer.
 
+mod agent;
 mod audit;
 mod chain;
 mod check;
@@ -33,6 +34,7 @@ mod survey;
 mod trust;
 mod update;
 mod verify;
+mod waive;
 mod why;
 mod write;
 
@@ -53,6 +55,8 @@ pub struct Printed {
     pub pass: bool,
     /// For stderr, when something after the verdict failed.
     pub warn: Option<Refusal>,
+    /// For stderr, a fact about the verdict a person must not miss: nothing failed.
+    pub note: Option<String>,
 }
 
 impl Printed {
@@ -61,6 +65,7 @@ impl Printed {
             stdout,
             pass,
             warn: None,
+            note: None,
         }
     }
 }
@@ -94,9 +99,9 @@ impl Run {
         match ran {
             Ok(p) => Self {
                 stdout: p.stdout,
-                stderr: p
-                    .warn
-                    .map_or_else(String::new, |w| if json { w.json() } else { w.text() }),
+                stderr: p.note.unwrap_or_default()
+                    + &p.warn
+                        .map_or_else(String::new, |w| if json { w.json() } else { w.text() }),
                 code: u8::from(!p.pass),
             },
             Err(r) => Self::refused(&r, json),
@@ -138,6 +143,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         Some(Command::Replay(a)) => Run::verdict(replay::replay(&a, cwd), a.json),
         Some(Command::Audit(a)) => Run::verdict(audit::audit(&a, cwd), a.json),
         Some(Command::Show(a)) => Run::verdict(show::show(&a, cwd), a.json),
+        Some(Command::Waive(a)) => Run::verdict(waive::waive(&a, cwd), a.json),
     }
 }
 
@@ -196,7 +202,7 @@ mod tests {
     #[test]
     fn unbuilt_commands_and_bad_flags_are_refused_with_exit_two() {
         let rows: [(&[&str], &str); 3] = [
-            (&["waive"], "`waive` is not a command"),
+            (&["bench"], "`bench` is not a command"),
             (&["check", "--nope"], "--nope"),
             (&["check", "--nope", "--json"], "\"error\""),
         ];

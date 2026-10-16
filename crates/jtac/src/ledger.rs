@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use jtac_core::{Covers, GitOid, Sha256Digest, State};
+use jtac_core::{Body, Covers, GitOid, Sha256Digest, State};
 use jtac_gate::{RootFact, Trust};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot};
@@ -101,6 +101,7 @@ fn unreadable(commit: GitOid, why: &str) -> RootFact {
         covers: Vec::new(),
         signer: None,
         trust: Trust::Unchecked,
+        waiver_trust: Vec::new(),
         policy_version: 0,
         gate_version: String::new(),
         invalid: Some(why.to_owned()),
@@ -118,7 +119,8 @@ struct Judge<'a> {
 }
 
 impl Judge<'_> {
-    /// Tree, signature, covers, parents, in that order; the first failure is the reason.
+    /// Tree, signature, each waiver's signature, covers, parents, in that order; the first
+    /// failure is the reason.
     fn root(
         self,
         s: &StoredRoot,
@@ -134,6 +136,7 @@ impl Judge<'_> {
             covers: covers.to_vec(),
             signer: Some(root.signer.clone()),
             trust: Trust::Unchecked,
+            waiver_trust: Vec::new(),
             policy_version: root.policy.version,
             gate_version: root.gate.version.clone(),
             invalid: None,
@@ -178,6 +181,38 @@ impl Judge<'_> {
                 return invalid(fact, format!("its signature does not hold: {what}"));
             }
         };
+        for (index, lever) in root.levers.iter().enumerate() {
+            let Body::Lever(body) = &lever.node.body else {
+                return invalid(fact, format!("levers[{index}] is not a lever node"));
+            };
+            let bytes = lever.node.canonical_bytes().map_err(Refusal::internal)?;
+            let verified = jtac_sign::verify(
+                self.tool,
+                self.signers.as_sign(),
+                &body.signer,
+                Namespace::Lever,
+                lever.node.ts,
+                &bytes,
+                &lever.sig,
+            )
+            .map_err(|e| self.signers.refusal(self.command, &e))?;
+            fact.waiver_trust.push(match verified {
+                Verified::Trusted => Trust::Trusted,
+                Verified::Unknown { why } => Trust::Unknown { why },
+                Verified::Invalid { what } => {
+                    return invalid(
+                        fact,
+                        format!("its waiver {index}'s signature does not hold: {what}"),
+                    );
+                }
+            });
+            if let Some(marker) = &body.agent {
+                self.notes.push(format!(
+                    "{}'s root applies a waiver written under an agent session ({marker})",
+                    root.commit.hex()
+                ));
+            }
+        }
         let parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
         let chain = match tree {
             Some(_) => range::reachable(self.repo, self.format, &root.commit, &parents)?,

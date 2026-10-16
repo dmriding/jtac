@@ -21,8 +21,7 @@ pub enum BuildError {
     Merkle(#[from] MerkleError),
 }
 
-/// The root and its leaves, the node ids in `nodes` order. No lever leaves in this release,
-/// so `levers` is empty and a `declared_off` verdict is refused by `Root::validate`.
+/// The root and its leaves, the node ids in `nodes` order, the applied waivers as `levers`.
 pub fn build(
     j: &Judged,
     chain: Chain,
@@ -47,7 +46,7 @@ pub fn build(
         gate,
         state: j.verdict.state,
         evidence,
-        levers: Vec::new(),
+        levers: j.levers.clone(),
         counts: counts(&j.nodes),
         signer,
     };
