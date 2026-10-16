@@ -13,6 +13,7 @@ use shuck_ast::{
 };
 use shuck_parser::parser::{ParseStatus, Parser};
 
+use super::quote::{ansi_decode, spells_a_substitution, unescape};
 use super::scan::{MAX_SUBSHELLS, too_deep_or_long};
 
 use super::{Item, Simple, Word};
@@ -41,42 +42,33 @@ pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
 
 // bash reads these words again as arithmetic or as an array name, so a quoted `$(…)` in one
 // runs: `let 'a[$(cmd)]++'`, `unset 'a[$(cmd)]'`, `printf -v 'a[$(cmd)]' x`, `test -v`.
-fn evaluates(name: &str, args: &[Word]) -> bool {
-    match name {
-        "let" | "unset" | "read" => true,
-        "printf" => args.iter().any(|a| a.text.starts_with("-v")),
-        "test" | "[" => args.iter().any(|a| matches!(a.text.as_str(), "-v" | "-R")),
+fn evaluates(prog: &str, args: &[Word], quoted: &[bool]) -> bool {
+    let any = quoted.contains(&true);
+    let flag = |c: char| {
+        args.iter()
+            .take_while(|a| a.text.starts_with('-'))
+            .any(|a| a.text.contains(c))
+    };
+    match prog {
+        "let" | "unset" | "read" | "compgen" | "wait" => any,
+        "printf" => args.iter().enumerate().any(|(k, a)| {
+            a.text.strip_prefix("-v").is_some_and(|rest| {
+                if rest.is_empty() {
+                    quoted.get(k + 1) == Some(&true)
+                } else {
+                    quoted[k]
+                }
+            })
+        }),
+        "test" | "[" => any && args.iter().any(|a| matches!(a.text.as_str(), "-v" | "-R")),
+        "declare" | "typeset" | "local" | "readonly" => args.iter().zip(quoted).any(|(a, q)| {
+            let (name, value) = a.text.split_once('=').unwrap_or((&a.text, ""));
+            let scalar = prog != "readonly" && (name.contains('[') || flag('i'));
+            *q && !a.text.starts_with('-')
+                && (scalar || (flag('a') || flag('A')) && value.starts_with('('))
+        }),
         _ => false,
     }
-}
-
-// `$'\\x24('`: an ANSI-C escape that decodes to `$` or a backtick. `\\x` takes two hex digits,
-// `\\u` four, `\\U` eight, an octal escape three.
-fn ansi_spells_a_substitution(s: &str) -> bool {
-    let mut rest = s;
-    while let Some(i) = rest.find('\\') {
-        let tail = &rest[i + 1..];
-        let (radix, digits, max) = match tail.as_bytes().first() {
-            Some(b'x') => (16, &tail[1..], 2),
-            Some(b'u') => (16, &tail[1..], 4),
-            Some(b'U') => (16, &tail[1..], 8),
-            Some(b'0'..=b'7') => (8, tail, 3),
-            _ => {
-                rest = tail;
-                continue;
-            }
-        };
-        let run: String = digits
-            .chars()
-            .take(max)
-            .take_while(|c| c.is_digit(radix))
-            .collect();
-        if matches!(u32::from_str_radix(&run, radix), Ok(0x24 | 0x60)) {
-            return true;
-        }
-        rest = tail;
-    }
-    false
 }
 
 fn parse(script: &str) -> Result<Vec<Item>, String> {
@@ -114,7 +106,8 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
     }
     if walk.prompt_expansion {
         return Err(
-            "`${x@P}` expands a value as a prompt, running any substitution in it".to_string(),
+            "a prompt expansion (`${x@P}`, or `PS4` set here) runs any substitution in the value"
+                .to_string(),
         );
     }
     Ok(walk.out)
@@ -411,7 +404,21 @@ impl Walk<'_> {
         }
         let name = self.word(&c.name);
         let args: Vec<Word> = c.args.iter().map(|w| self.word(w)).collect();
-        if evaluates(&name.text, &args) && c.args.iter().any(|w| self.quoted_substitution(w)) {
+        let quoted: Vec<bool> = c.args.iter().map(|w| self.quoted_substitution(w)).collect();
+        let all: Vec<&Word> = std::iter::once(&name).chain(args.iter()).collect();
+        let mut i = 0;
+        while all
+            .get(i)
+            .is_some_and(|w| matches!(w.text.as_str(), "builtin" | "command"))
+        {
+            i += 1;
+            while all.get(i).is_some_and(|w| w.text.starts_with('-')) {
+                i += 1;
+            }
+        }
+        if let Some(prog) = all.get(i)
+            && evaluates(&prog.text, &args[i..], &quoted[i..])
+        {
             self.quoted_arith = true;
         }
         if !name.text.is_empty() || name.unresolved {
@@ -427,21 +434,15 @@ impl Walk<'_> {
             text: d.variant.as_ref().to_string(),
             unresolved: false,
         }];
-        let evaluates = matches!(d.variant.as_ref(), "declare" | "typeset" | "local");
-        let (mut integer, mut subscript, mut value) = (false, false, false);
+        let mut quoted = Vec::with_capacity(d.operands.len());
         for op in &d.operands {
-            match op {
-                DeclOperand::Flag(w) => integer |= self.slice(w.span).contains('i'),
-                DeclOperand::Dynamic(w) => {
-                    let name = self.slice(w.span);
-                    subscript |= self.quoted_substitution(w)
-                        && name.split('=').next().is_some_and(|n| n.contains('['));
-                }
+            quoted.push(match op {
+                DeclOperand::Dynamic(w) => self.quoted_substitution(w),
                 DeclOperand::Assignment(a) => {
-                    value |= matches!(&a.value, AssignmentValue::Scalar(w) if self.quoted_substitution(w));
+                    matches!(&a.value, AssignmentValue::Scalar(w) if self.quoted_substitution(w))
                 }
-                DeclOperand::Name(_) => {}
-            }
+                DeclOperand::Flag(_) | DeclOperand::Name(_) => false,
+            });
             words.push(match op {
                 DeclOperand::Flag(w) | DeclOperand::Dynamic(w) => self.word(w),
                 DeclOperand::Name(v) => {
@@ -454,7 +455,7 @@ impl Walk<'_> {
                 DeclOperand::Assignment(a) => self.assignment(&a.target, &a.value),
             });
         }
-        self.quoted_arith |= evaluates && (subscript || integer && value);
+        self.quoted_arith |= evaluates(d.variant.as_ref(), &words[1..], &quoted);
         self.push(words, span, conditional, None);
     }
 
@@ -571,13 +572,6 @@ impl Walk<'_> {
             | WordPart::ArrayIndices(r) => {
                 self.reference(r);
             }
-            WordPart::Transformation {
-                reference,
-                operator,
-            } => {
-                self.reference(reference);
-                self.prompt_expansion |= *operator == 'P';
-            }
             WordPart::Substring {
                 reference,
                 offset_word_ast,
@@ -605,8 +599,11 @@ impl Walk<'_> {
             return;
         };
         match b {
-            BourneParameterExpansion::Access { reference }
-            | BourneParameterExpansion::Length { reference }
+            BourneParameterExpansion::Access { reference } => {
+                self.reference(reference);
+                self.prompt_expansion |= reference.name.as_ref().ends_with("@P");
+            }
+            BourneParameterExpansion::Length { reference }
             | BourneParameterExpansion::Indices { reference } => {
                 self.reference(reference);
             }
@@ -637,6 +634,11 @@ impl Walk<'_> {
             } => {
                 self.reference(reference);
                 self.op(operator);
+                self.prompt_expansion |= reference.name.as_ref() == "PS4"
+                    && matches!(**operator, ParameterOp::AssignDefault)
+                    && operand_word_ast
+                        .as_deref()
+                        .is_some_and(|w| self.quoted_substitution(w));
                 self.optional(operand_word_ast.as_deref());
             }
             BourneParameterExpansion::Slice {
@@ -700,24 +702,34 @@ impl Walk<'_> {
         self.word(w)
     }
 
-    // A single-quoted or escaped `$(` or backtick: text now, a substitution when bash expands
-    // the word again.
+    // Text now, a substitution when bash expands the word again. Judged on the word's static
+    // text joined and decoded, with every expansion a placeholder, so `$''(`, `\\$\\(` and
+    // `$'\\x24'"("` all show the `$(` they spell.
     fn quoted_substitution(&self, w: &AstWord) -> bool {
-        w.parts_with_spans()
-            .any(|(p, span)| self.quoted_part(p, span))
+        let mut text = String::new();
+        for (p, span) in w.parts_with_spans() {
+            self.static_part(p, span, &mut text);
+        }
+        spells_a_substitution(&text)
     }
 
-    fn quoted_part(&self, p: &WordPart, span: Span) -> bool {
-        let s = self.slice(span);
+    fn static_part(&self, p: &WordPart, span: Span, out: &mut String) {
         match p {
-            WordPart::SingleQuoted { dollar, .. } => {
-                s.contains("$(") || s.contains('`') || (*dollar && ansi_spells_a_substitution(&s))
+            WordPart::Literal(_) => out.push_str(&unescape(&self.slice(span))),
+            WordPart::SingleQuoted { value, dollar } => {
+                let inner = value.slice(self.source);
+                if *dollar {
+                    out.push_str(&ansi_decode(inner));
+                } else {
+                    out.push_str(inner);
+                }
             }
-            WordPart::Literal(_) => s.contains("\\$(") || s.contains("\\`"),
             WordPart::DoubleQuoted { parts, .. } => {
-                parts.iter().any(|n| self.quoted_part(&n.kind, n.span))
+                for n in parts {
+                    self.static_part(&n.kind, n.span, out);
+                }
             }
-            _ => false,
+            _ => out.push('\u{1}'),
         }
     }
 

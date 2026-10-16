@@ -170,9 +170,10 @@ const SHELL_NAMES: [&str; 20] = [
 
 /// Programs that take a program as a string, or run one somewhere this text does not name.
 /// A program that merely takes text does not belong here.
-const RUNS_A_STRING: [&str; 38] = [
+const RUNS_A_STRING: [&str; 39] = [
     "mapfile",
     "readarray",
+    "compgen",
     "ssh",
     "plink",
     "mosh",

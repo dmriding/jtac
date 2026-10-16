@@ -4,6 +4,7 @@
 
 use super::program::{base_name, is_assignment, names_git};
 use super::{Action, Bypass, Dir, Force, Push, Unread};
+use crate::shell::quote::{ansi_decode, spells_a_substitution};
 use crate::shell::{Simple, Word};
 
 /// What a `KEY=value` word does to every git command that sees it in its environment.
@@ -61,20 +62,35 @@ fn env_effect(w: &Word) -> Option<Env> {
 }
 
 /// `PS4='$(cmd) '`: under `set -x`, or in a child shell that inherits it, bash expands the
-/// value before every traced command. A leading assignment or a declaration arms it.
+/// value as a prompt before every traced command: `\\044` and `\\$` decode to `$`, `${x@P}`
+/// expands again. An assignment before the program, under a wrapper, or in a declaration arms
+/// it; `echo PS4=…` does not.
 pub(crate) fn traced(cmd: &Simple) -> Option<Action> {
-    let decl = cmd.words.iter().any(|w| {
-        matches!(
-            base_name(&w.text),
-            "export" | "declare" | "typeset" | "local" | "readonly"
-        )
-    });
+    let prefix = |w: &Word| {
+        is_assignment(&w.text)
+            || w.text.starts_with('-')
+            || matches!(
+                base_name(&w.text),
+                "env"
+                    | "sudo"
+                    | "nice"
+                    | "nohup"
+                    | "time"
+                    | "command"
+                    | "builtin"
+                    | "exec"
+                    | "export"
+                    | "declare"
+                    | "typeset"
+                    | "local"
+                    | "readonly"
+            )
+    };
     let armed = cmd.words.iter().enumerate().any(|(i, w)| {
-        let leading = cmd.words[..i].iter().all(|p| is_assignment(&p.text));
-        (leading || decl)
-            && w.text
-                .strip_prefix("PS4=")
-                .is_some_and(|v| v.contains("$(") || v.contains('`'))
+        cmd.words[..i].iter().all(prefix)
+            && w.text.strip_prefix("PS4=").is_some_and(|v| {
+                spells_a_substitution(&ansi_decode(v)) || v.contains("\\$") || v.contains("@P}")
+            })
     });
     armed.then(|| Action::Unreadable {
         why: Unread::Prompt,
