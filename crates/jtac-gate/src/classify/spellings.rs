@@ -781,20 +781,48 @@ fn shells_nest_three_deep_and_the_fourth_is_unreadable() {
     assert_eq!(show(&classify(&nest(&three))), "unreadable Nesting");
 }
 
-/// The parser recurses on `$(`; past the cap the script is unreadable before it runs, so a
-/// thousand-deep script cannot abort the hook.
+/// The scan refuses before the parser runs, and closers the parser would not honour do not
+/// lower its count.
 #[test]
 fn substitutions_nest_sixteen_deep_and_deeper_is_unreadable_without_parsing() {
+    use crate::shell::scan::too_deep_or_long;
     let nest = |n: usize| format!("{}git push{}", "echo $(".repeat(n), ")".repeat(n));
     assert_eq!(show(&classify(&nest(16))), "push ?");
     assert_eq!(show(&classify(&nest(17))), "unreadable Syntax");
-    assert_eq!(show(&classify(&nest(2000))), "unreadable Syntax");
-    assert_eq!(show(&classify(&"(".repeat(2000))), "unreadable Syntax");
+    assert!(too_deep_or_long(&nest(16)).is_none());
+    assert!(too_deep_or_long(&nest(17)).is_some());
+    assert!(too_deep_or_long(&"(".repeat(2000)).is_some());
+    for hidden in [
+        format!("echo {}git push{}", "$(: }} ".repeat(17), ")".repeat(17)),
+        format!(
+            "echo \"'\"; echo {}git push{} #'",
+            "$(".repeat(17),
+            ")".repeat(17)
+        ),
+        format!(
+            "echo \" #\"; echo {}git push{}",
+            "$(".repeat(17),
+            ")".repeat(17)
+        ),
+        format!(
+            "cat <<'EOF'\r\nhi\r\nEOF\r\necho {}x{}",
+            "$(".repeat(17),
+            ")".repeat(17)
+        ),
+        format!("(( 1<<2 ))\na{}0{}=1", "[a".repeat(17), "]".repeat(17)),
+        format!(
+            "echo {}git push{}",
+            "$(echo \")\" ".repeat(4097),
+            ")".repeat(4097)
+        ),
+    ] {
+        assert!(too_deep_or_long(&hidden).is_some(), "{hidden}");
+    }
 }
 
 /// Every shape the parser recurses on, filled to the size cap: the parser thread has the
 /// stack for each, and a plain long script is not refused for its length. Arithmetic and
-/// test bodies are the exception, capped because the parser is quadratic in them.
+/// `${…}` bodies are the exception, capped because the parser is quadratic in them.
 #[test]
 fn every_shape_under_the_size_cap_parses_without_aborting() {
     let fill = |unit: &str, tail: &str| {
@@ -830,7 +858,7 @@ fn every_shape_under_the_size_cap_parses_without_aborting() {
         format!("(( ((1)) + {}1 ))", "1+".repeat(30000)),
         format!("x=${{a:{}1}}", "1+".repeat(30000)),
         format!("echo ${{a[{}1]}}", "1+".repeat(2100)),
-        format!("[ {} ]", "-n x -a ".repeat(520)),
+        format!("(( ${{x:-]}} + {}1 ))", "1+".repeat(2100)),
         format!("(( {}0{} ))", "a[".repeat(17), "]".repeat(17)),
         format!("echo ${{{}0{}}}", "a[".repeat(17), "]".repeat(17)),
         format!("cat <<EOF\n{}x{}\nEOF", "$(".repeat(17), ")".repeat(17)),
@@ -839,10 +867,10 @@ fn every_shape_under_the_size_cap_parses_without_aborting() {
     }
 }
 
-/// Text the parser never recurses on does not count against the bracket caps: single quotes,
-/// comments, quoted heredoc bodies, and the literal part of an unquoted one.
+/// Balanced brackets in text cost nothing, and only arithmetic and `${…}` bodies are capped,
+/// so JSON, code and long tests read; an unbalanced quoted bracket may refuse, never hide.
 #[test]
-fn quoted_text_and_heredoc_bodies_do_not_count_as_brackets() {
+fn balanced_text_reads_and_only_arithmetic_bodies_are_capped() {
     let files = (0..40)
         .map(|n| format!("-e /workspace/example-app/src/file{n}.rs"))
         .collect::<Vec<_>>()
@@ -875,11 +903,14 @@ fn quoted_text_and_heredoc_bodies_do_not_count_as_brackets() {
         show(&classify(&format!("# see [1] (\n{tail}git push"))),
         "push ?"
     );
-    assert_eq!(show(&classify(&format!("echo '{}'", "(".repeat(40)))), "");
+    let test = format!("[ {} ]; git push", "-n x -a ".repeat(600));
+    assert_eq!(show(&classify(&test)), "push ?");
     assert_eq!(
-        show(&classify(&format!("cat <<'EOF'\n{}\nEOF", "$(".repeat(40)))),
-        ""
+        show(&classify(&format!("echo '{}'", "(".repeat(40)))),
+        "unreadable Syntax"
     );
+    let quoted = format!("cat <<'EOF'\n{}\nEOF", "$(".repeat(40));
+    assert_eq!(show(&classify(&quoted)), "unreadable Syntax");
 }
 
 #[test]

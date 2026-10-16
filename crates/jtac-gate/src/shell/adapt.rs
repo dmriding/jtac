@@ -17,8 +17,6 @@ use super::scan::{MAX_SUBSHELLS, too_deep_or_long};
 
 use super::{Item, Simple, Word};
 
-/// Brackets nested past this are not read: the parser and this walk recurse, and the stack
-/// is finite. Counted on the text before the parser runs, quotes ignored, so it over-counts.
 /// The parser recurses once per nested construct and the hook's own stack is not ours to
 /// size. The deepest shape under [`crate::classify::MAX_BYTES`] (`time` repeated) takes about
 /// 4 KiB of stack per byte in a debug build; this reserves twice that, virtual and untouched
@@ -72,7 +70,7 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
 struct Walk<'a> {
     source: &'a str,
     out: Vec<Item>,
-    depth: u32,
+    depth: usize,
     too_deep: bool,
     /// shuck keeps `\`` in a backtick body as text; bash opens a substitution there.
     escaped_backtick: bool,
