@@ -1,7 +1,7 @@
 //! The command inside a word: `bash -c '…'`, `eval`, `trap`, a heredoc handed to a shell, and
 //! the programs that run a string this reader will not open.
 
-use super::program::{base_name, names_a_shell, runs_a_string};
+use super::program::{base_name, dashed_git, names_a_shell, names_git, runs_a_string};
 use super::{Action, MAX_NESTING, Unread, classify_at, sealed};
 use crate::shell::{Simple, Word};
 
@@ -25,8 +25,7 @@ fn unplaced(actions: Vec<Action>) -> Vec<Action> {
 
 /// The script a shell, `eval` or `trap` runs, classified as the script it is. `eval` runs in
 /// this shell, so its `cd` stands unless the `eval` itself may not run; a child shell's dies
-/// with it; a trap body runs at exit, after everything here. `busybox sh -c` carries the
-/// applet word first.
+/// with it; a trap body runs at exit, after everything here.
 pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
     if depth >= MAX_NESTING {
         return unreadable(cmd, Unread::Nesting);
@@ -56,7 +55,6 @@ pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
             acts
         };
     }
-    let first = first + usize::from(names_a_shell(cmd.at(first)));
     let script = match script_word_at(cmd, first) {
         Some(i) => &cmd.words[i],
         None => match &cmd.heredoc {
@@ -94,7 +92,7 @@ fn trap_script(cmd: &Simple, first: usize) -> Option<&Word> {
     }
 }
 
-// The word after a `-c`, bundled or not (`-c`, `-lc`, `-xec`).
+// The word after a `-c`, bundled or not (`-c`, `-lc`, `-xec`), or flock's `--command`.
 fn script_word_at(cmd: &Simple, first: usize) -> Option<usize> {
     let mut i = first;
     let mut saw_c = false;
@@ -104,7 +102,7 @@ fn script_word_at(cmd: &Simple, first: usize) -> Option<usize> {
             Some(short) if !t.starts_with("--") && !short.is_empty() => {
                 saw_c |= short.contains('c')
             }
-            Some(_) => {}
+            Some(_) => saw_c |= t == "--command",
             None => break,
         }
         i += 1;
@@ -120,7 +118,7 @@ pub(crate) fn runner(cmd: &Simple, idx: usize) -> Option<Action> {
     let rest = || cmd.words.iter().skip(idx + 1);
     let plain = rest()
         .enumerate()
-        .any(|(n, w)| base_name(&w.text).eq_ignore_ascii_case("git") && n + 1 < rest().count());
+        .any(|(n, w)| dashed_git(&w.text) || names_git(&w.text) && n + 1 < rest().count());
     let quoted = runs_a_string(prog) && rest().any(|w| quotes_a_command(&w.text));
     let why = if prog.eq_ignore_ascii_case("alias")
         && rest().any(|w| quotes_a_command(&w.text) || plain_git(&w.text))
@@ -138,9 +136,7 @@ pub(crate) fn runner(cmd: &Simple, idx: usize) -> Option<Action> {
 }
 
 fn plain_git(text: &str) -> bool {
-    text.split('=')
-        .next_back()
-        .is_some_and(|t| base_name(t).eq_ignore_ascii_case("git"))
+    text.split('=').next_back().is_some_and(names_git)
 }
 
 /// Does this text spell a git command with a subcommand, or name a shell, anywhere a shell
@@ -152,8 +148,8 @@ pub(crate) fn quotes_a_command(text: &str) -> bool {
         })
         .filter(|t| !t.is_empty())
         .collect();
-    tokens.iter().any(|t| names_a_shell(t))
+    tokens.iter().any(|t| names_a_shell(t) || dashed_git(t))
         || tokens
             .windows(2)
-            .any(|w| base_name(w[0]).eq_ignore_ascii_case("git") && !w[1].starts_with('-'))
+            .any(|w| names_git(w[0]) && !w[1].starts_with('-'))
 }

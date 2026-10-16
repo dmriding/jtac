@@ -96,6 +96,8 @@ pub enum Unread {
     Variable,
     /// `git -c alias.…` or `alias …`: the command that runs is not in the text.
     Alias,
+    /// `include.path` or `GIT_CONFIG_GLOBAL`: config read from a file the text does not show.
+    Include,
     /// Shells nested past [`MAX_NESTING`].
     Nesting,
     /// A script over [`MAX_BYTES`].

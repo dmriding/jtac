@@ -17,28 +17,22 @@ pub(crate) enum Program {
 }
 
 /// A program that hands its tail through. `short` are the option letters that take a value,
-/// `long` the long options that take one as a separate word, `positionals` the words of its
-/// own before the command, `script` the letter that makes the next word a shell string.
+/// `long` the long options that take one as a separate word (matched by any prefix, as
+/// getopt does), `positionals` the words of its own before the command, `script` the short
+/// and long option that make the next word a shell string.
 struct Wrapper {
     name: &'static str,
     short: &'static str,
     long: &'static [&'static str],
     positionals: u8,
-    script: Option<char>,
+    script: Option<(char, &'static str)>,
 }
 
 const WRAPPERS: [Wrapper; 14] = [
     Wrapper {
         name: "env",
         short: "uCS",
-        long: &[
-            "unset",
-            "chdir",
-            "block-signal",
-            "default-signal",
-            "ignore-signal",
-            "split-string",
-        ],
+        long: &["unset", "chdir", "split-string"],
         positionals: 0,
         script: None,
     },
@@ -98,10 +92,10 @@ const WRAPPERS: [Wrapper; 14] = [
     },
     Wrapper {
         name: "flock",
-        short: "wEs",
+        short: "wE",
         long: &["wait", "timeout", "conflict-exit-code"],
         positionals: 1,
-        script: Some('c'),
+        script: Some(('c', "command")),
     },
     Wrapper {
         name: "exec",
@@ -148,9 +142,7 @@ const WRAPPERS: [Wrapper; 14] = [
 ];
 
 /// Shells this reader opens with `-c`, plus the two builtins that run a word as a script.
-const PARSED_SHELLS: [&str; 9] = [
-    "sh", "bash", "zsh", "dash", "ksh", "ash", "busybox", "eval", "trap",
-];
+const PARSED_SHELLS: [&str; 8] = ["sh", "bash", "zsh", "dash", "ksh", "ash", "eval", "trap"];
 
 /// Every name that is a shell, parsed or not. An unparsed one is a runner.
 const SHELL_NAMES: [&str; 20] = [
@@ -254,7 +246,7 @@ pub(crate) fn program_of(cmd: &Simple) -> (Program, usize) {
             return (Program::Other, i);
         };
         let t = w.text.as_str();
-        if is_assignment(t) {
+        if is_assignment(t) || base_name(t).eq_ignore_ascii_case("busybox") {
             i += 1;
             continue;
         }
@@ -293,7 +285,11 @@ fn after_wrapper(cmd: &Simple, from: usize, spec: &Wrapper) -> After {
                 .map_or(After::Nothing, |_| After::Command(i + 1));
         }
         if let Some(long) = t.strip_prefix("--") {
-            i += if !long.contains('=') && spec.long.contains(&long) {
+            let name = long.split_once('=').map_or(long, |(n, _)| n);
+            if spec.script.is_some_and(|(_, l)| l.starts_with(name)) {
+                return After::Script(i);
+            }
+            i += if !long.contains('=') && takes_a_value(spec, name) {
                 2
             } else {
                 1
@@ -303,7 +299,7 @@ fn after_wrapper(cmd: &Simple, from: usize, spec: &Wrapper) -> After {
         if let Some(short) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
             let mut step = 1;
             for (k, c) in short.char_indices() {
-                if spec.script == Some(c) {
+                if spec.script.is_some_and(|(s, _)| s == c) {
                     return After::Script(i);
                 }
                 if spec.short.contains(c) {
@@ -328,6 +324,11 @@ fn after_wrapper(cmd: &Simple, from: usize, spec: &Wrapper) -> After {
     After::Nothing
 }
 
+// getopt takes any prefix of a long option; an ambiguous one fails the wrapper itself.
+fn takes_a_value(spec: &Wrapper, name: &str) -> bool {
+    !name.is_empty() && spec.long.iter().any(|l| l.starts_with(name))
+}
+
 /// `KEY=value`, not a path with an `=` in it.
 pub(crate) fn is_assignment(t: &str) -> bool {
     match t.split_once('=') {
@@ -349,7 +350,7 @@ enum Named {
 
 fn named(token: &str) -> Option<Named> {
     let n = base_name(token);
-    if n.eq_ignore_ascii_case("git") || n.len() > 4 && n[..4].eq_ignore_ascii_case("git-") {
+    if names_git(token) {
         return Some(Named::Git);
     }
     if PARSED_SHELLS.iter().any(|s| n.eq_ignore_ascii_case(s)) {
@@ -373,9 +374,20 @@ pub(crate) fn base_name(token: &str) -> &str {
     let t = token.strip_prefix('\\').unwrap_or(token);
     let t = t.rsplit(['/', '\\']).next().unwrap_or(t);
     match t.len().checked_sub(4) {
-        Some(cut) if t[cut..].eq_ignore_ascii_case(".exe") => &t[..cut],
+        Some(cut) if t.get(cut..).is_some_and(|e| e.eq_ignore_ascii_case(".exe")) => &t[..cut],
         _ => t,
     }
+}
+
+/// `git`, or `git-<sub>`, by file name.
+pub(crate) fn names_git(text: &str) -> bool {
+    base_name(text).eq_ignore_ascii_case("git") || dashed_git(text)
+}
+
+/// `git-push`: a git subcommand as its own program name, no room for global options.
+pub(crate) fn dashed_git(text: &str) -> bool {
+    let n = base_name(text);
+    n.len() > 4 && n.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("git-"))
 }
 
 /// Is this program one that takes a program as a string? Matched with a trailing version
@@ -449,30 +461,33 @@ fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
             let (name, value) = long
                 .split_once('=')
                 .map_or((long, None), |(n, v)| (n, Some(v)));
-            match name {
-                "split-string" | "chroot" => {
-                    return Some(if name == "chroot" {
-                        Chdir::Unnamed
-                    } else {
-                        Chdir::Split
-                    });
-                }
-                "chdir" => {
-                    return Some(match value {
-                        Some(v) => chdir_to(&Word {
-                            text: v.to_string(),
-                            unresolved: w.unresolved,
-                        }),
-                        None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
-                    });
-                }
-                _ => {
-                    i += if value.is_none() && spec.long.contains(&name) {
-                        2
-                    } else {
-                        1
-                    }
-                }
+            let lost = if spec.name == "env" {
+                "split-string"
+            } else {
+                "chroot"
+            };
+            if name.is_empty() {
+                i += 1;
+            } else if lost.starts_with(name) {
+                return Some(if spec.name == "env" {
+                    Chdir::Split
+                } else {
+                    Chdir::Unnamed
+                });
+            } else if "chdir".starts_with(name) {
+                return Some(match value {
+                    Some(v) => chdir_to(&Word {
+                        text: v.to_string(),
+                        unresolved: w.unresolved,
+                    }),
+                    None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
+                });
+            } else {
+                i += if value.is_none() && takes_a_value(spec, name) {
+                    2
+                } else {
+                    1
+                };
             }
             continue;
         }

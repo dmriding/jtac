@@ -17,34 +17,72 @@ use super::{Item, Simple, Word};
 /// Brackets nested past this are not read: the parser and this walk recurse, and the stack
 /// is finite. Counted on the text before the parser runs, quotes ignored, so it over-counts.
 const MAX_SUBSHELLS: u32 = 16;
+const MAX_COMPOUNDS: usize = 20;
+const MAX_CHAIN: usize = 1024;
+const MAX_ARITH_RUN: usize = 400;
 
-fn nests_too_deep(script: &str) -> bool {
-    let mut depth: u32 = 0;
+/// The shapes the parser recurses on, refused before it runs: brackets or substitutions
+/// deep, compound keywords many, `&&`/`|` chains long, a run of arithmetic text long. On a
+/// 2 MB stack each dies at about twice its cap (`shape_caps_stop_the_parser_recursing`).
+/// A `\`` inside a backtick body nests a substitution shuck keeps as text.
+fn too_big_a_shape(script: &str) -> Option<String> {
+    let (mut depth, mut chain, mut run) = (0u32, 0usize, 0usize);
+    let (mut in_backtick, mut escaped, mut prev) = (false, false, ' ');
     for c in script.chars() {
-        match c {
-            '(' | '{' | '`' => {
-                depth += 1;
-                if depth > MAX_SUBSHELLS {
-                    return true;
-                }
+        if std::mem::take(&mut escaped) {
+            if c == '`' && in_backtick {
+                return Some("it escapes a backtick inside a backtick body".to_string());
             }
+            prev = c;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '(' | '{' => depth += 1,
             ')' | '}' => depth = depth.saturating_sub(1),
+            '`' if in_backtick => depth = depth.saturating_sub(1),
+            '`' => depth += 1,
+            '|' => chain += 1,
+            '&' if prev == '&' => chain += 1,
             _ => {}
         }
+        if c == '`' {
+            in_backtick = !in_backtick;
+        }
+        run = if c.is_ascii_digit() || c == ' ' || "+-*/%<>!~^&|=?:,".contains(c) {
+            run + 1
+        } else {
+            0
+        };
+        if depth > MAX_SUBSHELLS {
+            return Some(format!(
+                "it nests brackets or substitutions more than {MAX_SUBSHELLS} deep"
+            ));
+        }
+        if chain > MAX_CHAIN {
+            return Some(format!(
+                "it chains more than {MAX_CHAIN} commands with && or |"
+            ));
+        }
+        if run > MAX_ARITH_RUN {
+            return Some(format!(
+                "it runs more than {MAX_ARITH_RUN} characters of arithmetic"
+            ));
+        }
+        prev = c;
     }
-    false
+    let compounds = script
+        .split(|c: char| c.is_whitespace() || ";&|(){}".contains(c))
+        .filter(|w| matches!(*w, "if" | "while" | "until" | "for" | "case" | "select"))
+        .count();
+    (compounds > MAX_COMPOUNDS)
+        .then(|| format!("it opens more than {MAX_COMPOUNDS} compound commands"))
 }
 
 /// The script's commands in run order, or why they cannot be read.
 pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
-    if nests_too_deep(script) {
-        return Err(format!(
-            "it nests brackets or substitutions more than {MAX_SUBSHELLS} deep"
-        ));
-    }
-    // shuck keeps `\`` as text, but inside a backtick body it opens a nested substitution.
-    if script.contains("\\`") {
-        return Err("it escapes a backtick, which may nest a substitution".to_string());
+    if let Some(why) = too_big_a_shape(script) {
+        return Err(why);
     }
     let parsed = Parser::new(script).parse();
     if parsed.status != ParseStatus::Clean {
@@ -58,7 +96,7 @@ pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
         out: Vec::new(),
         depth: 0,
         too_deep: false,
-        piped_next: false,
+        piped: false,
     };
     walk.seq(&parsed.file.body, false);
     if walk.too_deep {
@@ -74,7 +112,8 @@ struct Walk<'a> {
     out: Vec<Item>,
     depth: u32,
     too_deep: bool,
-    piped_next: bool,
+    /// Stdin may be another command's output: every command on a pipe's right side.
+    piped: bool,
 }
 
 impl Walk<'_> {
@@ -102,7 +141,7 @@ impl Walk<'_> {
                 BinaryOp::Pipe | BinaryOp::PipeAll => {
                     self.child(|w| w.stmt(&b.left, conditional));
                     self.child(|w| {
-                        w.piped_next = true;
+                        w.piped = true;
                         w.stmt(&b.right, conditional);
                     });
                 }
@@ -237,7 +276,7 @@ impl Walk<'_> {
             out: Vec::new(),
             depth: self.depth + 1,
             too_deep: false,
-            piped_next: false,
+            piped: self.piped,
         };
         walk(&mut child);
         self.too_deep |= child.too_deep;
@@ -329,8 +368,8 @@ impl Walk<'_> {
             words,
             raw: self.slice(span),
             conditional,
+            piped: self.piped && heredoc.is_none(),
             heredoc,
-            piped: std::mem::take(&mut self.piped_next),
         }));
     }
 

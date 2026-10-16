@@ -2,7 +2,7 @@
 //! `push` the refspecs and the force form. Global options are read as git reads them, so a
 //! value never passes for the subcommand; a long option may be abbreviated, as git allows.
 
-use super::program::{base_name, is_assignment};
+use super::program::{base_name, is_assignment, names_git};
 use super::{Action, Bypass, Dir, Force, Push, Unread};
 use crate::shell::{Simple, Word};
 
@@ -11,17 +11,34 @@ enum Env {
     Bypass(Bypass),
     /// `alias.*`: the command that runs is not in the text.
     Alias,
+    /// `include.path`, `GIT_CONFIG_GLOBAL`: config from a file the text does not show.
+    Include,
     /// `GIT_DIR` or `GIT_WORK_TREE` set to something: the repository is no longer here.
     Retarget,
+    /// A variable git reads, with a value the shell builds or the text never gives.
+    Opaque,
 }
 
-fn env_effect(text: &str) -> Option<Env> {
-    let (k, v) = text.split_once('=')?;
+/// Variables git reads for its config and repository; a value this reader cannot see is
+/// a bypass it cannot rule out.
+fn git_reads(k: &str) -> bool {
+    k.starts_with("GIT_CONFIG_") || matches!(k, "GIT_DIR" | "GIT_WORK_TREE")
+}
+
+fn env_effect(w: &Word) -> Option<Env> {
+    let (k, v) = w.text.split_once('=')?;
+    if !git_reads(k) {
+        return None;
+    }
+    if w.unresolved {
+        return Some(Env::Opaque);
+    }
     let lower = v.to_ascii_lowercase();
     if k.starts_with("GIT_CONFIG_KEY_") {
         return match lower.as_str() {
             "core.hookspath" => Some(Env::Bypass(Bypass::ConfigEnvVar)),
             a if a.starts_with("alias.") => Some(Env::Alias),
+            a if a.starts_with("include") => Some(Env::Include),
             _ => None,
         };
     }
@@ -30,33 +47,69 @@ fn env_effect(text: &str) -> Option<Env> {
             Some(Env::Bypass(Bypass::ConfigParameters))
         } else if lower.contains("alias.") {
             Some(Env::Alias)
+        } else if lower.contains("include") {
+            Some(Env::Include)
         } else {
             None
         };
     }
+    if matches!(k, "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM") {
+        return (!v.is_empty()).then_some(Env::Include);
+    }
     (matches!(k, "GIT_DIR" | "GIT_WORK_TREE") && !v.is_empty()).then_some(Env::Retarget)
 }
 
+fn env_action(e: Env, raw: String) -> Action {
+    match e {
+        Env::Bypass(spelling) => Action::HookBypass { spelling, raw },
+        Env::Alias => Action::Unreadable {
+            why: Unread::Alias,
+            raw,
+        },
+        Env::Include => Action::Unreadable {
+            why: Unread::Include,
+            raw,
+        },
+        Env::Retarget => Action::ChangeDir { to: None, raw },
+        Env::Opaque => Action::Unreadable {
+            why: Unread::Variable,
+            raw,
+        },
+    }
+}
+
 /// A bare assignment or an `export` that every git command after it in this shell sees: a
-/// bypass variable, an alias, or a repository that is no longer here.
+/// bypass variable, an alias, or a repository that is no longer here. `export NAME` without
+/// a value exports whatever an earlier line put there.
 pub(crate) fn exported(cmd: &Simple) -> Option<Action> {
-    let bare = cmd.words.iter().all(|w| is_assignment(&w.text));
-    let decl = matches!(base_name(cmd.at(0)), "export" | "declare" | "typeset");
+    let mut i = 0;
+    while cmd.words.get(i).is_some_and(|w| is_assignment(&w.text)) {
+        i += 1;
+    }
+    let bare = i == cmd.words.len() && i > 0;
+    while cmd
+        .words
+        .get(i)
+        .is_some_and(|w| matches!(base_name(&w.text), "builtin" | "command"))
+    {
+        i += 1;
+    }
+    let decl = matches!(
+        base_name(cmd.at(i)),
+        "export" | "declare" | "typeset" | "local" | "readonly"
+    );
     if !(bare || decl) {
         return None;
     }
     let raw = cmd.raw.clone();
-    cmd.words
-        .iter()
-        .find_map(|w| env_effect(&w.text))
-        .map(|e| match e {
-            Env::Bypass(spelling) => Action::HookBypass { spelling, raw },
-            Env::Alias => Action::Unreadable {
-                why: Unread::Alias,
-                raw,
-            },
-            Env::Retarget => Action::ChangeDir { to: None, raw },
-        })
+    let words = cmd.words.iter().skip(if bare { 0 } else { i + 1 });
+    let effect = words.clone().find_map(env_effect).or_else(|| {
+        words
+            .clone()
+            .any(|w| !w.text.contains('=') && git_reads(&w.text))
+            .then_some(Env::Opaque)
+    });
+    effect.map(|e| env_action(e, raw))
 }
 
 /// Does `t` spell `full`, in full or as the abbreviation git accepts? Five characters is the
@@ -66,35 +119,72 @@ fn long(t: &str, full: &str) -> bool {
     name.len() >= 5 && full.starts_with(name)
 }
 
-/// `key=…` for `core.hooksPath`, or an alias, in a config value.
+/// The option `t` spells among `table`, in full or as the unambiguous prefix git accepts.
+fn abbrev<'a>(t: &str, table: &[&'a str]) -> Option<&'a str> {
+    let name = t.split_once('=').map_or(t, |(n, _)| n);
+    if name.len() < 3 {
+        return None;
+    }
+    if let Some(exact) = table.iter().find(|o| **o == name) {
+        return Some(exact);
+    }
+    let mut hits = table.iter().filter(|o| o.starts_with(name));
+    match (hits.next(), hits.next()) {
+        (Some(o), None) => Some(o),
+        _ => None,
+    }
+}
+
+/// `key=…` for `core.hooksPath`, an alias, or an include, in a config value.
 fn config_value(value: &str) -> Option<Env> {
     let lower = value.to_ascii_lowercase();
     if lower.starts_with("core.hookspath=") {
         Some(Env::Bypass(Bypass::ConfigFlag))
     } else if lower.starts_with("alias.") {
         Some(Env::Alias)
+    } else if lower.starts_with("include") {
+        Some(Env::Include)
     } else {
         None
     }
 }
 
-/// Does this `git config` write `core.hooksPath`? A read, in any spelling, does not.
-fn sets_the_hooks_path(args: &[Word]) -> bool {
-    let mut key = false;
+enum ConfigWrite {
+    Read,
+    HooksPath,
+    /// A key the shell builds, with a value after it.
+    Opaque,
+    Other,
+}
+
+/// Does this `git config` write `core.hooksPath`? A read, in any spelling, does not; a key
+/// the shell builds may. `-f`/`--file` values are skipped so a variable file is not a key.
+fn config_write(args: &[Word]) -> ConfigWrite {
+    let mut opaque = false;
+    let mut file_value = false;
     for (n, w) in args.iter().enumerate() {
         let lower = w.text.to_ascii_lowercase();
+        if std::mem::take(&mut file_value) {
+            continue;
+        }
+        file_value = matches!(lower.as_str(), "-f" | "--file" | "--blob");
         if lower.starts_with("--get")
             || lower.starts_with("--unset")
             || matches!(lower.as_str(), "-l" | "--list")
             || (n == 0 && matches!(lower.as_str(), "get" | "list" | "unset" | "unset-all"))
         {
-            return false;
+            return ConfigWrite::Read;
         }
         if lower == "core.hookspath" && n + 1 < args.len() {
-            key = true;
+            return ConfigWrite::HooksPath;
         }
+        opaque |= w.unresolved && !lower.starts_with('-') && n + 1 < args.len();
     }
-    key
+    if opaque {
+        ConfigWrite::Opaque
+    } else {
+        ConfigWrite::Other
+    }
 }
 
 /// `--no-verify`, abbreviated or not, before a `--`.
@@ -122,12 +212,15 @@ const COMMIT_VALUE_LONGS: [&str; 9] = [
 
 fn commit_bypass(args: &[Word]) -> Option<Bypass> {
     let mut skip = false;
-    for w in args.iter().take_while(|w| w.text != "--") {
+    for w in args {
         if skip {
             skip = false;
             continue;
         }
         let t = w.text.as_str();
+        if t == "--" {
+            break;
+        }
         if t.len() >= 6 && long(t, "--no-verify") {
             return Some(Bypass::NoVerify);
         }
@@ -158,7 +251,8 @@ fn commit_bypass(args: &[Word]) -> Option<Bypass> {
 /// `bisect run`, `filter-branch`, `difftool --extcmd`.
 const RUNS_A_STRING: [&str; 5] = ["submodule", "rebase", "bisect", "filter-branch", "difftool"];
 
-/// The action of one git command, if it has one this reader reports.
+/// The action of one git command, if it has one this reader reports. `git-push …` is
+/// `git push …` with no room for global options.
 pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
     let raw = cmd.raw.clone();
     let unreadable = |why| {
@@ -176,23 +270,25 @@ pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
     let env = &cmd.words[..first.saturating_sub(1)];
     let mut retargeted = false;
     let mut bypass = None;
-    for e in env.iter().filter_map(|w| env_effect(&w.text)) {
+    let mut opaque = false;
+    for e in env.iter().filter_map(env_effect) {
         match e {
             Env::Bypass(b) => bypass = bypass.or(Some(b)),
             Env::Alias => return unreadable(Unread::Alias),
+            Env::Include => return unreadable(Unread::Include),
             Env::Retarget => retargeted = true,
+            Env::Opaque => opaque = true,
         }
     }
     let mut dir = Dir::Here;
     let mut i = first;
-    // `git-push …` is `git push …` with no room for global options.
     let dashed = base_name(cmd.at(first.saturating_sub(1)));
     let sub = if let Some(sub) = dashed
         .get(4..)
         .filter(|_| dashed[..4].eq_ignore_ascii_case("git-"))
     {
         i = first.saturating_sub(1);
-        sub.to_string()
+        sub.to_ascii_lowercase()
     } else {
         while let Some(w) = cmd.words.get(i) {
             if w.unresolved {
@@ -218,9 +314,15 @@ pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
                 }
                 "-c" | "--config-env" | "--namespace" | "--exec-path" | "--attr-source"
                 | "--super-prefix" => {
+                    if cmd.words.get(i + 1).is_some_and(|v| v.unresolved) {
+                        return unreadable(Unread::Variable);
+                    }
                     match (t, config_value(value)) {
                         ("-c" | "--config-env", Some(Env::Alias)) => {
                             return unreadable(Unread::Alias);
+                        }
+                        ("-c" | "--config-env", Some(Env::Include)) => {
+                            return unreadable(Unread::Include);
                         }
                         ("-c", Some(Env::Bypass(b))) => bypass = bypass.or(Some(b)),
                         ("--config-env", Some(Env::Bypass(_))) => {
@@ -233,6 +335,7 @@ pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
                 _ if t.starts_with("--config-env=") => {
                     match config_value(&t["--config-env=".len()..]) {
                         Some(Env::Alias) => return unreadable(Unread::Alias),
+                        Some(Env::Include) => return unreadable(Unread::Include),
                         Some(Env::Bypass(_)) => bypass = bypass.or(Some(Bypass::ConfigEnvFlag)),
                         _ => {}
                     }
@@ -248,27 +351,60 @@ pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
     if retargeted {
         dir = Dir::Unknown;
     }
+    if opaque && bypass.is_none() {
+        return unreadable(Unread::Variable);
+    }
     let args = &cmd.words[(i + 1).min(cmd.words.len())..];
     match sub.as_str() {
-        "push" => Some(Action::Push(push(
-            args,
-            flag_bypass(args).or(bypass),
-            dir,
-            &raw,
-        ))),
+        "push" => Some(Action::Push(push(args, bypass, dir, &raw))),
         "commit" => commit_bypass(args).or(bypass).and_then(hook_bypass),
-        "config" if sets_the_hooks_path(args) => hook_bypass(Bypass::ConfigWrite),
+        "config" => match config_write(args) {
+            ConfigWrite::HooksPath => hook_bypass(Bypass::ConfigWrite),
+            ConfigWrite::Opaque => unreadable(Unread::Variable),
+            ConfigWrite::Read | ConfigWrite::Other => bypass.and_then(hook_bypass),
+        },
         s if RUNS_A_STRING.contains(&s)
-            && args.iter().any(|w| {
-                super::indirect::quotes_a_command(&w.text)
-                    || base_name(&w.text).eq_ignore_ascii_case("git")
-            }) =>
+            && args
+                .iter()
+                .any(|w| super::indirect::quotes_a_command(&w.text) || names_git(&w.text)) =>
         {
             unreadable(Unread::Runner(format!("git {s}")))
         }
         _ => flag_bypass(args).or(bypass).and_then(hook_bypass),
     }
 }
+
+/// Every long option of `git push`, so an abbreviation resolves as git resolves it.
+const PUSH_LONGS: [&str; 28] = [
+    "--all",
+    "--atomic",
+    "--branches",
+    "--delete",
+    "--dry-run",
+    "--exec",
+    "--follow-tags",
+    "--force",
+    "--force-if-includes",
+    "--force-with-lease",
+    "--ipv4",
+    "--ipv6",
+    "--mirror",
+    "--no-verify",
+    "--porcelain",
+    "--progress",
+    "--prune",
+    "--push-option",
+    "--quiet",
+    "--receive-pack",
+    "--recurse-submodules",
+    "--repo",
+    "--set-upstream",
+    "--signed",
+    "--tags",
+    "--thin",
+    "--verbose",
+    "--verify",
+];
 
 /// Long options of `git push` whose value is a separate word.
 const PUSH_VALUE_LONGS: [&str; 5] = [
@@ -338,27 +474,34 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         }
         if t == "--" {
             flags_done = true;
-        } else if long(t, "--mirror") {
-            p.all_refs = true;
-            p.force = Force::Force;
-        } else if long(t, "--all") || long(t, "--branches") {
-            p.all_refs = true;
-        } else if long(t, "--dry-run") {
-            p.dry_run = true;
-        } else if long(t, "--force-with-lease") && t.len() > "--force".len() {
-            if p.force == Force::No {
-                p.force = Force::WithLease;
+            continue;
+        }
+        match abbrev(t, &PUSH_LONGS) {
+            Some("--mirror") => {
+                p.all_refs = true;
+                p.force = Force::Force;
             }
-        } else if long(t, "--force") {
-            p.force = Force::Force;
-        } else if long(t, "--delete") {
-            p.delete = true;
-            delete_flag = true;
-        } else if long(t, "--repo") && t.contains('=') {
-            repo_flag = t.split_once('=').map(|(_, v)| v.to_string());
-        } else if !t.contains('=') && PUSH_VALUE_LONGS.iter().any(|l| long(t, l)) {
-            skip_next = true;
-            take_repo = long(t, "--repo");
+            Some("--all" | "--branches") => p.all_refs = true,
+            Some("--dry-run") => p.dry_run = true,
+            Some("--force-with-lease") => {
+                if p.force == Force::No {
+                    p.force = Force::WithLease;
+                }
+            }
+            Some("--force") => p.force = Force::Force,
+            Some("--delete") => {
+                p.delete = true;
+                delete_flag = true;
+            }
+            Some("--no-verify") => p.bypass = Some(Bypass::NoVerify),
+            Some("--repo") if t.contains('=') => {
+                repo_flag = t.split_once('=').map(|(_, v)| v.to_string());
+            }
+            Some(o) if !t.contains('=') && PUSH_VALUE_LONGS.contains(&o) => {
+                skip_next = true;
+                take_repo = o == "--repo";
+            }
+            _ => {}
         }
     }
     p.remote = positional.first().map(|s| (*s).to_string()).or(repo_flag);
