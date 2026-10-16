@@ -4,6 +4,6 @@
 GIT_CONFIG_GLOBAL = { value = ".cargo/no-git-config", relative = true }
 GIT_CONFIG_NOSYSTEM = "1"
 
-# ci.yml sets RUSTDOCFLAGS=-D warnings; the jtac check runner passes no env, so the same bar lives here.
+# ci.yml sets RUSTDOCFLAGS=-D warnings; the jtac check runner passes no RUSTDOCFLAGS, so the bar lives here.
 [build]
 rustdocflags = ["-D", "warnings"]
