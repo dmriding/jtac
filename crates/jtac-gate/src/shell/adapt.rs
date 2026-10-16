@@ -13,68 +13,17 @@ use shuck_ast::{
 };
 use shuck_parser::parser::{ParseStatus, Parser};
 
+use super::scan::{MAX_SUBSHELLS, too_deep_or_long};
+
 use super::{Item, Simple, Word};
 
 /// Brackets nested past this are not read: the parser and this walk recurse, and the stack
 /// is finite. Counted on the text before the parser runs, quotes ignored, so it over-counts.
-const MAX_SUBSHELLS: u32 = 16;
-
 /// The parser recurses once per nested construct and the hook's own stack is not ours to
 /// size. The deepest shape under [`crate::classify::MAX_BYTES`] (`time` repeated) takes about
 /// 4 KiB of stack per byte in a debug build; this reserves twice that, virtual and untouched
 /// until a script needs it (`every_shape_under_the_size_cap_parses_without_aborting`).
 const PARSER_STACK: usize = 512 << 20;
-
-/// An arithmetic or test body longer than this is refused: shuck's arithmetic parser is
-/// quadratic, and 60 KiB of `1+1+…` takes it half a minute in a debug build.
-const MAX_ARITH: usize = 1024;
-
-// Brackets are counted before the parser runs because nested `$(` and `a[a[…]]` cost it far
-// more stack per level than any other shape. Backticks cannot nest without an escape, which
-// `parse` refuses, so a pair is one level and a quoted stray is off by one at most.
-fn too_deep_or_long(script: &str) -> Option<String> {
-    let mut depth: u32 = 0;
-    let mut in_backtick = false;
-    let mut opened: Vec<usize> = Vec::new();
-    let mut arith_open: Option<usize> = None;
-    let mut prev = ' ';
-    for (pos, c) in script.char_indices() {
-        match c {
-            '(' | '{' => depth += 1,
-            '[' => {
-                depth += 1;
-                opened.push(pos);
-            }
-            ')' | '}' => depth = depth.saturating_sub(1),
-            ']' => {
-                depth = depth.saturating_sub(1);
-                opened.pop();
-            }
-            '`' if in_backtick => depth = depth.saturating_sub(1),
-            '`' => depth += 1,
-            _ => {}
-        }
-        if c == '(' && prev == '(' {
-            arith_open.get_or_insert(pos);
-        } else if c == ')' && prev == ')' {
-            arith_open = None;
-        }
-        in_backtick ^= c == '`';
-        prev = c;
-        if depth > MAX_SUBSHELLS {
-            return Some(format!(
-                "it nests brackets or substitutions more than {MAX_SUBSHELLS} deep"
-            ));
-        }
-        let body = arith_open.into_iter().chain(opened.last().copied());
-        if body.into_iter().any(|open| pos - open > MAX_ARITH) {
-            return Some(format!(
-                "it holds an arithmetic or test body longer than {MAX_ARITH} characters"
-            ));
-        }
-    }
-    None
-}
 
 /// The script's commands in run order, or why they cannot be read. A parser panic or a
 /// thread the system refuses is unreadable, never an abort of the caller.
@@ -277,6 +226,14 @@ impl Walk<'_> {
         }
     }
 
+    // A `\`` in a backtick body is a nested substitution shuck keeps as text.
+    fn substitution(&mut self, body: &StmtSeq, syntax: CommandSubstitutionSyntax, span: Span) {
+        if syntax == CommandSubstitutionSyntax::Backtick && self.slice(span).contains("\\`") {
+            self.escaped_backtick = true;
+        }
+        self.child(|w| w.seq(body, false));
+    }
+
     // Every stage of a pipeline is a sibling subshell, however the tree nests them.
     fn pipe_side(&mut self, stmt: &Stmt, conditional: bool, piped: bool) {
         match &stmt.command {
@@ -459,12 +416,7 @@ impl Walk<'_> {
     fn part(&mut self, part: &WordPart, span: Span) {
         match part {
             WordPart::CommandSubstitution { body, syntax } => {
-                if *syntax == CommandSubstitutionSyntax::Backtick
-                    && self.slice(span).contains("\\`")
-                {
-                    self.escaped_backtick = true;
-                }
-                self.child(|w| w.seq(body, false));
+                self.substitution(body, *syntax, span);
             }
             WordPart::ProcessSubstitution { body, .. } => self.child(|w| w.seq(body, false)),
             WordPart::DoubleQuoted { parts, .. } => {
@@ -546,12 +498,12 @@ impl Walk<'_> {
                 }
                 RedirectTarget::Heredoc(h) => {
                     let mut unresolved = false;
-                    for (part, _) in h.body.parts_with_spans() {
+                    for (part, span) in h.body.parts_with_spans() {
                         match part {
                             HeredocBodyPart::Literal(_) => {}
-                            HeredocBodyPart::CommandSubstitution { body, .. } => {
+                            HeredocBodyPart::CommandSubstitution { body, syntax } => {
                                 unresolved = true;
-                                self.child(|w| w.seq(body, false));
+                                self.substitution(body, *syntax, span);
                             }
                             _ => unresolved = true,
                         }

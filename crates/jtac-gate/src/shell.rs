@@ -4,6 +4,7 @@
 //! module that knows the parser's syntax tree.
 
 mod adapt;
+mod scan;
 
 pub(crate) use adapt::read;
 

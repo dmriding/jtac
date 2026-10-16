@@ -81,7 +81,8 @@ fn env_action(e: Env, raw: String) -> Action {
 
 /// A bare assignment or an `export` that every git command after it in this shell sees: a
 /// bypass variable, an alias, or a repository that is no longer here. `export NAME` without
-/// a value exports whatever an earlier line put there.
+/// a value exports whatever an earlier line put there; a nameref (`declare -n`) writes through
+/// to a name a later line may choose.
 pub(crate) fn exported(cmd: &Simple) -> Option<Action> {
     let mut i = 0;
     while cmd.words.get(i).is_some_and(|w| is_assignment(&w.text)) {
@@ -110,21 +111,20 @@ pub(crate) fn exported(cmd: &Simple) -> Option<Action> {
         .iter()
         .skip(if bare { 0 } else { i + 1 })
         .collect();
-    let nameref = words
-        .iter()
-        .any(|w| w.text.starts_with('-') && w.text.contains('n'));
+    let nameref = matches!(base_name(cmd.at(i)), "declare" | "typeset" | "local")
+        && words
+            .iter()
+            .any(|w| w.text.starts_with('-') && w.text.contains('n'));
     let hidden = |w: &&Word| {
         let (key, value) = w.text.split_once('=').unwrap_or((&w.text, ""));
-        (value.is_empty() && git_reads(key))
-            || (w.unresolved && !is_assignment(&w.text))
-            || (nameref && git_reads(value))
+        (value.is_empty() && git_reads(key)) || (w.unresolved && !is_assignment(&w.text))
     };
     let effects: Vec<Env> = words.iter().filter_map(|w| env_effect(w)).collect();
     let pick = |f: fn(&&Env) -> bool| effects.iter().find(f);
     let effect = pick(|e| matches!(e, Env::Bypass(_)))
         .or_else(|| pick(|e| matches!(e, Env::Alias | Env::Include)))
         .or_else(|| pick(|e| matches!(e, Env::Opaque)))
-        .or_else(|| words.iter().any(hidden).then_some(&Env::Opaque))
+        .or_else(|| (nameref || words.iter().any(hidden)).then_some(&Env::Opaque))
         .or_else(|| pick(|e| matches!(e, Env::Retarget)));
     effect.map(|e| env_action(e.clone(), cmd.raw.clone()))
 }

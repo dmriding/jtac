@@ -210,6 +210,16 @@ const BYPASSES: &[(&str, &str)] = &[
         "unreadable Variable",
     ),
     (
+        "declare -n ref; ref=GIT_CONFIG_PARAMETERS; export ref=x; git push",
+        "unreadable Variable ; push ?",
+    ),
+    ("local -n ref=OTHER", "unreadable Variable"),
+    (
+        "export -n GIT_DIR; git push",
+        "unreadable Variable ; push ?",
+    ),
+    ("declare -x FOO=1; git push", "push ?"),
+    (
         "N=GIT_CONFIG_PARAMETERS; export \"$N=x\"; git push",
         "unreadable Variable ; push ?",
     ),
@@ -645,6 +655,12 @@ const INDIRECTION: &[(&str, &str)] = &[
     ),
     ("echo \"`echo \\`git push\\``\"", "unreadable Syntax"),
     (
+        "cat <<EOF\n`echo \\`git push origin main\\``\nEOF",
+        "unreadable Syntax",
+    ),
+    ("cat <<'EOF'\n`echo \\`git push\\``\nEOF", ""),
+    ("echo $(echo \\`git push\\`)", ""),
+    (
         "a=`date`; b=`date`; c=`date`; d=`date`; e=`date`; f=`date`; g=`date`; h=`date`; i=`date`; git push",
         "push ?",
     ),
@@ -801,20 +817,69 @@ fn every_shape_under_the_size_cap_parses_without_aborting() {
         classify(&shape);
     }
     let arith = |unit: &str, n: usize| format!("(( {}1 ))", unit.repeat(n));
-    assert_eq!(show(&classify(&arith("1+", 500))), "");
-    assert_eq!(show(&classify(&arith("a=", 500))), "");
-    assert_eq!(show(&classify("[[ -n x && -n x ]] && git push")), "push ?");
+    assert_eq!(show(&classify(&arith("1+", 2000))), "");
+    assert_eq!(show(&classify(&arith("a=", 2000))), "");
+    assert_eq!(
+        show(&classify(&format!("x=${{a:{}1}}", "1+".repeat(2000)))),
+        ""
+    );
     for over in [
-        arith("1+", 513),
-        arith("a?", 513),
-        arith("!", 1025),
-        format!("echo ${{a[{}1]}}", "1+".repeat(513)),
-        format!("[ {} ]", "-n x -a ".repeat(130)),
+        arith("1+", 2100),
+        arith("a?", 2100),
+        arith("!", 4200),
+        format!("(( ((1)) + {}1 ))", "1+".repeat(30000)),
+        format!("x=${{a:{}1}}", "1+".repeat(30000)),
+        format!("echo ${{a[{}1]}}", "1+".repeat(2100)),
+        format!("[ {} ]", "-n x -a ".repeat(520)),
         format!("(( {}0{} ))", "a[".repeat(17), "]".repeat(17)),
         format!("echo ${{{}0{}}}", "a[".repeat(17), "]".repeat(17)),
+        format!("cat <<EOF\n{}x{}\nEOF", "$(".repeat(17), ")".repeat(17)),
     ] {
         assert_eq!(show(&classify(&over)), "unreadable Syntax", "{over}");
     }
+}
+
+/// Text the parser never recurses on does not count against the bracket caps: single quotes,
+/// comments, quoted heredoc bodies, and the literal part of an unquoted one.
+#[test]
+fn quoted_text_and_heredoc_bodies_do_not_count_as_brackets() {
+    let files = (0..40)
+        .map(|n| format!("-e /workspace/example-app/src/file{n}.rs"))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    assert_eq!(
+        show(&classify(&format!("[[ {files} ]] && git push origin main"))),
+        "push origin main>main"
+    );
+    let items = (0..120)
+        .map(|n| format!("  {{\"id\": {n}, \"tags\": [\"a\", \"b\"]}}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let json = format!("cat > data.json <<'EOF'\n[\n{items}\n]\nEOF\ngit push origin main");
+    assert_eq!(show(&classify(&json)), "push origin main>main");
+    let code = "x = compute(a, b)\n".repeat(80);
+    let py = format!("python3 - <<'EOF'\nprint((a + b) * c)\n{code}EOF\ngit push");
+    assert_eq!(show(&classify(&py)), "push ?");
+    let raw = format!("cat <<EOF\n[[[[ (((( {{{{\n{code}EOF\ngit push");
+    assert_eq!(show(&classify(&raw)), "push ?");
+    let tail = "true; ".repeat(900);
+    assert_eq!(
+        show(&classify(&format!("grep -E '((a|b)c)' f; {tail}git push"))),
+        "push ?"
+    );
+    assert_eq!(
+        show(&classify(&format!("echo '[' ; {tail}git push"))),
+        "push ?"
+    );
+    assert_eq!(
+        show(&classify(&format!("# see [1] (\n{tail}git push"))),
+        "push ?"
+    );
+    assert_eq!(show(&classify(&format!("echo '{}'", "(".repeat(40)))), "");
+    assert_eq!(
+        show(&classify(&format!("cat <<'EOF'\n{}\nEOF", "$(".repeat(40)))),
+        ""
+    );
 }
 
 #[test]
