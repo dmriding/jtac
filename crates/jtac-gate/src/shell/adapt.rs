@@ -6,10 +6,10 @@
 use shuck_ast::{
     ArithmeticExpr, ArithmeticExprNode, ArithmeticLvalue, ArrayElem, AssignmentValue, BinaryOp,
     BourneParameterExpansion, BuiltinCommand, Command, CommandSubstitutionSyntax, CompoundCommand,
-    ConditionalExpr, DeclClause, DeclOperand, HeredocBodyPart, ParameterExpansion,
-    ParameterExpansionSyntax, Pattern, PatternPart, Redirect, RedirectKind, RedirectTarget,
-    SimpleCommand, Span, Stmt, StmtSeq, StmtTerminator, VarRef, Word as AstWord, WordPart,
-    static_command_name_text,
+    ConditionalBinaryOp, ConditionalExpr, ConditionalUnaryOp, DeclClause, DeclOperand,
+    HeredocBodyPart, ParameterExpansion, ParameterExpansionSyntax, ParameterOp, Pattern,
+    PatternPart, Redirect, RedirectKind, RedirectTarget, SimpleCommand, Span, Stmt, StmtSeq,
+    StmtTerminator, VarRef, Word as AstWord, WordPart, static_command_name_text,
 };
 use shuck_parser::parser::{ParseStatus, Parser};
 
@@ -53,6 +53,7 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
         depth: 0,
         too_deep: false,
         escaped_backtick: false,
+        quoted_arith: false,
         piped: false,
     };
     walk.seq(&parsed.file.body, false);
@@ -64,6 +65,12 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
     if walk.escaped_backtick {
         return Err("it escapes a backtick inside a backtick body".to_string());
     }
+    if walk.quoted_arith {
+        return Err(
+            "a quoted substitution in an arithmetic body or subscript runs when it is evaluated"
+                .to_string(),
+        );
+    }
     Ok(walk.out)
 }
 
@@ -74,6 +81,9 @@ struct Walk<'a> {
     too_deep: bool,
     /// shuck keeps `\`` in a backtick body as text; bash opens a substitution there.
     escaped_backtick: bool,
+    /// `(( '$(cmd)' ))`, `a['$(cmd)']`: bash expands an arithmetic body or a subscript again
+    /// when it evaluates it, so a quoted substitution there runs.
+    quoted_arith: bool,
     /// Stdin may be another command's output: every command on a pipe's right side.
     piped: bool,
 }
@@ -196,7 +206,7 @@ impl Walk<'_> {
         match &node.kind {
             ArithmeticExpr::Number(_) | ArithmeticExpr::Variable(_) => {}
             ArithmeticExpr::ShellWord(w) => {
-                self.word(w);
+                self.arith_word(w);
             }
             ArithmeticExpr::Indexed { index: e, .. }
             | ArithmeticExpr::Parenthesized { expression: e }
@@ -258,11 +268,13 @@ impl Walk<'_> {
             depth: self.depth + 1,
             too_deep: false,
             escaped_backtick: false,
+            quoted_arith: false,
             piped: self.piped,
         };
         walk(&mut child);
         self.too_deep |= child.too_deep;
         self.escaped_backtick |= child.escaped_backtick;
+        self.quoted_arith |= child.quoted_arith;
         self.out.push(Item::Subshell(child.out));
     }
 
@@ -285,16 +297,44 @@ impl Walk<'_> {
     fn conditional(&mut self, e: &ConditionalExpr) {
         match e {
             ConditionalExpr::Binary(b) => {
-                self.conditional(&b.left);
-                self.conditional(&b.right);
+                let arith = matches!(
+                    b.op,
+                    ConditionalBinaryOp::ArithmeticEq
+                        | ConditionalBinaryOp::ArithmeticNe
+                        | ConditionalBinaryOp::ArithmeticLe
+                        | ConditionalBinaryOp::ArithmeticGe
+                        | ConditionalBinaryOp::ArithmeticLt
+                        | ConditionalBinaryOp::ArithmeticGt
+                );
+                self.operand(&b.left, arith);
+                self.operand(&b.right, arith);
             }
-            ConditionalExpr::Unary(u) => self.conditional(&u.expr),
+            ConditionalExpr::Unary(u) => self.operand(
+                &u.expr,
+                matches!(
+                    u.op,
+                    ConditionalUnaryOp::VariableSet | ConditionalUnaryOp::ReferenceVariable
+                ),
+            ),
             ConditionalExpr::Parenthesized(p) => self.conditional(&p.expr),
             ConditionalExpr::Word(w) | ConditionalExpr::Regex(w) => {
                 self.word(w);
             }
             ConditionalExpr::Pattern(p) => self.pattern(p),
-            ConditionalExpr::VarRef(_) => {}
+            ConditionalExpr::VarRef(v) => {
+                self.reference(v);
+            }
+        }
+    }
+
+    // `[[ 1 -eq 'a[$(cmd)]' ]]`, `[[ -v 'a[$(cmd)]' ]]`: the operand is evaluated as arithmetic
+    // or as an array name, so a quoted substitution in it runs.
+    fn operand(&mut self, e: &ConditionalExpr, arith: bool) {
+        match e {
+            ConditionalExpr::Word(w) if arith => {
+                self.arith_word(w);
+            }
+            other => self.conditional(other),
         }
     }
 
@@ -336,10 +376,13 @@ impl Walk<'_> {
         for op in &d.operands {
             words.push(match op {
                 DeclOperand::Flag(w) | DeclOperand::Dynamic(w) => self.word(w),
-                DeclOperand::Name(v) => Word {
-                    text: v.name.as_ref().to_string(),
-                    unresolved: false,
-                },
+                DeclOperand::Name(v) => {
+                    self.reference(v);
+                    Word {
+                        text: v.name.as_ref().to_string(),
+                        unresolved: false,
+                    }
+                }
                 DeclOperand::Assignment(a) => self.assignment(&a.target, &a.value),
             });
         }
@@ -375,7 +418,7 @@ impl Walk<'_> {
                         }
                         ArrayElem::Keyed { key, value } | ArrayElem::KeyedAppend { key, value } => {
                             if let Some(w) = &key.word_ast {
-                                self.word(w);
+                                self.arith_word(w);
                             }
                             self.word(&value.word);
                         }
@@ -428,20 +471,29 @@ impl Walk<'_> {
                 expression_word_ast,
                 ..
             } => {
-                self.word(expression_word_ast);
+                self.arith_word(expression_word_ast);
             }
             WordPart::Parameter(p) => self.parameter(p),
             WordPart::ParameterExpansion {
                 reference,
-                operand_word_ast,
-                ..
-            }
-            | WordPart::IndirectExpansion {
-                reference,
+                operator,
                 operand_word_ast,
                 ..
             } => {
                 self.reference(reference);
+                self.op(operator);
+                self.optional(operand_word_ast.as_deref());
+            }
+            WordPart::IndirectExpansion {
+                reference,
+                operator,
+                operand_word_ast,
+                ..
+            } => {
+                self.reference(reference);
+                if let Some(o) = operator {
+                    self.op(o);
+                }
                 self.optional(operand_word_ast.as_deref());
             }
             WordPart::Length(r)
@@ -463,8 +515,10 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.word(offset_word_ast);
-                self.optional(length_word_ast.as_deref());
+                self.arith_word(offset_word_ast);
+                if let Some(l) = length_word_ast {
+                    self.arith_word(l);
+                }
             }
             _ => {}
         }
@@ -483,15 +537,24 @@ impl Walk<'_> {
             }
             BourneParameterExpansion::Indirect {
                 reference,
-                operand_word_ast,
-                ..
-            }
-            | BourneParameterExpansion::Operation {
-                reference,
+                operator,
                 operand_word_ast,
                 ..
             } => {
                 self.reference(reference);
+                if let Some(o) = operator {
+                    self.op(o);
+                }
+                self.optional(operand_word_ast.as_deref());
+            }
+            BourneParameterExpansion::Operation {
+                reference,
+                operator,
+                operand_word_ast,
+                ..
+            } => {
+                self.reference(reference);
+                self.op(operator);
                 self.optional(operand_word_ast.as_deref());
             }
             BourneParameterExpansion::Slice {
@@ -501,10 +564,36 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.word(offset_word_ast);
-                self.optional(length_word_ast.as_deref());
+                self.arith_word(offset_word_ast);
+                if let Some(l) = length_word_ast {
+                    self.arith_word(l);
+                }
             }
             BourneParameterExpansion::PrefixMatch { .. } => {}
+        }
+    }
+
+    // `${a//x/$(cmd)}`, `${a#$(cmd)}`: the pattern and the replacement run.
+    fn op(&mut self, o: &ParameterOp) {
+        match o {
+            ParameterOp::RemovePrefixShort { pattern }
+            | ParameterOp::RemovePrefixLong { pattern }
+            | ParameterOp::RemoveSuffixShort { pattern }
+            | ParameterOp::RemoveSuffixLong { pattern } => self.pattern(pattern),
+            ParameterOp::ReplaceFirst {
+                pattern,
+                replacement_word_ast,
+                ..
+            }
+            | ParameterOp::ReplaceAll {
+                pattern,
+                replacement_word_ast,
+                ..
+            } => {
+                self.pattern(pattern);
+                self.word(replacement_word_ast);
+            }
+            _ => {}
         }
     }
 
@@ -514,13 +603,22 @@ impl Walk<'_> {
             return false;
         };
         match (sub.word_ast(), sub.arithmetic_ast.as_ref()) {
-            (Some(w), _) => self.word(w).unresolved,
+            (Some(w), _) => self.arith_word(w).unresolved,
             (None, Some(a)) => {
                 self.arith(Some(a));
                 true
             }
             (None, None) => false,
         }
+    }
+
+    // A static word that still spells a substitution was quoted; arithmetic expands it anyway.
+    fn arith_word(&mut self, w: &AstWord) -> Word {
+        let w = self.word(w);
+        if !w.unresolved && (w.text.contains("$(") || w.text.contains('`')) {
+            self.quoted_arith = true;
+        }
+        w
     }
 
     fn optional(&mut self, w: Option<&AstWord>) {
@@ -556,7 +654,7 @@ impl Walk<'_> {
                                 ..
                             } => {
                                 unresolved = true;
-                                self.word(expression_word_ast);
+                                self.arith_word(expression_word_ast);
                             }
                             HeredocBodyPart::Parameter(p) => {
                                 unresolved = true;

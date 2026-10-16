@@ -462,8 +462,26 @@ const PUSH_VALUE_LONGS: [&str; 5] = [
     "--repo",
 ];
 
-// A short cluster is read left to right and `-o` takes the rest of it, or the next word;
-// `origin tag v1` is git's spelling of `refs/tags/v1:refs/tags/v1`.
+// `--mirror` sets git's force bit with its own; `--no-force` and `--no-mirror` both clear it,
+// and a `--force-with-lease` given alongside is still armed.
+fn unforced(lease: bool) -> Force {
+    if lease { Force::WithLease } else { Force::No }
+}
+
+// `-fofoo=bar`: `-o` takes the rest of the cluster, or the next word when it ends one.
+fn cluster(p: &mut Push, short: &str) -> bool {
+    for (k, c) in short.char_indices() {
+        match c {
+            'f' => p.force = Force::Force,
+            'd' => p.delete = true,
+            'n' => p.dry_run = true,
+            'o' => return k + 1 == short.len(),
+            _ => {}
+        }
+    }
+    false
+}
+
 fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
     let mut p = Push {
         remote: None,
@@ -484,7 +502,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
     let mut flags_done = false;
     let mut skip_next = false;
     let mut take_repo = false;
-    let (mut lease, mut mirror) = (false, false);
+    let mut lease = false;
     for w in args {
         let t = w.text.as_str();
         if skip_next {
@@ -500,21 +518,8 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
             continue;
         }
         if let Some(short) = t.strip_prefix('-').filter(|_| !t.starts_with("--")) {
-            for (k, c) in short.char_indices() {
-                match c {
-                    'f' => p.force = Force::Force,
-                    'd' => {
-                        p.delete = true;
-                        delete_flag = true;
-                    }
-                    'n' => p.dry_run = true,
-                    'o' => {
-                        skip_next = k + 1 == short.len();
-                        break;
-                    }
-                    _ => {}
-                }
-            }
+            skip_next = cluster(&mut p, short);
+            delete_flag |= p.delete;
             continue;
         }
         if t == "--" {
@@ -525,10 +530,15 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
             Some("--mirror") => {
                 p.all_refs = true;
                 p.force = Force::Force;
-                mirror = true;
             }
             Some("--all" | "--branches") => p.all_refs = true,
-            Some("--no-all" | "--no-branches" | "--no-mirror") => p.all_refs = false,
+            Some("--no-all" | "--no-branches") => p.all_refs = false,
+            Some("--no-mirror") => {
+                p.all_refs = false;
+                if p.force == Force::Force {
+                    p.force = unforced(lease);
+                }
+            }
             Some("--dry-run") => p.dry_run = true,
             Some("--no-dry-run") => p.dry_run = false,
             Some("--force-with-lease") => {
@@ -538,9 +548,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
                 }
             }
             Some("--force") => p.force = Force::Force,
-            Some("--no-force") if p.force == Force::Force && !mirror => {
-                p.force = if lease { Force::WithLease } else { Force::No };
-            }
+            Some("--no-force") if p.force == Force::Force => p.force = unforced(lease),
             Some("--no-force-with-lease") => {
                 lease = false;
                 if p.force == Force::WithLease {
@@ -572,11 +580,13 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         }
     }
     p.remote = positional.first().map(|s| (*s).to_string()).or(repo_flag);
-    let mut specs: Vec<String> = positional
-        .iter()
-        .skip(1)
-        .map(|s| (*s).to_string())
-        .collect();
+    refspecs(&mut p, &positional[positional.len().min(1)..], delete_flag);
+    p
+}
+
+// `tag v1` is one refspec; `+` forces; `:dst` deletes; a `*` destination is every ref.
+fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
+    let mut specs: Vec<String> = positional.iter().map(|s| (*s).to_string()).collect();
     let mut i = 0;
     while i + 1 < specs.len() {
         if specs[i] == "tag" {
@@ -614,5 +624,4 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
     if p.destinations.iter().any(|d| d.contains('*')) {
         p.all_refs = true;
     }
-    p
 }

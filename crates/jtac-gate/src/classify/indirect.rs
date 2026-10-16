@@ -1,7 +1,9 @@
 //! The command inside a word: `bash -c '…'`, `eval`, `trap`, a heredoc handed to a shell, and
 //! the programs that run a string this reader will not open.
 
-use super::program::{base_name, dashed_git, names_a_shell, names_git, runs_a_string};
+use super::program::{
+    base_name, dashed_git, evaluates_text, names_a_shell, names_git, runs_a_string,
+};
 use super::{Action, Dir, MAX_NESTING, Unread, classify_at, place, sealed};
 use crate::shell::{Simple, Word};
 
@@ -123,11 +125,18 @@ pub(crate) fn runner(cmd: &Simple, idx: usize) -> Option<Action> {
         .enumerate()
         .any(|(n, w)| dashed_git(&w.text) || names_git(&w.text) && n + 1 < rest().count());
     let quoted = runs_a_string(prog) && rest().any(|w| quotes_a_command(&w.text));
+    let args: Vec<&str> = rest().map(|w| w.text.as_str()).collect();
+    let evaluated = evaluates_text(prog, &args)
+        && rest().any(|w| {
+            !w.unresolved
+                && (w.text.contains("$(") || w.text.contains('`'))
+                && quotes_a_command(&w.text)
+        });
     let why = if prog.eq_ignore_ascii_case("alias")
         && rest().any(|w| quotes_a_command(&w.text) || plain_git(&w.text))
     {
         Unread::Alias
-    } else if plain || quoted {
+    } else if plain || quoted || evaluated {
         Unread::Runner(prog.to_string())
     } else {
         return None;

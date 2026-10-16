@@ -168,6 +168,18 @@ const SHELL_NAMES: [&str; 20] = [
     "yash",
 ];
 
+/// Builtins that evaluate a word's text as arithmetic or as an array name, so a quoted
+/// `$(…)` in it runs: `let 'a[$(cmd)]++'`, `declare -i x='a[$(cmd)]'`, `unset 'a[$(cmd)]'`,
+/// `printf -v 'a[$(cmd)]'`, `test -v 'a[$(cmd)]'`.
+pub(crate) fn evaluates_text(prog: &str, args: &[&str]) -> bool {
+    match base_name(prog) {
+        "let" | "unset" | "read" | "declare" | "typeset" | "local" => true,
+        "printf" => args.iter().any(|a| a.starts_with("-v")),
+        "test" | "[" => args.iter().any(|a| matches!(*a, "-v" | "-R")),
+        _ => false,
+    }
+}
+
 /// Programs that take a program as a string, or run one somewhere this text does not name.
 /// A program that merely takes text does not belong here.
 const RUNS_A_STRING: [&str; 36] = [
@@ -443,12 +455,12 @@ pub(crate) fn wrapper_chdir(cmd: &Simple) -> Option<Chdir> {
     moved
 }
 
-// `env -C a env -C b`: the inner wrapper starts where the outer one moved to.
+// `env -C a env -C b`: the inner wrapper starts where the outer one moved to. An unnamed
+// outer stays unnamed even under an absolute inner: `sudo -R` moved the root, not the cwd.
 fn chain(moved: Option<Chdir>, next: Chdir) -> Chdir {
     match (moved, next) {
         (None, next) => next,
         (Some(Chdir::To(a)), Chdir::To(b)) => Chdir::To(join_dir(&a, &b)),
-        (Some(_), Chdir::To(b)) if is_absolute(&b) => Chdir::To(b),
         _ => Chdir::Unnamed,
     }
 }
