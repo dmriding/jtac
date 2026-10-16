@@ -1,0 +1,79 @@
+version = 1
+
+[checks.rust-fmt]
+run = [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check",
+]
+required = true
+timeout_secs = 600
+
+[checks.rust-lint]
+run = [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--all-features",
+    "--locked",
+    "--",
+    "-D",
+    "warnings",
+]
+required = true
+timeout_secs = 600
+
+[checks.rust-test]
+run = [
+    "cargo",
+    "test",
+    "--workspace",
+    "--all-features",
+    "--locked",
+]
+required = true
+timeout_secs = 1200
+
+[integrity]
+block_at = "major"
+max_new_suppressions = 0
+allow_removed_tests = false
+allow_newly_skipped_tests = false
+max_file_lines = 800
+max_function_lines = 150
+
+[protected]
+paths = [
+    ".jtac/**",
+    ".github/**",
+    "scripts/**",
+    ".gitlab-ci.yml",
+    ".circleci/**",
+    ".buildkite/**",
+    "Jenkinsfile",
+    "azure-pipelines.yml",
+    "bitbucket-pipelines.yml",
+    ".travis.yml",
+    ".drone.yml",
+    ".woodpecker.yml",
+    "clippy.toml",
+    "deny.toml",
+    "rust-toolchain.toml",
+]
+
+[tiers]
+
+[fences]
+protected_branches = [
+    "main",
+    "release/*",
+]
+force_push_protected = "deny"
+no_verify = "deny"
+
+[scope]
+branches = ["*"]
+paths = ["**"]

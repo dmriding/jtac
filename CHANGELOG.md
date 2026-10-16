@@ -34,6 +34,10 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.19) This repository is gated by jtac: `.jtac/policy.toml` runs the fmt, clippy and test
+  bars with CI's flags and protects `scripts/**` beside the defaults; `.jtac/signers` trusts the
+  maintainer's key. The adoption commit trips `JT-PROT-001` on `.jtac/`, so its root carries
+  the rule waiver the README's quick start names.
 - (0.0.18, M12) `jtac waive`: a signed `lever` node scoped to one commit (`declared_off`)
   or to one rule under one path for `--expires <days>d`, at most 30, kept in the store
   until a verdict applies it. `check` offers every stored waiver to the verdict and embeds
