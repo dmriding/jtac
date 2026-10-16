@@ -23,6 +23,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo llvm-cov --workspace --summary-only     # line coverage at or above 80%
+jtac check                                    # the root the pre-push hook needs; a block wants a fix or a maintainer's waiver, never --no-verify
 ```
 
 - Warnings are errors. No `#[allow(...)]` without a comment saying why the lint is wrong in that place.
