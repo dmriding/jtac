@@ -60,6 +60,28 @@ fn env_effect(w: &Word) -> Option<Env> {
     (matches!(k, "GIT_DIR" | "GIT_WORK_TREE") && !v.is_empty()).then_some(Env::Retarget)
 }
 
+/// `PS4='$(cmd) '`: under `set -x`, or in a child shell that inherits it, bash expands the
+/// value before every traced command. A leading assignment or a declaration arms it.
+pub(crate) fn traced(cmd: &Simple) -> Option<Action> {
+    let decl = cmd.words.iter().any(|w| {
+        matches!(
+            base_name(&w.text),
+            "export" | "declare" | "typeset" | "local" | "readonly"
+        )
+    });
+    let armed = cmd.words.iter().enumerate().any(|(i, w)| {
+        let leading = cmd.words[..i].iter().all(|p| is_assignment(&p.text));
+        (leading || decl)
+            && w.text
+                .strip_prefix("PS4=")
+                .is_some_and(|v| v.contains("$(") || v.contains('`'))
+    });
+    armed.then(|| Action::Unreadable {
+        why: Unread::Prompt,
+        raw: cmd.raw.clone(),
+    })
+}
+
 fn env_action(e: Env, raw: String) -> Action {
     match e {
         Env::Bypass(spelling) => Action::HookBypass { spelling, raw },

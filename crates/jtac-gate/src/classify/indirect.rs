@@ -1,9 +1,7 @@
 //! The command inside a word: `bash -c '…'`, `eval`, `trap`, a heredoc handed to a shell, and
 //! the programs that run a string this reader will not open.
 
-use super::program::{
-    base_name, dashed_git, evaluates_text, names_a_shell, names_git, runs_a_string,
-};
+use super::program::{base_name, dashed_git, names_a_shell, names_git, runs_a_string};
 use super::{Action, Dir, MAX_NESTING, Unread, classify_at, place, sealed};
 use crate::shell::{Simple, Word};
 
@@ -117,7 +115,8 @@ fn script_word_at(cmd: &Simple, first: usize) -> Option<usize> {
 
 /// A program this reader does not know. It is fine until a word of it is a `git` with a
 /// subcommand after it, or, for a program that runs strings, a word that quotes one or names
-/// a shell. `alias` is the other way to hide a command: the name it binds runs later.
+/// a shell; `mapfile -C` hands its callback to eval, attached or not. `alias` is the other
+/// way to hide a command: the name it binds runs later.
 pub(crate) fn runner(cmd: &Simple, idx: usize) -> Option<Action> {
     let prog = base_name(cmd.at(idx));
     let rest = || cmd.words.iter().skip(idx + 1);
@@ -125,18 +124,17 @@ pub(crate) fn runner(cmd: &Simple, idx: usize) -> Option<Action> {
         .enumerate()
         .any(|(n, w)| dashed_git(&w.text) || names_git(&w.text) && n + 1 < rest().count());
     let quoted = runs_a_string(prog) && rest().any(|w| quotes_a_command(&w.text));
-    let args: Vec<&str> = rest().map(|w| w.text.as_str()).collect();
-    let evaluated = evaluates_text(prog, &args)
+    let callback = matches!(prog, "mapfile" | "readarray")
         && rest().any(|w| {
-            !w.unresolved
-                && (w.text.contains("$(") || w.text.contains('`'))
-                && quotes_a_command(&w.text)
+            w.unresolved
+                || w.text.starts_with('-')
+                    && quotes_a_command(w.text.split_once('C').map_or("", |(_, cb)| cb))
         });
     let why = if prog.eq_ignore_ascii_case("alias")
         && rest().any(|w| quotes_a_command(&w.text) || plain_git(&w.text))
     {
         Unread::Alias
-    } else if plain || quoted || evaluated {
+    } else if plain || quoted || callback {
         Unread::Runner(prog.to_string())
     } else {
         return None;

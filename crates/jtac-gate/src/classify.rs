@@ -98,6 +98,8 @@ pub enum Unread {
     Alias,
     /// `include.path` or `GIT_CONFIG_GLOBAL`: config read from a file the text does not show.
     Include,
+    /// `PS4` holds a substitution: bash runs it before every traced command.
+    Prompt,
     /// Shells nested past [`MAX_NESTING`].
     Nesting,
     /// A script over [`MAX_BYTES`].
@@ -221,7 +223,7 @@ fn walk(items: &[Item], depth: u8, cdpath: bool, here: &mut Dir, out: &mut Vec<A
 // The actions of one command, with directories relative to the shell's position before it.
 // A wrapper's own chdir (`env -C`, `sudo -D`) moves what it wraps and nothing else.
 fn one(cmd: &Simple, depth: u8, cdpath: bool) -> Vec<Action> {
-    if let Some(a) = git::exported(cmd) {
+    if let Some(a) = git::traced(cmd).or_else(|| git::exported(cmd)) {
         return vec![a];
     }
     let (prog, first) = program::program_of(cmd);
@@ -252,6 +254,17 @@ fn one(cmd: &Simple, depth: u8, cdpath: bool) -> Vec<Action> {
             .into_iter()
             .filter(|a| !matches!(a, Action::ChangeDir { .. }))
             .map(|a| place(a, &Dir::Unknown))
+            .collect(),
+        Some(program::Chdir::Rooted) => acts
+            .into_iter()
+            .filter(|a| !matches!(a, Action::ChangeDir { .. }))
+            .map(|a| match a {
+                Action::Push(mut p) => {
+                    p.dir = Dir::Unknown;
+                    Action::Push(p)
+                }
+                other => other,
+            })
             .collect(),
     }
 }
