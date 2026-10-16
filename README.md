@@ -10,9 +10,9 @@ identity and a review packet for humans follow in later releases.
 
 **Status: v0.1 in progress, no release yet.** The local gate runs end to end:
 `init`, `check`, the `pre-push` hook, signed roots as git refs, `verify`,
-`replay`, `audit`, `show`, `waive`. Left before v0.1: the shell command
-classifier, the agent tool-call hook, `bench`, and the install script
-(`DESIGN.md` section 14). `DESIGN.md` is the source of truth. `main` is the
+`replay`, `audit`, `show`, `waive`, and the shell command classifier the
+agent hook will read. Left before v0.1: the agent tool-call hook, `bench`,
+and the install script (`DESIGN.md` section 14). `DESIGN.md` is the source of truth. `main` is the
 development line; releases are signed `v*` tags (`docs/RELEASING.md`).
 
 ## What it does today
