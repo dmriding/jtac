@@ -49,7 +49,7 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let (scope, tree, expires) = match (&a.rev, &a.rule, &a.path) {
         (Some(rev), None, None) => {
             if a.expires.is_some() {
-                return Err(Refusal::commit_expires());
+                return Err(Refusal::commit_expires(rev, &a.reason));
             }
             let target = repo::peel(&repo, &format, rev).map_err(|_| Refusal::rev("waive", rev))?;
             let scope = Scope::Commit {
@@ -59,17 +59,20 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }
         (None, Some(rule), Some(path)) => {
             if !clean_prefix(path) {
-                return Err(Refusal::waive_path(path));
+                return Err(Refusal::waive_path(rule, path, &a.reason));
             }
             let scope = Scope::Rule {
                 rule: rule.clone(),
                 path: path.clone(),
             };
-            (scope, head.tree, Some(expiry(now, a.expires.as_deref())?))
+            let expires = expiry(now, a.expires.as_deref()).ok_or_else(|| {
+                Refusal::waive_expires(rule, path, &a.reason, a.expires.as_deref())
+            })?;
+            (scope, head.tree, Some(expires?))
         }
         _ => return Err(Refusal::waive_scope()),
     };
-    if a.reason.trim().is_empty() {
+    if a.reason.trim().is_empty() || a.reason.chars().any(char::is_control) {
         return Err(Refusal::waive_reason());
     }
     let loaded = policy::load(&repo, &head)?;
@@ -115,16 +118,15 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
     Ok(printed)
 }
 
-/// `now` plus `--expires`, which must be `Nd` with N in 1..=30.
-fn expiry(now: Ts, given: Option<&str>) -> Result<Ts, Refusal> {
+/// `now` plus `--expires`; `None` unless it is `Nd` with N in 1..=30.
+fn expiry(now: Ts, given: Option<&str>) -> Option<Result<Ts, Refusal>> {
     let days: i64 = given
         .and_then(|g| g.strip_suffix('d'))
         .and_then(|n| n.parse().ok())
-        .filter(|n| (1..=30).contains(n))
-        .ok_or_else(|| Refusal::waive_expires(given))?;
+        .filter(|n| (1..=30).contains(n))?;
     let at = jiff::Timestamp::from_second(now.timestamp().as_second() + days * 86_400)
-        .map_err(Refusal::internal)?;
-    Ts::from_timestamp(at).map_err(Refusal::internal)
+        .map_err(Refusal::internal);
+    Some(at.and_then(|at| Ts::from_timestamp(at).map_err(Refusal::internal)))
 }
 
 fn render(o: &WaiveOut) -> String {

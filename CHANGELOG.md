@@ -26,6 +26,8 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.0.18) The README says what the gate does today, command by command, how to adopt it,
+  and the roadmap by version; the preview-only status is gone.
 - (0.0.16) The Windows test job runs on a push to `main`, a release tag and a manual
   dispatch, not on a pull request, so a pull request bills one Ubuntu test leg; the required
   check is `test`.

@@ -128,14 +128,12 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
         None => Vec::new(),
     };
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
-    let waivers = store
-        .levers()
-        .map_err(Refusal::store)?
+    let mut notes = g.tip.notes;
+    let waivers = crate::lever::offered(&repo, &store, &mut notes)?
         .iter()
         .filter(|l| scope_at(&l.node, &head.commit, now).is_ok())
         .filter_map(WaiverOut::of)
         .collect();
-    let mut notes = g.tip.notes;
     let last = match state::read(&store) {
         Ok(last) => last.map(|o| Last {
             commit: o.commit,

@@ -103,7 +103,8 @@ impl WaiverOut {
         })
     }
 
-    /// One line: scope, signer, marker, reason.
+    /// One line: scope, signer, marker, reason. A control character in a hand-written
+    /// node's reason is a space, so it cannot overwrite the marker before it.
     pub fn line(&self) -> String {
         let scope = match &self.scope {
             Scope::Commit { commit } => format!("commit {}", commit.hex()),
@@ -113,7 +114,12 @@ impl WaiverOut {
             .agent
             .as_deref()
             .map_or(String::new(), |m| format!(" under agent session {m}"));
-        format!("{scope} by {}{agent}: {}", self.principal, self.reason)
+        let reason: String = self
+            .reason
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        format!("{scope} by {}{agent}: {reason}", self.principal)
     }
 }
 

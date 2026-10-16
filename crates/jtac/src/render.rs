@@ -105,7 +105,13 @@ fn summary(o: &Output) -> String {
         0 => String::new(),
         n => format!(", {n} advisory"),
     };
-    if o.pass {
+    if o.state == jtac_core::State::DeclaredOff {
+        format!(
+            "declared off by a commit waiver, {} reasons overridden; {passed} of {total} checks \
+             pass{advisory}",
+            o.reasons.len()
+        )
+    } else if o.pass {
         format!("{passed} of {total} checks pass, nothing blocks{advisory}")
     } else {
         format!("{} reasons block{advisory}", o.reasons.len())

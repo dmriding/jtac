@@ -315,6 +315,14 @@ fn a_commit_waiver_turns_the_gate_off_for_one_commit_and_keeps_the_reasons() {
         ran.stdout
     );
 
+    let text = jtac(repo, &["check", "--preview"]).stdout;
+    assert!(
+        text.starts_with(
+            "CLEARED HOT (preview, nothing written): declared off by a commit waiver, 1 reasons \
+             overridden; 2 of 2 checks pass"
+        ),
+        "{text}"
+    );
     let (code, v) = json(repo, &["check", "--json"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["banner"], "CLEARED HOT");
@@ -352,6 +360,17 @@ fn a_commit_waiver_turns_the_gate_off_for_one_commit_and_keeps_the_reasons() {
     assert_eq!(v["state"], "covered");
     assert_eq!(v["base"]["from"], "nearest covered ancestor");
     assert!(v["waivers"].as_array().unwrap().is_empty(), "{v}");
+    let ran = jtac(repo, &["waive", "HEAD", "--reason", "late"]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let (code, v) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["state"], "covered", "the standing root's state: {v}");
+    assert!(v["waivers"].as_array().unwrap().is_empty(), "{v}");
+    let notes = v["notes"].to_string();
+    assert!(
+        notes.contains("the state and waivers shown are the root's"),
+        "{v}"
+    );
 }
 
 /// Every refusal is three lines with the next command, and the lever store stays empty.
@@ -359,7 +378,7 @@ fn a_commit_waiver_turns_the_gate_off_for_one_commit_and_keeps_the_reasons() {
 fn a_waiver_with_no_scope_a_bad_expiry_a_bad_path_a_blank_reason_or_a_bad_rev_is_refused() {
     let a = adopting();
     let repo = &a.repo;
-    let rows: [(&[&str], &str); 8] = [
+    let rows: [(&[&str], &str); 9] = [
         (&["waive", "--reason", "x"], "needs a scope"),
         (
             &["waive", "--rule", "JT-SUP-001", "--reason", "x"],
@@ -420,10 +439,21 @@ fn a_waiver_with_no_scope_a_bad_expiry_a_bad_path_a_blank_reason_or_a_bad_rev_is
             "`--path src/../x` is not a clean",
         ),
         (
-            &["waive", "HEAD", "--expires", "7d", "--reason", "x"],
+            &[
+                "waive",
+                "HEAD~1",
+                "--expires",
+                "7d",
+                "--reason",
+                "base only",
+            ],
             "a commit waiver takes no `--expires`",
         ),
         (&["waive", "HEAD", "--reason", "  "], "`--reason` is blank"),
+        (
+            &["waive", "HEAD", "--reason", "x\r  waiver  forged"],
+            "holds a control character",
+        ),
     ];
     for (args, want) in rows {
         let ran = jtac(repo, args);
@@ -440,7 +470,31 @@ fn a_waiver_with_no_scope_a_bad_expiry_a_bad_path_a_blank_reason_or_a_bad_rev_is
             "{args:?}: {}",
             ran.stderr
         );
+        if args.contains(&"--path") {
+            assert!(
+                ran.stderr.contains("--rule JT-SUP-001"),
+                "{args:?}: {}",
+                ran.stderr
+            );
+        }
     }
+    let ran = jtac(
+        repo,
+        &[
+            "waive",
+            "HEAD~1",
+            "--expires",
+            "7d",
+            "--reason",
+            "base only",
+        ],
+    );
+    assert!(
+        ran.stderr
+            .contains("`jtac waive 'HEAD~1' --reason 'base only'`"),
+        "{}",
+        ran.stderr
+    );
     let ran = jtac(repo, &["waive", "nope", "--reason", "x"]);
     assert_eq!(ran.code, 2, "{}", ran.stderr);
     assert!(
@@ -618,9 +672,9 @@ fn replace_root(repo: &Repo, key: &Path, commit: &str, json: &str) {
     repo.git(&["update-ref", &name, &forged]);
 }
 
-/// A root whose own signature holds but whose embedded waiver's does not is invalid, so
-/// the root signer cannot vouch for a waiver nobody signed; with no trust file both the
-/// root's and the waiver's signers are unknown and the root counts once.
+/// A stored waiver whose signature does not hold is never applied, so `check` cannot sign a
+/// root `verify` would reject; a root that carries one anyway is invalid; with no trust file
+/// both the root's and the waiver's signers are unknown and the root counts once.
 #[test]
 fn a_waiver_whose_signature_does_not_hold_invalidates_the_root_that_carries_it() {
     let a = adopting();
@@ -629,6 +683,32 @@ fn a_waiver_whose_signature_does_not_hold_invalidates_the_root_that_carries_it()
     let tip = repo.commit("drop the test");
     let ran = jtac(repo, &["waive", "HEAD", "--reason", "r"]);
     assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let sig_file = repo
+        .path()
+        .join(".git/jtac/levers")
+        .read_dir()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let good = std::fs::read_to_string(&sig_file).unwrap();
+    std::fs::write(&sig_file, good.replacen("AAAA", "AAAB", 1)).unwrap();
+    let ran = jtac(repo, &["check"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout
+            .contains("is not applied: its signature does not hold"),
+        "{}",
+        ran.stdout
+    );
+    assert!(ran.stdout.contains("JT-TEST-001 blocker"), "{}", ran.stdout);
+    let status = jtac(repo, &["status"]).stdout;
+    assert!(
+        !status.contains("  waiver  ") && status.contains("is not applied"),
+        "{status}"
+    );
+    std::fs::write(&sig_file, good).unwrap();
     let ran = jtac(repo, &["check"]);
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     let (code, v) = json(repo, &["verify", "--json"]);

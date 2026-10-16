@@ -16,6 +16,7 @@ mod initout;
 mod judge;
 mod keydir;
 mod ledger;
+mod lever;
 mod output;
 mod policy;
 mod range;

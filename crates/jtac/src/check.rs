@@ -9,7 +9,7 @@ use jtac_store::Store;
 
 use crate::cli::CheckArgs;
 use crate::refuse::Refusal;
-use crate::{Printed, chain, identity, judge, output, render, repo, root, state, write};
+use crate::{Printed, chain, identity, judge, lever, output, render, repo, root, state, write};
 
 /// The rendered verdict. A root, once written, is reported even when `state.json` is not.
 pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
@@ -50,7 +50,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut file_cache = store.cache();
     let cache: Option<&mut dyn Cache> = signer.as_ref().map(|_| &mut file_cache as &mut dyn Cache);
-    let waivers = store.levers().map_err(Refusal::store)?;
+    let waivers = lever::offered(&repo, &store, &mut notes)?;
     let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref(), &waivers)?;
     if let Some(why) = dirty {
         notes.push(format!(
@@ -76,9 +76,15 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     }
     let policy = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &policy, &j, cache)?;
+    let mut standing = None;
     let root_id = match (&existing, j.verdict.pass) {
         (Some(stored), true) => {
-            notes.push("HEAD already has a root; it stands, and this run wrote none".to_owned());
+            notes.push(
+                "HEAD already has a root; it stands, and this run wrote none: the state and \
+                 waivers shown are the root's"
+                    .to_owned(),
+            );
+            standing = Some(&stored.root);
             Some(stored.root.id().map_err(Refusal::internal)?)
         }
         (None, true) => {
@@ -108,7 +114,15 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }
         (_, false) => None,
     };
-    let out = output::output(&j, notes, false, root_id);
+    let mut out = output::output(&j, notes, false, root_id);
+    if let Some(root) = standing {
+        out.state = root.state;
+        out.waivers = root
+            .levers
+            .iter()
+            .filter_map(output::WaiverOut::of)
+            .collect();
+    }
     let mut printed = Printed::verdict(render::render(&out, a.json)?, out.pass);
     printed.warn = state::write(&store, &out).err();
     Ok(printed)

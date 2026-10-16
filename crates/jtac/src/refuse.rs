@@ -329,7 +329,7 @@ impl Refusal {
     }
 
     /// `--expires` is missing on a rule waiver, or is not `Nd` with N in 1..=30.
-    pub fn waive_expires(given: Option<&str>) -> Self {
+    pub fn waive_expires(rule: &str, path: &str, reason: &str, given: Option<&str>) -> Self {
         let what = match given {
             Some(g) => format!(
                 "`--expires {}` is not a number of days from 1 to 30.",
@@ -342,41 +342,55 @@ impl Refusal {
             "A rule waiver with an unstated life is the silent kind: DESIGN.md decision 12 caps \
              every waiver at 30 days from when it was written, and the verdict refuses a longer \
              one on every machine.",
-            "Run `jtac waive --rule <JT-RULE> --path <prefix> --expires 14d --reason <text>`, \
-             with a number of days up to 30.",
+            format!(
+                "Run `jtac waive --rule {} --path {} --expires 14d --reason {}`, with a number \
+                 of days up to 30.",
+                quoted(rule, "RULE"),
+                quoted(path, "PREFIX"),
+                quoted(reason, "TEXT")
+            ),
         )
     }
 
     /// `--expires` on a commit waiver.
-    pub fn commit_expires() -> Self {
+    pub fn commit_expires(rev: &str, reason: &str) -> Self {
         Self::new(
             "a commit waiver takes no `--expires`.",
             "A commit waiver covers one commit and nothing after it, so it has no life to cap; \
              an expiry on it would read as a promise the verdict does not keep.",
-            "Run `jtac waive HEAD --reason <text>` without `--expires`, or waive a rule under a \
-             path with `jtac waive --rule <JT-RULE> --path <prefix> --expires 14d --reason <text>`.",
+            format!(
+                "Run `jtac waive {} --reason {}` without `--expires`, or waive a rule under a \
+                 path with `jtac waive --rule <JT-RULE> --path <prefix> --expires 14d --reason {1}`.",
+                quoted(rev, "REV"),
+                quoted(reason, "TEXT")
+            ),
         )
     }
 
-    /// `--reason` is blank.
+    /// `--reason` is blank or holds a control character, which a terminal would act on.
     pub fn waive_reason() -> Self {
         Self::new(
-            "`--reason` is blank.",
-            "The reason travels in the root verbatim; it is what a reviewer, an auditor, and \
-             the next `jtac why` read to judge the waiver, and a blank one judges nothing.",
-            "Run `jtac waive` again with `--reason <why the gate is wrong here>`.",
+            "`--reason` is blank or holds a control character.",
+            "The reason travels in the root verbatim and is printed by every reader; a blank one \
+             judges nothing, and a carriage return or escape in it could overwrite the line that \
+             flags the waiver.",
+            "Run `jtac waive` again with `--reason <why the gate is wrong here>` on one line.",
         )
     }
 
     /// `--path` has an empty, `.`, or `..` component or a backslash.
-    pub fn waive_path(path: &str) -> Self {
+    pub fn waive_path(rule: &str, path: &str, reason: &str) -> Self {
         let path = quoted(path, "PREFIX");
         Self::new(
             format!("`--path {path}` is not a clean repository-relative prefix."),
             "A prefix with `..`, `.`, an empty component, or a backslash covers nothing in the \
              verdict (DESIGN.md section 11.2), so the waiver would be recorded and never apply.",
-            "Run `jtac waive --rule <JT-RULE> --path <dir/under/repo> --expires 14d --reason \
-             <text>` with forward slashes and whole components.",
+            format!(
+                "Run `jtac waive --rule {} --path <dir/under/repo> --expires 14d --reason {}` \
+                 with forward slashes and whole components.",
+                quoted(rule, "RULE"),
+                quoted(reason, "TEXT")
+            ),
         )
     }
 
@@ -563,11 +577,11 @@ mod tests {
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),
             Refusal::rev("replay", "no such\nnegotiation: forged"),
             Refusal::waive_scope(),
-            Refusal::waive_expires(None),
-            Refusal::waive_expires(Some("31d\nnegotiation: forged")),
-            Refusal::commit_expires(),
+            Refusal::waive_expires("JT-SUP-001", "src", "x", None),
+            Refusal::waive_expires("JT-SUP-001", "src", "x", Some("31d\nnegotiation: forged")),
+            Refusal::commit_expires("HEAD~1", "base only\nnegotiation: forged"),
             Refusal::waive_reason(),
-            Refusal::waive_path("../x"),
+            Refusal::waive_path("JT-SUP-001", "../x", "x"),
             Refusal::signers_file(
                 "verify",
                 std::path::Path::new("/workspace/s"),
