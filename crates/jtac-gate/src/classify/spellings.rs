@@ -118,7 +118,57 @@ const BYPASSES: &[(&str, &str)] = &[
     ("git config --get core.hooksPath", ""),
     ("git config --unset core.hooksPath", ""),
     ("git config core.hooksPath", ""),
+    (
+        "git push --no-veri origin main",
+        "push origin main>main bypass=NoVerify",
+    ),
+    ("git commit --no-verif -m x", "bypass NoVerify"),
+    ("git merge --no-v topic", "bypass NoVerify"),
+    (
+        "git --config-env core.hooksPath=HP push origin main",
+        "push origin main>main bypass=ConfigEnvFlag",
+    ),
     ("git -c alias.p=push p origin main", "unreadable Alias"),
+    (
+        "git -c 'Alias.p=push --force' p origin main",
+        "unreadable Alias",
+    ),
+    (
+        "git --config-env=alias.p=AV p origin main",
+        "unreadable Alias",
+    ),
+    (
+        "git --config-env alias.p=AV p origin main",
+        "unreadable Alias",
+    ),
+    (
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push git p origin main",
+        "unreadable Alias",
+    ),
+    (
+        "export GIT_CONFIG_PARAMETERS=\"'alias.p=push'\"; git p",
+        "unreadable Alias",
+    ),
+    ("git $OPTS push --force origin main", "unreadable Variable"),
+    ("git \"$SUB\" origin main", "unreadable Variable"),
+    (
+        "g() { git \"$@\"; }; g push --force origin main",
+        "unreadable Variable",
+    ),
+    (
+        "git submodule foreach 'git push --force origin main'",
+        "unreadable Runner(git submodule)",
+    ),
+    (
+        "git rebase -x 'git push --force origin main' main",
+        "unreadable Runner(git rebase)",
+    ),
+    (
+        "git bisect run git push --force origin main",
+        "unreadable Runner(git bisect)",
+    ),
+    ("git rebase main", ""),
+    ("git submodule update --init", ""),
     ("alias g='git push'", "unreadable Alias"),
     ("alias g=git", "unreadable Alias"),
     ("git push -n", "push ? dry"),
@@ -158,6 +208,17 @@ const FORCE: &[(&str, &str)] = &[
     ("git push origin +main", "push origin main>main force"),
     ("git push -fu origin main", "push origin main>main force"),
     ("git push --mirror origin", "push origin force all"),
+    ("git push --mirr origin", "push origin force all"),
+    (
+        "git push --force-w origin main",
+        "push origin main>main lease",
+    ),
+    (
+        "git push -4f origin HEAD~1:main",
+        "push origin HEAD~1>main force",
+    ),
+    ("git push --del origin old", "push origin >old delete"),
+    ("git push --dry origin main", "push origin main>main dry"),
     ("git push --all origin", "push origin all"),
     (
         "git push origin 'refs/heads/*'",
@@ -206,7 +267,6 @@ const WRAPPERS: &[(&str, &str)] = &[
     ("exec -a sh git push", "push ?"),
     ("nohup git push &", "push ?"),
     ("time git push", "push ?"),
-    ("xargs git push < list", "push ?"),
     ("/usr/bin/git push", "push ?"),
     ("'C:/Program Files/Git/cmd/git.exe' push", "push ?"),
     ("GIT.EXE push", "push ?"),
@@ -219,6 +279,36 @@ const WRAPPERS: &[(&str, &str)] = &[
         "push origin main>main force",
     ),
     ("A=1 B=2 git push", "push ?"),
+    (
+        "sudo -u git -H git push origin main",
+        "push origin main>main",
+    ),
+    ("env -u git git push origin main", "push origin main>main"),
+    ("flock /tmp/lock git push", "push ?"),
+    (
+        "flock /tmp/lock -c 'git push --force origin main'",
+        "push origin main>main force",
+    ),
+    ("flock -w 5 /tmp/lock git push", "push ?"),
+    (
+        "/usr/lib/git-core/git-push --force origin main",
+        "push origin main>main force",
+    ),
+    ("git-push origin main", "push origin main>main"),
+    (
+        "env \"$GIT\" push --force origin main",
+        "unreadable Variable",
+    ),
+    ("command \"$GIT\" push", "unreadable Variable"),
+    ("sudo \"$GIT\" push", "unreadable Variable"),
+    ("{git,push} --force origin main", "unreadable Variable"),
+    ("git pu{sh,} --force origin main", "unreadable Variable"),
+    ("git {push,} origin main", "unreadable Variable"),
+    (
+        "echo --no-verify | xargs git push",
+        "unreadable Runner(xargs)",
+    ),
+    ("xargs git push < list", "unreadable Runner(xargs)"),
 ];
 
 /// Directories.
@@ -265,6 +355,27 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("GIT_DIR=/x git push", "push ? @?"),
     ("GIT_DIR= git push", "push ?"),
     ("git --git-dir=x log", ""),
+    ("cd /x | true; git push", "push ?"),
+    ("cd /x & git push", "push ?"),
+    ("[ -d /x ] && cd /x; git push", "cd ? ; push ? @?"),
+    ("mkdir -p x && cd x && git push", "cd ? ; push ? @?"),
+    ("trap 'cd /x' EXIT; git push", "push ?"),
+    (
+        "if true; then eval 'cd /x'; fi; git push",
+        "cd ? ; push ? @?",
+    ),
+    ("false || eval 'cd /x'; git push", "cd ? ; push ? @?"),
+    (
+        "export GIT_DIR=/other/.git; git push --force origin main",
+        "cd ? ; push origin main>main force @?",
+    ),
+    (
+        "GIT_DIR=/other; git push origin main",
+        "cd ? ; push origin main>main @?",
+    ),
+    ("pushd +1; git push", "cd ? ; push ? @?"),
+    ("CDPATH=/x cd foo; git push", "cd ? ; push ? @?"),
+    ("CDPATH=/x cd ./foo; git push", "cd ./foo ; push ? @./foo"),
 ];
 
 /// Indirection.
@@ -291,6 +402,46 @@ const INDIRECTION: &[(&str, &str)] = &[
     ("bash <<'EOF'\ngit push\nEOF", "push ?"),
     ("bash -s <<EOF\ngit push $B\nEOF", "unreadable ShellString"),
     ("bash script.sh", ""),
+    (
+        "bash <<< 'git push --force origin main'",
+        "push origin main>main force",
+    ),
+    (
+        "echo 'git push --force origin main' | bash",
+        "unreadable ShellString",
+    ),
+    ("cat script.sh | sh -s", "unreadable ShellString"),
+    (
+        "[[ -n $(git push --force origin main) ]]",
+        "push origin main>main force",
+    ),
+    ("(( $(git push origin main) ))", "push origin main>main"),
+    (
+        "exit $(git push --force origin main)",
+        "push origin main>main force",
+    ),
+    (
+        "echo \"${X:-$(git push --force origin main)}\"",
+        "push origin main>main force",
+    ),
+    (
+        "a=($(git push --force origin main))",
+        "push origin main>main force",
+    ),
+    (
+        "echo $(( $(git push origin main) ))",
+        "push origin main>main",
+    ),
+    (
+        "case x in $(git push origin main)) ;; esac",
+        "push origin main>main",
+    ),
+    (
+        "for ((i=$(git push -f o m); i<1; i++)); do :; done",
+        "push o m>m force",
+    ),
+    ("echo `echo \\`git push\\``", "unreadable Syntax"),
+    ("echo ${X:0:$(git push)}", "push ?"),
     (
         "python3 -c \"import os; os.system('git push')\"",
         "unreadable Runner(python3)",
@@ -405,6 +556,17 @@ fn shells_nest_three_deep_and_the_fourth_is_unreadable() {
     let three = nest(&nest(&nest("git push origin main")));
     assert_eq!(show(&classify(&three)), "push origin main>main");
     assert_eq!(show(&classify(&nest(&three))), "unreadable Nesting");
+}
+
+/// The parser recurses on `$(`; past the cap the script is unreadable before it runs, so a
+/// thousand-deep script cannot abort the hook.
+#[test]
+fn substitutions_nest_sixteen_deep_and_deeper_is_unreadable_without_parsing() {
+    let nest = |n: usize| format!("{}git push{}", "echo $(".repeat(n), ")".repeat(n));
+    assert_eq!(show(&classify(&nest(16))), "push ?");
+    assert_eq!(show(&classify(&nest(17))), "unreadable Syntax");
+    assert_eq!(show(&classify(&nest(2000))), "unreadable Syntax");
+    assert_eq!(show(&classify(&"(".repeat(2000))), "unreadable Syntax");
 }
 
 #[test]

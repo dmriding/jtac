@@ -2,7 +2,6 @@
 //! the programs that run a string this reader will not open.
 
 use super::program::{base_name, names_a_shell, runs_a_string};
-
 use super::{Action, MAX_NESTING, Unread, classify_at, sealed};
 use crate::shell::{Simple, Word};
 
@@ -13,9 +12,21 @@ fn unreadable(cmd: &Simple, why: Unread) -> Vec<Action> {
     }]
 }
 
-/// The script a shell, `eval` or `trap` runs, classified as the script it is. `eval` and
-/// `trap` run in this shell, so their `cd` stands; a child shell's dies with it. `busybox sh
-/// -c` carries the applet word first.
+// A body that may not have run names no directory.
+fn unplaced(actions: Vec<Action>) -> Vec<Action> {
+    actions
+        .into_iter()
+        .map(|a| match a {
+            Action::ChangeDir { raw, .. } => Action::ChangeDir { to: None, raw },
+            other => other,
+        })
+        .collect()
+}
+
+/// The script a shell, `eval` or `trap` runs, classified as the script it is. `eval` runs in
+/// this shell, so its `cd` stands unless the `eval` itself may not run; a child shell's dies
+/// with it; a trap body runs at exit, after everything here. `busybox sh -c` carries the
+/// applet word first.
 pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
     if depth >= MAX_NESTING {
         return unreadable(cmd, Unread::Nesting);
@@ -25,7 +36,7 @@ pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
         return match trap_script(cmd, first) {
             None => Vec::new(),
             Some(w) if w.unresolved => unreadable(cmd, Unread::ShellString),
-            Some(w) => classify_at(&w.text, depth + 1),
+            Some(w) => sealed(classify_at(&w.text, depth + 1)),
         };
     }
     if program.eq_ignore_ascii_case("eval") {
@@ -38,14 +49,19 @@ pub(crate) fn indirect(cmd: &Simple, first: usize, depth: u8) -> Vec<Action> {
             .map(|w| w.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        return classify_at(&joined, depth + 1);
+        let acts = classify_at(&joined, depth + 1);
+        return if cmd.conditional {
+            unplaced(acts)
+        } else {
+            acts
+        };
     }
     let first = first + usize::from(names_a_shell(cmd.at(first)));
     let script = match script_word_at(cmd, first) {
         Some(i) => &cmd.words[i],
-        // `bash <<'EOF'`, `sh -s <<EOF`: the heredoc is the script.
         None => match &cmd.heredoc {
             Some(h) => h,
+            None if cmd.piped => return unreadable(cmd, Unread::ShellString),
             None if cmd
                 .words
                 .iter()

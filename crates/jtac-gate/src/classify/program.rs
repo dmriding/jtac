@@ -1,6 +1,7 @@
 //! Which program a command runs once the wrappers are stepped over, and where a wrapper or
 //! a `cd` puts it. Names are matched by file name without regard to case: `/usr/bin/git`,
-//! `GIT.EXE` and `\git` are all git.
+//! `GIT.EXE`, `\git` and `git-push` are all git. A wrapper's options are read as the wrapper
+//! reads them, so `sudo -u git git push` finds the second word.
 
 use super::Action;
 use crate::shell::{Simple, Word};
@@ -9,18 +10,141 @@ use crate::shell::{Simple, Word};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Program {
     Git,
-    /// A shell, `eval` or `trap`: the real command is inside a word.
+    /// A shell, `eval`, `trap`, or a wrapper's `-c` string: the real command is inside a word.
     Indirect,
     ChangeDir,
     Other,
 }
 
-/// Programs that hand their tail through unchanged. A name belongs here only when the program
-/// runs its tail as an argv in this same directory; one that also takes a directory of its own
-/// is answered in `wrapper_chdir` too (`env -C`, `sudo -D`).
-const WRAPPERS: [&str; 15] = [
-    "env", "command", "builtin", "exec", "sudo", "nice", "time", "nohup", "xargs", "doas",
-    "timeout", "setsid", "stdbuf", "ionice", "flock",
+/// A program that hands its tail through. `short` are the option letters that take a value,
+/// `long` the long options that take one as a separate word, `positionals` the words of its
+/// own before the command, `script` the letter that makes the next word a shell string.
+struct Wrapper {
+    name: &'static str,
+    short: &'static str,
+    long: &'static [&'static str],
+    positionals: u8,
+    script: Option<char>,
+}
+
+const WRAPPERS: [Wrapper; 14] = [
+    Wrapper {
+        name: "env",
+        short: "uCS",
+        long: &[
+            "unset",
+            "chdir",
+            "block-signal",
+            "default-signal",
+            "ignore-signal",
+            "split-string",
+        ],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "sudo",
+        short: "ughpCTUrtDR",
+        long: &[
+            "user",
+            "group",
+            "host",
+            "prompt",
+            "close-from",
+            "type",
+            "other-user",
+            "role",
+            "command-timeout",
+            "chdir",
+            "chroot",
+        ],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "doas",
+        short: "uC",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "nice",
+        short: "n",
+        long: &["adjustment"],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "timeout",
+        short: "sk",
+        long: &["signal", "kill-after"],
+        positionals: 1,
+        script: None,
+    },
+    Wrapper {
+        name: "stdbuf",
+        short: "ioe",
+        long: &["input", "output", "error"],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "ionice",
+        short: "cnp",
+        long: &["class", "classdata", "pid"],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "flock",
+        short: "wEs",
+        long: &["wait", "timeout", "conflict-exit-code"],
+        positionals: 1,
+        script: Some('c'),
+    },
+    Wrapper {
+        name: "exec",
+        short: "a",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "command",
+        short: "",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "builtin",
+        short: "",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "time",
+        short: "",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "nohup",
+        short: "",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
+    Wrapper {
+        name: "setsid",
+        short: "",
+        long: &[],
+        positionals: 0,
+        script: None,
+    },
 ];
 
 /// Shells this reader opens with `-c`, plus the two builtins that run a word as a script.
@@ -54,7 +178,7 @@ const SHELL_NAMES: [&str; 20] = [
 
 /// Programs that take a program as a string, or run one somewhere this text does not name.
 /// A program that merely takes text does not belong here.
-const RUNS_A_STRING: [&str; 35] = [
+const RUNS_A_STRING: [&str; 36] = [
     "ssh",
     "plink",
     "mosh",
@@ -72,6 +196,7 @@ const RUNS_A_STRING: [&str; 35] = [
     "tmux",
     "byobu",
     "parallel",
+    "xargs",
     "watch",
     "entr",
     "watchexec",
@@ -121,7 +246,7 @@ const INTERPRETERS: [&str; 21] = [
 /// a sourced file can `cd` anywhere.
 const LOSES_THE_DIRECTORY: [&str; 3] = ["popd", "source", "."];
 
-/// The program and the index of its first argument.
+/// The program and the index of its first argument (for `Other`, of the program word).
 pub(crate) fn program_of(cmd: &Simple) -> (Program, usize) {
     let mut i = 0;
     loop {
@@ -137,25 +262,70 @@ pub(crate) fn program_of(cmd: &Simple) -> (Program, usize) {
             Some(Named::Git) => return (Program::Git, i + 1),
             Some(Named::Shell) => return (Program::Indirect, i + 1),
             Some(Named::Cd) => return (Program::ChangeDir, i + 1),
-            // Search forward rather than skip flags: `nice -n 10 git push` has a value word.
-            Some(Named::Wrapper) => {
-                let start = if base_name(t).eq_ignore_ascii_case("exec") {
-                    after_exec_options(cmd, i + 1)
-                } else {
-                    i + 1
-                };
-                match next_program(
-                    cmd,
-                    start,
-                    |t| matches!(named(t), Some(p) if p != Named::Wrapper),
-                ) {
-                    Some(n) => i = n,
-                    None => return (Program::Other, i),
-                }
-            }
+            Some(Named::Wrapper(spec)) => match after_wrapper(cmd, i + 1, spec) {
+                After::Command(n) => i = n,
+                After::Script(n) => return (Program::Indirect, n),
+                After::Nothing => return (Program::Other, i),
+            },
             None => return (Program::Other, i),
         }
     }
+}
+
+enum After {
+    /// The wrapped command starts here.
+    Command(usize),
+    /// A `-c` makes the word after this index a shell string.
+    Script(usize),
+    Nothing,
+}
+
+// Read as getopt reads: an option's value is the rest of its cluster, else the next word.
+fn after_wrapper(cmd: &Simple, from: usize, spec: &Wrapper) -> After {
+    let mut i = from;
+    let mut positionals = spec.positionals;
+    while let Some(w) = cmd.words.get(i) {
+        let t = w.text.as_str();
+        if t == "--" {
+            return cmd
+                .words
+                .get(i + 1)
+                .map_or(After::Nothing, |_| After::Command(i + 1));
+        }
+        if let Some(long) = t.strip_prefix("--") {
+            i += if !long.contains('=') && spec.long.contains(&long) {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        if let Some(short) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
+            let mut step = 1;
+            for (k, c) in short.char_indices() {
+                if spec.script == Some(c) {
+                    return After::Script(i);
+                }
+                if spec.short.contains(c) {
+                    step = if k + 1 == short.len() { 2 } else { 1 };
+                    break;
+                }
+            }
+            i += step;
+            continue;
+        }
+        if spec.name == "env" && is_assignment(t) {
+            i += 1;
+            continue;
+        }
+        if positionals > 0 {
+            positionals -= 1;
+            i += 1;
+            continue;
+        }
+        return After::Command(i);
+    }
+    After::Nothing
 }
 
 /// `KEY=value`, not a path with an `=` in it.
@@ -170,17 +340,16 @@ pub(crate) fn is_assignment(t: &str) -> bool {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Named {
     Git,
     Shell,
     Cd,
-    Wrapper,
+    Wrapper(&'static Wrapper),
 }
 
 fn named(token: &str) -> Option<Named> {
     let n = base_name(token);
-    if n.eq_ignore_ascii_case("git") {
+    if n.eq_ignore_ascii_case("git") || n.len() > 4 && n[..4].eq_ignore_ascii_case("git-") {
         return Some(Named::Git);
     }
     if PARSED_SHELLS.iter().any(|s| n.eq_ignore_ascii_case(s)) {
@@ -193,10 +362,10 @@ fn named(token: &str) -> Option<Named> {
     {
         return Some(Named::Cd);
     }
-    if WRAPPERS.iter().any(|s| n.eq_ignore_ascii_case(s)) {
-        return Some(Named::Wrapper);
-    }
-    None
+    WRAPPERS
+        .iter()
+        .find(|w| n.eq_ignore_ascii_case(w.name))
+        .map(Named::Wrapper)
 }
 
 /// The file name of a program word: path and `.exe` stripped, the alias-skipping `\` too.
@@ -226,31 +395,6 @@ pub(crate) fn names_a_shell(text: &str) -> bool {
     SHELL_NAMES.iter().any(|s| n.eq_ignore_ascii_case(s))
 }
 
-/// The first word at or after `from` for which `is_program` holds.
-fn next_program(cmd: &Simple, from: usize, is_program: impl Fn(&str) -> bool) -> Option<usize> {
-    cmd.words
-        .iter()
-        .enumerate()
-        .skip(from)
-        .find(|(_, w)| is_program(&w.text))
-        .map(|(i, _)| i)
-}
-
-// `exec -a NAME` takes NAME as the child's argv[0], and NAME may be `git`.
-fn after_exec_options(cmd: &Simple, mut i: usize) -> usize {
-    while let Some(w) = cmd.words.get(i) {
-        let t = w.text.as_str();
-        if t == "--" {
-            return i + 1;
-        }
-        if !t.starts_with('-') {
-            return i;
-        }
-        i += if t == "-a" { 2 } else { 1 };
-    }
-    i
-}
-
 /// Where a wrapper puts the command it wraps.
 pub(crate) enum Chdir {
     /// A directory the text names.
@@ -270,17 +414,90 @@ pub(crate) fn wrapper_chdir(cmd: &Simple) -> Option<Chdir> {
             i += 1;
             continue;
         }
-        let n = base_name(t);
-        if n.eq_ignore_ascii_case("env") {
-            return env_chdir(cmd, i + 1);
+        let Some(Named::Wrapper(spec)) = named(t) else {
+            return None;
+        };
+        if let Some(found) = chdir_options(cmd, i + 1, spec) {
+            return Some(found);
         }
-        if n.eq_ignore_ascii_case("sudo") || n.eq_ignore_ascii_case("doas") {
-            return sudo_chdir(cmd, i + 1);
+        match after_wrapper(cmd, i + 1, spec) {
+            After::Command(n) => i = n,
+            After::Script(_) | After::Nothing => return None,
         }
-        match named(t) {
-            Some(Named::Wrapper) => i = next_program(cmd, i + 1, |t| named(t).is_some())?,
-            _ => return None,
+    }
+    None
+}
+
+// `env -C`/`--chdir`, `env -S`, `sudo -D`/`--chdir`, `sudo -R`/`--chroot`; `doas -C` is a
+// config file. Read left to right so an option's value is never read as another option.
+fn chdir_options(cmd: &Simple, from: usize, spec: &Wrapper) -> Option<Chdir> {
+    if !matches!(spec.name, "env" | "sudo") {
+        return None;
+    }
+    let (dir_letter, lost_letter) = if spec.name == "env" {
+        ('C', 'S')
+    } else {
+        ('D', 'R')
+    };
+    let mut i = from;
+    while let Some(w) = cmd.words.get(i) {
+        let t = w.text.as_str();
+        if t == "--" || !(t.starts_with('-') || is_assignment(t)) {
+            return None;
         }
+        if let Some(long) = t.strip_prefix("--") {
+            let (name, value) = long
+                .split_once('=')
+                .map_or((long, None), |(n, v)| (n, Some(v)));
+            match name {
+                "split-string" | "chroot" => {
+                    return Some(if name == "chroot" {
+                        Chdir::Unnamed
+                    } else {
+                        Chdir::Split
+                    });
+                }
+                "chdir" => {
+                    return Some(match value {
+                        Some(v) => chdir_to(&Word {
+                            text: v.to_string(),
+                            unresolved: w.unresolved,
+                        }),
+                        None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
+                    });
+                }
+                _ => {
+                    i += if value.is_none() && spec.long.contains(&name) {
+                        2
+                    } else {
+                        1
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(short) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
+            let mut step = 1;
+            for (k, c) in short.char_indices() {
+                if c == lost_letter {
+                    return Some(if spec.name == "env" {
+                        Chdir::Split
+                    } else {
+                        Chdir::Unnamed
+                    });
+                }
+                if c == dir_letter {
+                    return Some(attached_or_next(cmd, i, &short[k + 1..], w.unresolved));
+                }
+                if spec.short.contains(c) {
+                    step = if k + 1 == short.len() { 2 } else { 1 };
+                    break;
+                }
+            }
+            i += step;
+            continue;
+        }
+        i += 1;
     }
     None
 }
@@ -306,122 +523,10 @@ fn attached_or_next(cmd: &Simple, i: usize, rest: &str, unresolved: bool) -> Chd
     }
 }
 
-// Read left to right as getopt does: `-uC` unsets a variable named C, `-iC ../x` moves.
-fn env_chdir(cmd: &Simple, from: usize) -> Option<Chdir> {
-    let mut i = from;
-    'word: while let Some(w) = cmd.words.get(i) {
-        let t = w.text.as_str();
-        if t == "--" {
-            return None;
-        }
-        if let Some(long) = t.strip_prefix("--") {
-            let (name, value) = long
-                .split_once('=')
-                .map_or((long, None), |(n, v)| (n, Some(v)));
-            match name {
-                "split-string" => return Some(Chdir::Split),
-                "chdir" => {
-                    return Some(match value {
-                        Some(v) => chdir_to(&Word {
-                            text: v.to_string(),
-                            unresolved: w.unresolved,
-                        }),
-                        None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
-                    });
-                }
-                "unset" | "block-signal" | "default-signal" | "ignore-signal"
-                    if value.is_none() =>
-                {
-                    i += 2
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-        if let Some(short) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
-            for (k, c) in short.char_indices() {
-                match c {
-                    'S' => return Some(Chdir::Split),
-                    'C' => return Some(attached_or_next(cmd, i, &short[k + 1..], w.unresolved)),
-                    'u' => {
-                        i += if k + 1 == short.len() { 2 } else { 1 };
-                        continue 'word;
-                    }
-                    _ => {}
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if !is_assignment(t) {
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
-
-// `sudo -D DIR` is `env -C`; `-R`/`--chroot` goes somewhere this reader will not follow.
-// `doas -C` names a config file, so `C` is a value option here.
-fn sudo_chdir(cmd: &Simple, from: usize) -> Option<Chdir> {
-    const TAKES_A_VALUE: [char; 9] = ['u', 'g', 'h', 'p', 'C', 'T', 'U', 'r', 't'];
-    let mut i = from;
-    'word: while let Some(w) = cmd.words.get(i) {
-        let t = w.text.as_str();
-        if t == "--" {
-            return None;
-        }
-        if let Some(long) = t.strip_prefix("--") {
-            let (name, value) = long
-                .split_once('=')
-                .map_or((long, None), |(n, v)| (n, Some(v)));
-            match name {
-                "chroot" => return Some(Chdir::Unnamed),
-                "chdir" => {
-                    return Some(match value {
-                        Some(v) => chdir_to(&Word {
-                            text: v.to_string(),
-                            unresolved: w.unresolved,
-                        }),
-                        None => cmd.words.get(i + 1).map_or(Chdir::Unnamed, chdir_to),
-                    });
-                }
-                "user" | "group" | "host" | "prompt" | "close-from" | "type" | "other-user"
-                | "role" | "command-timeout"
-                    if value.is_none() =>
-                {
-                    i += 2;
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-        if let Some(short) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
-            for (k, c) in short.char_indices() {
-                match c {
-                    'R' => return Some(Chdir::Unnamed),
-                    'D' => return Some(attached_or_next(cmd, i, &short[k + 1..], w.unresolved)),
-                    c if TAKES_A_VALUE.contains(&c) => {
-                        i += if k + 1 == short.len() { 2 } else { 1 };
-                        continue 'word;
-                    }
-                    _ => {}
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if !is_assignment(t) {
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
-
-/// `cd <dir>`: `None` when the text does not name where it lands. `~` and `~/x` do name it;
-/// `~user/x` does not.
-pub(crate) fn change_dir(cmd: &Simple, first: usize) -> Action {
+/// `cd <dir>`: `None` when the text does not name where it lands: a word the shell builds,
+/// `cd -`, `pushd +1`, `~user/x`, a body that may not run, or a bare name while `CDPATH` is
+/// set in this script, since `cd` then searches for it.
+pub(crate) fn change_dir(cmd: &Simple, first: usize, cdpath: bool) -> Action {
     let verb = base_name(cmd.at(first.saturating_sub(1)));
     let lost = cmd.conditional
         || LOSES_THE_DIRECTORY
@@ -436,8 +541,11 @@ pub(crate) fn change_dir(cmd: &Simple, first: usize) -> Action {
             .find(|w| !matches!(w.text.as_str(), "-P" | "-L" | "-e" | "-@" | "--"))
             .filter(|w| {
                 !w.unresolved
-                    && !w.text.starts_with('-')
+                    && !w.text.starts_with(['-', '+'])
                     && (!w.text.starts_with('~') || w.text == "~" || w.text.starts_with("~/"))
+                    && !(cdpath
+                        && !w.text.starts_with(['.', '/', '\\', '~'])
+                        && !is_absolute(&w.text))
             })
             .map(|w| w.text.clone())
     };
@@ -449,10 +557,7 @@ pub(crate) fn change_dir(cmd: &Simple, first: usize) -> Action {
 
 /// `a` then `b`; an absolute `b` wins.
 pub(crate) fn join_dir(a: &str, b: &str) -> String {
-    if b.is_empty() || is_absolute(b) {
-        return b.to_string();
-    }
-    if a.is_empty() {
+    if b.is_empty() || is_absolute(b) || a.is_empty() {
         return b.to_string();
     }
     format!("{}/{b}", a.trim_end_matches('/'))

@@ -27,8 +27,11 @@ pub(crate) struct Simple {
     /// Inside an `if`, a loop, a `case`, a function body, or after `||`: the shell may never
     /// run it, so a `cd` here names no directory.
     pub conditional: bool,
-    /// The heredoc on its stdin, if any.
+    /// The heredoc or here-string on its stdin, if any.
     pub heredoc: Option<Word>,
+    /// Its stdin is another command's output, so a shell here reads a script this text does
+    /// not hold.
+    pub piped: bool,
 }
 
 /// A command, or a subshell whose commands run in a copy of the shell.

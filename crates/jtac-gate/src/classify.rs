@@ -179,27 +179,33 @@ fn classify_at(script: &str, depth: u8) -> Vec<Action> {
         }],
         Ok(items) => {
             let mut out = Vec::new();
-            walk(&items, depth, &mut Dir::Here, &mut out);
+            let cdpath = sets_cdpath(&items);
+            walk(&items, depth, cdpath, &mut Dir::Here, &mut out);
             out
         }
     }
 }
 
-fn walk(items: &[Item], depth: u8, here: &mut Dir, out: &mut Vec<Action>) {
+// `CDPATH=…` anywhere in the script makes a bare `cd name` a search, not a path.
+fn sets_cdpath(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Command(c) => c.words.iter().any(|w| w.text.starts_with("CDPATH=")),
+        Item::Subshell(inner) => sets_cdpath(inner),
+    })
+}
+
+fn walk(items: &[Item], depth: u8, cdpath: bool, here: &mut Dir, out: &mut Vec<Action>) {
     for item in items {
         match item {
             Item::Subshell(inner) => {
                 let mut child = here.clone();
                 let mut acts = Vec::new();
-                walk(inner, depth, &mut child, &mut acts);
-                out.extend(
-                    acts.into_iter()
-                        .filter(|a| !matches!(a, Action::ChangeDir { .. })),
-                );
+                walk(inner, depth, cdpath, &mut child, &mut acts);
+                out.extend(sealed(acts));
             }
             Item::Command(cmd) => {
                 let base = here.clone();
-                for a in one(cmd, depth) {
+                for a in one(cmd, depth, cdpath) {
                     if let Action::ChangeDir { to, .. } = &a {
                         *here = here.then(to.as_deref());
                     }
@@ -212,8 +218,8 @@ fn walk(items: &[Item], depth: u8, here: &mut Dir, out: &mut Vec<Action>) {
 
 // The actions of one command, with directories relative to the shell's position before it.
 // A wrapper's own chdir (`env -C`, `sudo -D`) moves what it wraps and nothing else.
-fn one(cmd: &Simple, depth: u8) -> Vec<Action> {
-    if let Some(a) = git::exported_bypass(cmd) {
+fn one(cmd: &Simple, depth: u8, cdpath: bool) -> Vec<Action> {
+    if let Some(a) = git::exported(cmd) {
         return vec![a];
     }
     let (prog, first) = program::program_of(cmd);
@@ -226,7 +232,7 @@ fn one(cmd: &Simple, depth: u8) -> Vec<Action> {
     let acts = match prog {
         program::Program::Git => git::git(cmd, first).into_iter().collect(),
         program::Program::Indirect => indirect::indirect(cmd, first, depth),
-        program::Program::ChangeDir => vec![program::change_dir(cmd, first)],
+        program::Program::ChangeDir => vec![program::change_dir(cmd, first, cdpath)],
         program::Program::Other => indirect::runner(cmd, first).into_iter().collect(),
     };
     match program::wrapper_chdir(cmd) {
