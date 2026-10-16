@@ -7,6 +7,7 @@ use super::{Action, Bypass, Dir, Force, Push, Unread};
 use crate::shell::{Simple, Word};
 
 /// What a `KEY=value` word does to every git command that sees it in its environment.
+#[derive(Clone)]
 enum Env {
     Bypass(Bypass),
     /// `alias.*`: the command that runs is not in the text.
@@ -93,6 +94,9 @@ pub(crate) fn exported(cmd: &Simple) -> Option<Action> {
         .is_some_and(|w| matches!(base_name(&w.text), "builtin" | "command"))
     {
         i += 1;
+        while cmd.words.get(i).is_some_and(|w| w.text.starts_with('-')) {
+            i += 1;
+        }
     }
     let decl = matches!(
         base_name(cmd.at(i)),
@@ -101,15 +105,28 @@ pub(crate) fn exported(cmd: &Simple) -> Option<Action> {
     if !(bare || decl) {
         return None;
     }
-    let raw = cmd.raw.clone();
-    let words = cmd.words.iter().skip(if bare { 0 } else { i + 1 });
-    let effect = words.clone().find_map(env_effect).or_else(|| {
-        words
-            .clone()
-            .any(|w| !w.text.contains('=') && git_reads(&w.text))
-            .then_some(Env::Opaque)
-    });
-    effect.map(|e| env_action(e, raw))
+    let words: Vec<&Word> = cmd
+        .words
+        .iter()
+        .skip(if bare { 0 } else { i + 1 })
+        .collect();
+    let nameref = words
+        .iter()
+        .any(|w| w.text.starts_with('-') && w.text.contains('n'));
+    let hidden = |w: &&Word| {
+        let (key, value) = w.text.split_once('=').unwrap_or((&w.text, ""));
+        (value.is_empty() && git_reads(key))
+            || (w.unresolved && !is_assignment(&w.text))
+            || (nameref && git_reads(value))
+    };
+    let effects: Vec<Env> = words.iter().filter_map(|w| env_effect(w)).collect();
+    let pick = |f: fn(&&Env) -> bool| effects.iter().find(f);
+    let effect = pick(|e| matches!(e, Env::Bypass(_)))
+        .or_else(|| pick(|e| matches!(e, Env::Alias | Env::Include)))
+        .or_else(|| pick(|e| matches!(e, Env::Opaque)))
+        .or_else(|| words.iter().any(hidden).then_some(&Env::Opaque))
+        .or_else(|| pick(|e| matches!(e, Env::Retarget)));
+    effect.map(|e| env_action(e.clone(), cmd.raw.clone()))
 }
 
 /// Does `t` spell `full`, in full or as the abbreviation git accepts? Five characters is the
@@ -167,7 +184,10 @@ fn config_write(args: &[Word]) -> ConfigWrite {
         if std::mem::take(&mut file_value) {
             continue;
         }
-        file_value = matches!(lower.as_str(), "-f" | "--file" | "--blob");
+        file_value = matches!(
+            lower.as_str(),
+            "-f" | "--file" | "--blob" | "--comment" | "--default" | "-t" | "--type" | "--value"
+        );
         if lower.starts_with("--get")
             || lower.starts_with("--unset")
             || matches!(lower.as_str(), "-l" | "--list")
@@ -374,8 +394,9 @@ pub(crate) fn git(cmd: &Simple, first: usize) -> Option<Action> {
     }
 }
 
-/// Every long option of `git push`, so an abbreviation resolves as git resolves it.
-const PUSH_LONGS: [&str; 28] = [
+/// Every long option of `git push` and its `--no-` form, so an abbreviation resolves as git
+/// resolves it and a later `--no-dry-run` undoes an earlier `-n`.
+const PUSH_LONGS: [&str; 54] = [
     "--all",
     "--atomic",
     "--branches",
@@ -389,7 +410,6 @@ const PUSH_LONGS: [&str; 28] = [
     "--ipv4",
     "--ipv6",
     "--mirror",
-    "--no-verify",
     "--porcelain",
     "--progress",
     "--prune",
@@ -404,6 +424,33 @@ const PUSH_LONGS: [&str; 28] = [
     "--thin",
     "--verbose",
     "--verify",
+    "--no-all",
+    "--no-atomic",
+    "--no-branches",
+    "--no-delete",
+    "--no-dry-run",
+    "--no-exec",
+    "--no-follow-tags",
+    "--no-force",
+    "--no-force-if-includes",
+    "--no-force-with-lease",
+    "--no-ipv4",
+    "--no-ipv6",
+    "--no-mirror",
+    "--no-porcelain",
+    "--no-progress",
+    "--no-prune",
+    "--no-push-option",
+    "--no-quiet",
+    "--no-receive-pack",
+    "--no-recurse-submodules",
+    "--no-repo",
+    "--no-set-upstream",
+    "--no-signed",
+    "--no-tags",
+    "--no-thin",
+    "--no-verbose",
+    "--no-verify",
 ];
 
 /// Long options of `git push` whose value is a separate word.
@@ -482,18 +529,30 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
                 p.force = Force::Force;
             }
             Some("--all" | "--branches") => p.all_refs = true,
+            Some("--no-all" | "--no-branches" | "--no-mirror") => p.all_refs = false,
             Some("--dry-run") => p.dry_run = true,
+            Some("--no-dry-run") => p.dry_run = false,
             Some("--force-with-lease") => {
                 if p.force == Force::No {
                     p.force = Force::WithLease;
                 }
             }
             Some("--force") => p.force = Force::Force,
+            Some("--no-force" | "--no-force-with-lease") => p.force = Force::No,
             Some("--delete") => {
                 p.delete = true;
                 delete_flag = true;
             }
+            Some("--no-delete") => {
+                p.delete = false;
+                delete_flag = false;
+            }
             Some("--no-verify") => p.bypass = Some(Bypass::NoVerify),
+            Some("--verify") => {
+                if p.bypass == Some(Bypass::NoVerify) {
+                    p.bypass = bypass;
+                }
+            }
             Some("--repo") if t.contains('=') => {
                 repo_flag = t.split_once('=').map(|(_, v)| v.to_string());
             }

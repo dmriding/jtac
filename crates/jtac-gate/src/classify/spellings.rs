@@ -188,6 +188,36 @@ const BYPASSES: &[(&str, &str)] = &[
         "git push -o -- --no-verify origin main",
         "push origin main>main bypass=NoVerify",
     ),
+    (
+        "git push --no-verify --verify origin main",
+        "push origin main>main",
+    ),
+    (
+        "git config --comment --get core.hooksPath /tmp/x",
+        "bypass ConfigWrite",
+    ),
+    (
+        "git config set --comment --get core.hooksPath /tmp/y",
+        "bypass ConfigWrite",
+    ),
+    (
+        "command -p export GIT_CONFIG_PARAMETERS=\"'core.hookspath=/tmp/x'\"; git push origin main",
+        "bypass ConfigParameters ; push origin main>main",
+    ),
+    ("command -- export GIT_DIR=/x; git push", "cd ? ; push ? @?"),
+    (
+        "declare -n x=GIT_CONFIG_PARAMETERS; export x=y",
+        "unreadable Variable",
+    ),
+    (
+        "N=GIT_CONFIG_PARAMETERS; export \"$N=x\"; git push",
+        "unreadable Variable ; push ?",
+    ),
+    ("export PATH=\"$PATH:/x\"; git push", "push ?"),
+    (
+        "export GIT_DIR=.git GIT_CONFIG_PARAMETERS=\"'core.hookspath=/y'\"; git push",
+        "bypass ConfigParameters ; push ?",
+    ),
     ("git commit -m -- --no-verify", "bypass NoVerify"),
     (
         "git -c include.path=/tmp/x push origin main",
@@ -280,6 +310,20 @@ const FORCE: &[(&str, &str)] = &[
     ),
     (
         "git push --no-force-with-lease origin main",
+        "push origin main>main",
+    ),
+    (
+        "git push -n --no-dry-run origin main",
+        "push origin main>main",
+    ),
+    ("git push -n --no-dry origin main", "push origin main>main"),
+    (
+        "git push -f --no-force origin main",
+        "push origin main>main",
+    ),
+    ("git push --mirror --no-mirror origin", "push origin force"),
+    (
+        "git push -d --no-delete origin main",
         "push origin main>main",
     ),
     (
@@ -553,6 +597,14 @@ const INDIRECTION: &[(&str, &str)] = &[
     ("echo x | true; bash -c 'git push'", "push ?"),
     ("echo x | bash <<< 'git push'", "push ?"),
     (
+        "printf 'git push' | bash 3<&0 <<< 'true' 0<&3",
+        "unreadable ShellString",
+    ),
+    (
+        "a | b | c | d | e | f | g | h | i | j | k | l | m | n | o | p | q | git push",
+        "push ?",
+    ),
+    (
         "[[ -n $(git push --force origin main) ]]",
         "push origin main>main force",
     ),
@@ -583,6 +635,15 @@ const INDIRECTION: &[(&str, &str)] = &[
     ),
     ("echo `echo \\`git push\\``", "unreadable Syntax"),
     ("git commit -m \"fix \\`x\\`\"", ""),
+    (
+        "echo '`'; x=`echo \\`git push --no-verify origin main\\``",
+        "unreadable Syntax",
+    ),
+    (
+        "cat <<'EOF'\n`\nEOF\nx=`echo \\`git push\\``",
+        "unreadable Syntax",
+    ),
+    ("echo \"`echo \\`git push\\``\"", "unreadable Syntax"),
     (
         "a=`date`; b=`date`; c=`date`; d=`date`; e=`date`; f=`date`; g=`date`; h=`date`; i=`date`; git push",
         "push ?",
@@ -715,26 +776,45 @@ fn substitutions_nest_sixteen_deep_and_deeper_is_unreadable_without_parsing() {
     assert_eq!(show(&classify(&"(".repeat(2000))), "unreadable Syntax");
 }
 
-/// Each shape dies on a 2 MB stack at about twice its cap; the cap keeps the parser off it.
+/// Every shape the parser recurses on, filled to the size cap: the parser thread has the
+/// stack for each, and a plain long script is not refused for its length. Arithmetic and
+/// test bodies are the exception, capped because the parser is quadratic in them.
 #[test]
-fn shape_caps_stop_the_parser_recursing() {
-    let chain = |n: usize| format!("{}git push", "true && ".repeat(n));
-    assert_eq!(show(&classify(&chain(1024))), "push ?");
-    assert_eq!(show(&classify(&chain(1025))), "unreadable Syntax");
-    assert_eq!(
-        show(&classify(&format!("{}git push", "true | ".repeat(1025)))),
-        "unreadable Syntax"
-    );
-    let ifs = |n: usize| format!("{}git push{}", "if true; then ".repeat(n), "; fi".repeat(n));
-    assert_eq!(show(&classify(&ifs(20))), "push ?");
-    assert_eq!(show(&classify(&ifs(21))), "unreadable Syntax");
-    let not = |n: usize| format!("(( {}1 ))", "!".repeat(n));
-    assert_eq!(show(&classify(&not(390))), "");
-    assert_eq!(show(&classify(&not(401))), "unreadable Syntax");
-    assert_eq!(
-        show(&classify(&format!("(( {}1 ))", "1+".repeat(300)))),
-        "unreadable Syntax"
-    );
+fn every_shape_under_the_size_cap_parses_without_aborting() {
+    let fill = |unit: &str, tail: &str| {
+        let n = (super::MAX_BYTES - tail.len() - 1) / unit.len();
+        format!("{}{tail}", unit.repeat(n))
+    };
+    assert_eq!(show(&classify(&fill("time ", "git push"))), "push ?");
+    assert_eq!(show(&classify(&fill("true && ", "git push"))), "push ?");
+    assert_eq!(show(&classify(&fill("true || ", "git push"))), "push ?");
+    assert_eq!(show(&classify(&fill("true | ", "git push"))), "push ?");
+    assert_eq!(show(&classify(&fill("x=1;", "git push"))), "push ?");
+    let n = (super::MAX_BYTES - 16) / "if :; then ;fi".len();
+    for shape in [
+        fill("coproc ", "true"),
+        fill("! ", "git push"),
+        format!("{}git push{}", "if :; then ".repeat(n), ";fi".repeat(n)),
+        format!("if :; then\n{}fi", "echo a | cat\n".repeat(4000)),
+    ] {
+        assert!(shape.len() <= super::MAX_BYTES);
+        classify(&shape);
+    }
+    let arith = |unit: &str, n: usize| format!("(( {}1 ))", unit.repeat(n));
+    assert_eq!(show(&classify(&arith("1+", 500))), "");
+    assert_eq!(show(&classify(&arith("a=", 500))), "");
+    assert_eq!(show(&classify("[[ -n x && -n x ]] && git push")), "push ?");
+    for over in [
+        arith("1+", 513),
+        arith("a?", 513),
+        arith("!", 1025),
+        format!("echo ${{a[{}1]}}", "1+".repeat(513)),
+        format!("[ {} ]", "-n x -a ".repeat(130)),
+        format!("(( {}0{} ))", "a[".repeat(17), "]".repeat(17)),
+        format!("echo ${{{}0{}}}", "a[".repeat(17), "]".repeat(17)),
+    ] {
+        assert_eq!(show(&classify(&over)), "unreadable Syntax", "{over}");
+    }
 }
 
 #[test]

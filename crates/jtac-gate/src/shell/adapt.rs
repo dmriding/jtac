@@ -5,10 +5,11 @@
 
 use shuck_ast::{
     ArithmeticExpr, ArithmeticExprNode, ArithmeticLvalue, ArrayElem, AssignmentValue, BinaryOp,
-    BourneParameterExpansion, BuiltinCommand, Command, CompoundCommand, ConditionalExpr,
-    DeclClause, DeclOperand, HeredocBodyPart, ParameterExpansion, ParameterExpansionSyntax,
-    Pattern, PatternPart, Redirect, RedirectKind, RedirectTarget, SimpleCommand, Span, Stmt,
-    StmtSeq, StmtTerminator, Word as AstWord, WordPart, static_command_name_text,
+    BourneParameterExpansion, BuiltinCommand, Command, CommandSubstitutionSyntax, CompoundCommand,
+    ConditionalExpr, DeclClause, DeclOperand, HeredocBodyPart, ParameterExpansion,
+    ParameterExpansionSyntax, Pattern, PatternPart, Redirect, RedirectKind, RedirectTarget,
+    SimpleCommand, Span, Stmt, StmtSeq, StmtTerminator, Word as AstWord, WordPart,
+    static_command_name_text,
 };
 use shuck_parser::parser::{ParseStatus, Parser};
 
@@ -17,73 +18,81 @@ use super::{Item, Simple, Word};
 /// Brackets nested past this are not read: the parser and this walk recurse, and the stack
 /// is finite. Counted on the text before the parser runs, quotes ignored, so it over-counts.
 const MAX_SUBSHELLS: u32 = 16;
-const MAX_COMPOUNDS: usize = 20;
-const MAX_CHAIN: usize = 1024;
-const MAX_ARITH_RUN: usize = 400;
 
-/// The shapes the parser recurses on, refused before it runs: brackets or substitutions
-/// deep, compound keywords many, `&&`/`|` chains long, a run of arithmetic text long. On a
-/// 2 MB stack each dies at about twice its cap (`shape_caps_stop_the_parser_recursing`).
-/// A `\`` inside a backtick body nests a substitution shuck keeps as text.
-fn too_big_a_shape(script: &str) -> Option<String> {
-    let (mut depth, mut chain, mut run) = (0u32, 0usize, 0usize);
-    let (mut in_backtick, mut escaped, mut prev) = (false, false, ' ');
-    for c in script.chars() {
-        if std::mem::take(&mut escaped) {
-            if c == '`' && in_backtick {
-                return Some("it escapes a backtick inside a backtick body".to_string());
-            }
-            prev = c;
-            continue;
-        }
+/// The parser recurses once per nested construct and the hook's own stack is not ours to
+/// size. The deepest shape under [`crate::classify::MAX_BYTES`] (`time` repeated) takes about
+/// 4 KiB of stack per byte in a debug build; this reserves twice that, virtual and untouched
+/// until a script needs it (`every_shape_under_the_size_cap_parses_without_aborting`).
+const PARSER_STACK: usize = 512 << 20;
+
+/// An arithmetic or test body longer than this is refused: shuck's arithmetic parser is
+/// quadratic, and 60 KiB of `1+1+…` takes it half a minute in a debug build.
+const MAX_ARITH: usize = 1024;
+
+// Brackets are counted before the parser runs because nested `$(` and `a[a[…]]` cost it far
+// more stack per level than any other shape. Backticks cannot nest without an escape, which
+// `parse` refuses, so a pair is one level and a quoted stray is off by one at most.
+fn too_deep_or_long(script: &str) -> Option<String> {
+    let mut depth: u32 = 0;
+    let mut in_backtick = false;
+    let mut opened: Vec<usize> = Vec::new();
+    let mut arith_open: Option<usize> = None;
+    let mut prev = ' ';
+    for (pos, c) in script.char_indices() {
         match c {
-            '\\' => escaped = true,
             '(' | '{' => depth += 1,
+            '[' => {
+                depth += 1;
+                opened.push(pos);
+            }
             ')' | '}' => depth = depth.saturating_sub(1),
+            ']' => {
+                depth = depth.saturating_sub(1);
+                opened.pop();
+            }
             '`' if in_backtick => depth = depth.saturating_sub(1),
             '`' => depth += 1,
-            '|' => chain += 1,
-            '&' if prev == '&' => chain += 1,
             _ => {}
         }
-        if c == '`' {
-            in_backtick = !in_backtick;
+        if c == '(' && prev == '(' {
+            arith_open.get_or_insert(pos);
+        } else if c == ')' && prev == ')' {
+            arith_open = None;
         }
-        run = if c.is_ascii_digit() || c == ' ' || "+-*/%<>!~^&|=?:,".contains(c) {
-            run + 1
-        } else {
-            0
-        };
+        in_backtick ^= c == '`';
+        prev = c;
         if depth > MAX_SUBSHELLS {
             return Some(format!(
                 "it nests brackets or substitutions more than {MAX_SUBSHELLS} deep"
             ));
         }
-        if chain > MAX_CHAIN {
+        let body = arith_open.into_iter().chain(opened.last().copied());
+        if body.into_iter().any(|open| pos - open > MAX_ARITH) {
             return Some(format!(
-                "it chains more than {MAX_CHAIN} commands with && or |"
+                "it holds an arithmetic or test body longer than {MAX_ARITH} characters"
             ));
         }
-        if run > MAX_ARITH_RUN {
-            return Some(format!(
-                "it runs more than {MAX_ARITH_RUN} characters of arithmetic"
-            ));
-        }
-        prev = c;
     }
-    let compounds = script
-        .split(|c: char| c.is_whitespace() || ";&|(){}".contains(c))
-        .filter(|w| matches!(*w, "if" | "while" | "until" | "for" | "case" | "select"))
-        .count();
-    (compounds > MAX_COMPOUNDS)
-        .then(|| format!("it opens more than {MAX_COMPOUNDS} compound commands"))
+    None
 }
 
-/// The script's commands in run order, or why they cannot be read.
+/// The script's commands in run order, or why they cannot be read. A parser panic or a
+/// thread the system refuses is unreadable, never an abort of the caller.
 pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
-    if let Some(why) = too_big_a_shape(script) {
+    if let Some(why) = too_deep_or_long(script) {
         return Err(why);
     }
+    let owned = script.to_string();
+    std::thread::Builder::new()
+        .name("jtac-shell-parser".to_string())
+        .stack_size(PARSER_STACK)
+        .spawn(move || parse(&owned))
+        .map_err(|e| format!("the parser could not start a thread: {e}"))?
+        .join()
+        .map_err(|_| "the parser panicked".to_string())?
+}
+
+fn parse(script: &str) -> Result<Vec<Item>, String> {
     let parsed = Parser::new(script).parse();
     if parsed.status != ParseStatus::Clean {
         return Err(parsed.diagnostics.first().map_or_else(
@@ -96,6 +105,7 @@ pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
         out: Vec::new(),
         depth: 0,
         too_deep: false,
+        escaped_backtick: false,
         piped: false,
     };
     walk.seq(&parsed.file.body, false);
@@ -103,6 +113,9 @@ pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
         return Err(format!(
             "it nests subshells or substitutions more than {MAX_SUBSHELLS} deep"
         ));
+    }
+    if walk.escaped_backtick {
+        return Err("it escapes a backtick inside a backtick body".to_string());
     }
     Ok(walk.out)
 }
@@ -112,6 +125,8 @@ struct Walk<'a> {
     out: Vec<Item>,
     depth: u32,
     too_deep: bool,
+    /// shuck keeps `\`` in a backtick body as text; bash opens a substitution there.
+    escaped_backtick: bool,
     /// Stdin may be another command's output: every command on a pipe's right side.
     piped: bool,
 }
@@ -139,11 +154,8 @@ impl Walk<'_> {
             Command::Builtin(b) => self.builtin(b),
             Command::Binary(b) => match b.op {
                 BinaryOp::Pipe | BinaryOp::PipeAll => {
-                    self.child(|w| w.stmt(&b.left, conditional));
-                    self.child(|w| {
-                        w.piped = true;
-                        w.stmt(&b.right, conditional);
-                    });
+                    self.pipe_side(&b.left, conditional, false);
+                    self.pipe_side(&b.right, conditional, true);
                 }
                 // The right side runs only if the left said so, either way round.
                 BinaryOp::And | BinaryOp::Or => {
@@ -265,6 +277,20 @@ impl Walk<'_> {
         }
     }
 
+    // Every stage of a pipeline is a sibling subshell, however the tree nests them.
+    fn pipe_side(&mut self, stmt: &Stmt, conditional: bool, piped: bool) {
+        match &stmt.command {
+            Command::Binary(b) if matches!(b.op, BinaryOp::Pipe | BinaryOp::PipeAll) => {
+                self.pipe_side(&b.left, conditional, piped);
+                self.pipe_side(&b.right, conditional, true);
+            }
+            _ => self.child(|w| {
+                w.piped |= piped;
+                w.stmt(stmt, conditional);
+            }),
+        }
+    }
+
     // A subshell's commands become one `Item`; its `cd` cannot move the parent.
     fn child(&mut self, walk: impl FnOnce(&mut Walk<'_>)) {
         if self.depth >= MAX_SUBSHELLS {
@@ -276,10 +302,12 @@ impl Walk<'_> {
             out: Vec::new(),
             depth: self.depth + 1,
             too_deep: false,
+            escaped_backtick: false,
             piped: self.piped,
         };
         walk(&mut child);
         self.too_deep |= child.too_deep;
+        self.escaped_backtick |= child.escaped_backtick;
         self.out.push(Item::Subshell(child.out));
     }
 
@@ -413,8 +441,8 @@ impl Walk<'_> {
     // A substitution inside a word is a subshell that runs before the command does. The
     // static text is the command-name decoding, which is the shell's rule for every word.
     fn word(&mut self, w: &AstWord) -> Word {
-        for (part, _) in w.parts_with_spans() {
-            self.part(part);
+        for (part, span) in w.parts_with_spans() {
+            self.part(part, span);
         }
         match static_command_name_text(w, self.source) {
             Some(text) if !w.has_active_brace_expansion() => Word {
@@ -428,13 +456,20 @@ impl Walk<'_> {
         }
     }
 
-    fn part(&mut self, part: &WordPart) {
+    fn part(&mut self, part: &WordPart, span: Span) {
         match part {
-            WordPart::CommandSubstitution { body, .. }
-            | WordPart::ProcessSubstitution { body, .. } => self.child(|w| w.seq(body, false)),
+            WordPart::CommandSubstitution { body, syntax } => {
+                if *syntax == CommandSubstitutionSyntax::Backtick
+                    && self.slice(span).contains("\\`")
+                {
+                    self.escaped_backtick = true;
+                }
+                self.child(|w| w.seq(body, false));
+            }
+            WordPart::ProcessSubstitution { body, .. } => self.child(|w| w.seq(body, false)),
             WordPart::DoubleQuoted { parts, .. } => {
                 for p in parts {
-                    self.part(&p.kind);
+                    self.part(&p.kind, p.span);
                 }
             }
             WordPart::ArithmeticExpansion {
@@ -505,8 +540,8 @@ impl Walk<'_> {
             match &r.target {
                 RedirectTarget::Word(w) => {
                     let w = self.word(w);
-                    if on_stdin && r.kind == RedirectKind::HereString {
-                        stdin = Some(w);
+                    if on_stdin {
+                        stdin = (r.kind == RedirectKind::HereString).then_some(w);
                     }
                 }
                 RedirectTarget::Heredoc(h) => {
