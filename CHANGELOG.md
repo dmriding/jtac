@@ -38,7 +38,7 @@ request moves them under a dated heading and bumps nothing.
   doc and loc-cap bars with CI's flags and protects `scripts/**`, `.cargo/**` and
   `rustfmt.toml` beside the defaults; `.jtac/signers` trusts the maintainer's key. The
   adoption commit trips `JT-PROT-001` on `.jtac/`, so its root carries the rule waiver the
-  README's quick start names. Rustdoc lints are denied in the workspace manifest, since the
+  README's quick start names. `.cargo/config.toml` denies rustdoc warnings as CI does, since the
   check runner passes no `RUSTDOCFLAGS`.
 - (0.0.18, M12) `jtac waive`: a signed `lever` node scoped to one commit (`declared_off`)
   or to one rule under one path for `--expires <days>d`, at most 30, kept in the store

@@ -24,9 +24,6 @@ jtac-testkit = { path = "crates/jtac-testkit", version = "0.0.19" }
 unsafe_code = "forbid"
 missing_docs = "warn"
 
-[workspace.lints.rustdoc]
-all = "deny"
-
 [workspace.lints.clippy]
 too_many_lines = "warn"
 dbg_macro = "warn"
