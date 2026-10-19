@@ -18,7 +18,7 @@ use jtac_policy::{INTEGRITY_CHECK_ID, facts};
 
 use crate::policy::Loaded;
 use crate::refuse::Refusal;
-use crate::repo::{Base, Head};
+use crate::repo::{self, Base, Head, RepoError};
 
 /// Everything one verdict was computed from.
 pub struct Judged {
@@ -46,6 +46,32 @@ pub struct Judged {
     pub verdict: Verdict,
 }
 
+/// Decision 38's fact: no parent of `head`, and nothing behind any of them, ever held
+/// `.jtac/policy.toml`. Read from history, never from the diff's base, which `--base` lets
+/// the pusher choose; every parent, since a merge whose first parent never held a policy
+/// would otherwise weaken the one its second parent holds; through `rev-list`, since `log`
+/// reads `log.follow` and `log.showRoot` from the pusher's own config and either hides the hit
+/// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`). A root commit
+/// has no parent and no diff to judge.
+fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
+    let git = |e: RepoError| Refusal::repository(&e);
+    let parents = repo::probe(
+        repo,
+        &["rev-parse", &format!("{}^@", head.commit.hex())],
+        128,
+    )
+    .map_err(git)?
+    .unwrap_or_default();
+    if parents.is_empty() {
+        return Ok(false);
+    }
+    let mut args = vec!["rev-list", "-1", "--full-history"];
+    args.extend(parents.lines());
+    args.extend(["--", jtac_policy::POLICY_PATH]);
+    let touched = repo::probe(repo, &args, 128).map_err(git)?;
+    Ok(touched.is_some_and(|t| t.is_empty()))
+}
+
 /// Run the rules and the checks on `head` and decide. Every stored waiver is offered; the
 /// verdict keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
 pub fn judge(
@@ -66,10 +92,11 @@ pub fn judge(
     };
     let started = Instant::now();
     let read = changes(repo, &base.commit, &head.commit.hex()).map_err(|e| e.to_string());
+    let adopting = adopting(repo, &head)?;
     let report = read
         .as_ref()
         .ok()
-        .map(|c| report(&loaded.policy.integrity, &loaded.matchers, c));
+        .map(|c| report(&loaded.policy.integrity, &loaded.matchers, c, adopting));
     let integrity_error = read.err();
     let integrity = node(Body::Check(integrity_body(
         integrity_error.as_deref(),

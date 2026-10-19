@@ -4,6 +4,7 @@
 mod agent;
 mod agentcfg;
 mod audit;
+mod bench;
 mod chain;
 mod check;
 mod cli;
@@ -156,6 +157,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         Some(Command::Audit(a)) => Run::verdict(audit::audit(&a, cwd), a.json),
         Some(Command::Show(a)) => Run::verdict(show::show(&a, cwd), a.json),
         Some(Command::Waive(a)) => Run::verdict(waive::waive(&a, cwd), a.json),
+        Some(Command::Bench(a)) => Run::verdict(bench::bench(a.json), a.json),
     }
 }
 
@@ -202,8 +204,9 @@ mod tests {
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 8] = [
+        let rows: [(&[&str], &str); 9] = [
             (&["--help"], "check"),
+            (&["--help"], "bench"),
             (&["--help"], "audit"),
             (&["verify", "--help"], "--require-coverage"),
             (&["--help"], "status"),
@@ -222,7 +225,7 @@ mod tests {
     #[test]
     fn unbuilt_commands_and_bad_flags_are_refused_with_exit_two() {
         let rows: [(&[&str], &str); 3] = [
-            (&["bench"], "`bench` is not a command"),
+            (&["policy"], "`policy` is not a command"),
             (&["check", "--nope"], "--nope"),
             (&["check", "--nope", "--json"], "\"error\""),
         ];

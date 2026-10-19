@@ -54,12 +54,18 @@ pub struct Report {
     pub tiers: BTreeSet<String>,
 }
 
-/// Judge `changes` under `integrity` and the policy's `matchers`.
-pub fn report(integrity: &Integrity, matchers: &Matchers, changes: &[Change]) -> Report {
+/// Judge `changes` under `integrity` and the policy's `matchers`. `adopting` is the gatherer's
+/// fact that no first-parent ancestor of the commit ever held the policy (decision 38).
+pub fn report(
+    integrity: &Integrity,
+    matchers: &Matchers,
+    changes: &[Change],
+    adopting: bool,
+) -> Report {
     let views: Vec<View> = changes.iter().map(View::of).collect();
     let added_lines = add::count(&views);
     let mut findings = Vec::new();
-    findings.extend(prot::check(&views, matchers));
+    findings.extend(prot::check(&views, matchers, adopting));
     findings.extend(test::check(&views, integrity));
     findings.extend(sup::check(&views, integrity));
     findings.extend(ci::check(&views));
@@ -104,7 +110,12 @@ mod tests {
                 new: text("#[allow(x)]\nfn a() {}\n"),
             },
         ];
-        let got = report(&policy.integrity, &policy.matchers().unwrap(), &changes);
+        let got = report(
+            &policy.integrity,
+            &policy.matchers().unwrap(),
+            &changes,
+            false,
+        );
         let order: Vec<(&str, &str, u64)> = got
             .findings
             .iter()

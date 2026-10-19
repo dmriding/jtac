@@ -44,6 +44,9 @@ pub enum Command {
     Show(ShowArgs),
     /// The signed off-switch: waive one commit, or one rule under one path for up to 30 days
     Waive(WaiveArgs),
+    /// The public proof: attack every control through its real path in a scratch
+    /// repository; exit 1 when one does not hold
+    Bench(JsonArg),
     /// A git hook entry point; git runs it, `jtac init` installs it
     #[command(subcommand)]
     Hook(Hook),
@@ -190,7 +193,7 @@ pub struct ShowArgs {
     pub json: bool,
 }
 
-/// The one flag `status` and `why` take.
+/// The one flag `status`, `why` and `bench` take.
 #[derive(Args, Debug, PartialEq, Eq)]
 pub struct JsonArg {
     /// Print the structure the text is rendered from, as JSON
@@ -245,15 +248,17 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "hook", "pre-push"]).is_err());
-        let cli = Cli::try_parse_from(["jtac", "bench", "--reason", "x"]).unwrap();
+        let cli = Cli::try_parse_from(["jtac", "policy", "--reason", "x"]).unwrap();
         assert_eq!(
             cli.command,
             Some(Command::Other(vec![
-                "bench".into(),
+                "policy".into(),
                 "--reason".into(),
                 "x".into()
             ]))
         );
+        let cli = Cli::try_parse_from(["jtac", "bench", "--json"]).unwrap();
+        assert_eq!(cli.command, Some(Command::Bench(JsonArg { json: true })));
         let cli =
             Cli::try_parse_from(["jtac", "waive", "HEAD", "--expires", "3d", "--reason", "x"])
                 .unwrap();

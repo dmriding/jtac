@@ -26,6 +26,11 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.1.0, M14) The commit that adds `.jtac/policy.toml` where no parent's history held one
+  had nothing in force under `.jtac/`, so `JT-PROT-001` there is minor and says so; adopting jtac no longer needs a
+  waiver (DESIGN.md decision 38). `jtac policy` and `jtac scope` move to v0.2 (7.2). The
+  release workflow publishes `SHA256SUMS` over the archives. Open question 5 is closed:
+  Windows runs the test suite, the hooks are unverified there, the install script is `sh`.
 - (0.0.18) The README says what the gate does today, command by command, how to adopt it,
   and the roadmap by version; the preview-only status is gone.
 - (0.0.16) The Windows test job runs on a push to `main`, a release tag and a manual
@@ -34,6 +39,19 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.1.0, M14) `jtac bench`: the public proof. In a lab under the temp directory with its
+  own home, global git config and generated key, one throwaway repository with a bare origin
+  per control, attacked through the binary and `git push` through the installed hook: a
+  clean change lands with its root; no root, a replaced `root.sig`, a `root.json` naming
+  another tree, a deleted `#[test]`, a new `#[allow]`, a policy that does not parse, a check
+  naming a missing tool and a `--force` rewind of a protected branch are refused; every
+  bypass spelling in the classifier's table classifies as one, and the advisory names what
+  lands where one is due. Each row quotes the
+  gate's line; `--json` carries the rows; exit 0, 1 when a row did not hold, 2 when git or
+  `ssh-keygen` cannot start (DESIGN.md section 13). `install.sh` fetches the release
+  archive named by `SHA256SUMS`, verifies it, installs under `~/.local/bin` or `--to`, and
+  never edits PATH (decision 39). The README has the install line, the quick start without a
+  waiver, and the numbers: what is measured, and the method for what is not.
 - (0.0.21, M13) `jtac hook pre-tool claude-code`: Claude Code's `PreToolUse` hook reads the
   proposed Bash command through the classifier, judges each push where it would run with the
   decision the `pre-push` hook asks, and returns a note as `additionalContext`: no root names

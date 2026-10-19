@@ -693,3 +693,111 @@ fn version_help_and_json_refusals_work_on_the_binary() {
         assert_eq!(v["error"]["kind"], "negotiation", "{args:?}");
     }
 }
+
+/// Decision 38: the commit that adds `.jtac/policy.toml` passes without a waiver, and the next
+/// change under `.jtac/` is major as before: under a base the pusher chose, on a merge whose
+/// first parent never held the policy, under `log.*` config that would hide the hit from
+/// `git log`, and on a merge that took the policy from a side branch with `-s ours`.
+#[test]
+fn adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major() {
+    let repo = Repo::init(&[]);
+    repo.git(&["config", "log.follow", "true"]);
+    repo.git(&["config", "log.showRoot", "false"]);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let before = repo.commit("base");
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.commit("adopt");
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout.contains("JT-PROT-001") && ran.stdout.contains("brings it into force"),
+        "{}",
+        ran.stdout
+    );
+    repo.write(
+        ".jtac/policy.toml",
+        format!("{}# edited\n", policy("")).as_bytes(),
+    );
+    let edit = repo.commit("edit");
+    let orphan = repo.git(&["commit-tree", &format!("{before}^{{tree}}"), "-m", "orphan"]);
+    let tree = repo.git(&["rev-parse", "HEAD^{tree}"]);
+    let merge = repo.git(&[
+        "commit-tree",
+        &tree,
+        "-p",
+        &orphan,
+        "-p",
+        &edit,
+        "-m",
+        "merge",
+    ]);
+    repo.git(&["reset", "-q", "--hard", &merge]);
+    let major = |args: &[&str]| {
+        let ran = jtac(&repo, args);
+        assert_eq!(ran.code, 1, "{args:?}: {}{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stdout.contains("JT-PROT-001") && !ran.stdout.contains("brings it into force"),
+            "{args:?}: {}",
+            ran.stdout
+        );
+    };
+    major(&["check", "--preview"]);
+    major(&["check", "--preview", "--base", &before]);
+    major(&["check", "--preview", "--base", &orphan]);
+    repo.git(&["switch", "-q", "-c", "ours", &before]);
+    repo.git(&[
+        "merge",
+        "-q",
+        "-s",
+        "ours",
+        "--no-gpg-sign",
+        "-m",
+        "took nothing",
+        &edit,
+    ]);
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.commit("policy again");
+    major(&["check", "--preview", "--base", &before]);
+}
+
+/// Decision 38's fact comes from `rev-list`, so `log.follow` and `log.showRoot` in the pusher's
+/// own config cannot hide the root commit that holds the policy.
+#[test]
+fn the_adoption_fact_is_plumbing_so_log_config_cannot_hide_a_root_policy() {
+    let repo = Repo::init(&[]);
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let root = repo.commit("root with the policy");
+    repo.git(&["config", "log.follow", "true"]);
+    repo.git(&["config", "log.showRoot", "false"]);
+    repo.git(&["rm", "-q", "--cached", ".jtac/policy.toml"]);
+    let bare = repo.git(&["write-tree"]);
+    repo.git(&["reset", "-q"]);
+    let orphan = repo.git(&["commit-tree", &bare, "-m", "orphan"]);
+    repo.write(
+        ".jtac/policy.toml",
+        format!("{}# weakened\n", policy("")).as_bytes(),
+    );
+    repo.git(&["add", "-A"]);
+    let weakened = repo.git(&["write-tree"]);
+    let merge = repo.git(&[
+        "commit-tree",
+        &weakened,
+        "-p",
+        &orphan,
+        "-p",
+        &root,
+        "-m",
+        "merge",
+    ]);
+    repo.git(&["reset", "-q", "--hard", &merge]);
+    let ran = jtac(&repo, &["check", "--preview", "--base", &orphan]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout.contains("JT-PROT-001") && !ran.stdout.contains("brings it into force"),
+        "{}",
+        ran.stdout
+    );
+}
