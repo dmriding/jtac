@@ -693,3 +693,34 @@ fn version_help_and_json_refusals_work_on_the_binary() {
         assert_eq!(v["error"]["kind"], "negotiation", "{args:?}");
     }
 }
+
+/// Decision 38: the commit that adds `.jtac/policy.toml` passes without a waiver, and the next
+/// change under `.jtac/` is major as before.
+#[test]
+fn adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major() {
+    let repo = Repo::init(&[]);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    repo.commit("base");
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.commit("adopt");
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout.contains("JT-PROT-001") && ran.stdout.contains("brings it into force"),
+        "{}",
+        ran.stdout
+    );
+    repo.write(
+        ".jtac/policy.toml",
+        format!("{}# edited\n", policy("")).as_bytes(),
+    );
+    repo.commit("edit");
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout.contains("JT-PROT-001") && !ran.stdout.contains("brings it into force"),
+        "{}",
+        ran.stdout
+    );
+}
