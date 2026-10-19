@@ -66,6 +66,8 @@ pub enum Spec {
     Bare,
     /// `+main`: the source's own ref, unmapped, as git reads a forced bare name.
     Forced,
+    /// `tag v1`: the tag's own ref, unmapped, as git spells the shorthand out.
+    Tag,
     /// `src:main`, `:main`, `--delete main`: a name the remote is asked about.
     Spelled,
 }

@@ -495,10 +495,11 @@ fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
     assert!(full.contains(fence), "a full source maps too: {full}");
     repo.git(&[
         "config",
-        "--add",
+        "--replace-all",
         "branch.feature.merge",
         "refs/heads/staging",
     ]);
+    repo.git(&["config", "--add", "branch.feature.merge", "refs/heads/main"]);
     let two = judged("git push --force origin feature");
     assert!(two.contains("no root"), "two upstreams map nothing: {two}");
     repo.git(&[
@@ -540,7 +541,25 @@ fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
         bare.contains(fence),
         "a mapped bare name is resolved: {bare}"
     );
+    repo.git(&["tag", "v1", &base]);
+    repo.git(&[
+        "config",
+        "remote.origin.push",
+        "refs/tags/v1:refs/heads/main",
+    ]);
+    let shorthand = judged("git push --force origin tag v1");
+    assert_eq!(shorthand, "", "the tag shorthand is never mapped");
+    let full_tag = judged("git push --force origin refs/tags/v1");
+    assert!(
+        full_tag.contains(fence),
+        "a colon-less full tag is: {full_tag}"
+    );
     repo.git(&["config", &format!("url.{parent}/.insteadOf"), "al:"]);
+    repo.git(&[
+        "config",
+        &format!("url.{parent}/elsewhere/.pushInsteadOf"),
+        "al:",
+    ]);
     repo.git(&["config", "remote.origin.url", &format!("al:{name}")]);
     let fetched = judged(&format!("git push --force {url} HEAD:main"));
     assert!(
@@ -560,7 +579,6 @@ fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
         "the tracking ref before a local tag: {del}"
     );
     repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
-    repo.git(&["tag", "v1", &base]);
     let blind = judged("git push --force origin v1:main");
     assert!(
         blind.contains("could not be judged"),

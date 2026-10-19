@@ -628,16 +628,19 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
 
 // `tag v1` is one refspec; `+` forces; `:dst` deletes; a `*` destination is every ref.
 fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
-    let mut specs: Vec<String> = positional.iter().map(|s| (*s).to_string()).collect();
+    let mut specs: Vec<(String, bool)> = positional
+        .iter()
+        .map(|s| ((*s).to_string(), false))
+        .collect();
     let mut i = 0;
     while i + 1 < specs.len() {
-        if specs[i] == "tag" {
-            specs[i] = format!("refs/tags/{}", specs[i + 1]);
+        if specs[i].0 == "tag" {
+            specs[i] = (format!("refs/tags/{}", specs[i + 1].0), true);
             specs.remove(i + 1);
         }
         i += 1;
     }
-    for spec in &specs {
+    for (spec, tag) in &specs {
         let forced = spec.starts_with('+');
         let spec = match spec.strip_prefix('+') {
             Some(rest) => {
@@ -661,7 +664,11 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
             None => {
                 p.sources.push(spec.to_string());
                 p.destinations.push(spec.to_string());
-                p.specs.push(if forced { Spec::Forced } else { Spec::Bare });
+                p.specs.push(match (tag, forced) {
+                    (true, _) => Spec::Tag,
+                    (false, true) => Spec::Forced,
+                    (false, false) => Spec::Bare,
+                });
             }
         }
     }

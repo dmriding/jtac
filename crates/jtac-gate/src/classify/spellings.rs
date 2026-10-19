@@ -15,6 +15,10 @@ fn show(actions: &[Action]) -> String {
                     match spec {
                         Spec::Spelled => s.push_str(&format!(" {src}>{dst}")),
                         Spec::Forced => s.push_str(&format!(" +{src}")),
+                        Spec::Tag => {
+                            let name = dst.strip_prefix("refs/tags/").unwrap_or(dst);
+                            s.push_str(&format!(" tag {name}"));
+                        }
                         Spec::Bare => s.push_str(&format!(" {src}")),
                     }
                 }
@@ -390,7 +394,7 @@ const REFSPECS: &[(&str, &str)] = &[
         "git push origin HEAD:main topic",
         "push origin HEAD>main topic",
     ),
-    ("git push origin tag v1", "push origin refs/tags/v1"),
+    ("git push origin tag v1", "push origin tag v1"),
     ("git push --repo=origin", "push origin"),
     ("git push --repo origin main", "push main"),
     ("git push origin \"$BRANCH\"", "push origin $BRANCH opaque"),

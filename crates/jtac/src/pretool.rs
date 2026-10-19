@@ -195,9 +195,8 @@ fn targets(
         let (dst, asked) = match (spec, src.as_deref(), &named) {
             (Spec::Spelled, _, _) => (dst.clone(), true),
             (_, _, None) => return Ok(None),
-            (Spec::Forced, _, Some(full)) | (Spec::Bare, Some("HEAD" | "@"), Some(full)) => {
-                (full.clone(), false)
-            }
+            (Spec::Forced | Spec::Tag, _, Some(full))
+            | (Spec::Bare, Some("HEAD" | "@"), Some(full)) => (full.clone(), false),
             (Spec::Bare, _, Some(full)) => {
                 let to = mapped(repo, push_specs, full)?;
                 let asked = to != *full;
@@ -370,9 +369,10 @@ fn named(repo: &Path, given: &str) -> Result<String, String> {
 }
 
 /// `url.<base>.insteadOf` and `pushInsteadOf` from `config -z --get-regexp`, one `key\n
-/// value` per NUL so a base with a space survives: `(prefix, base, for a push only)`.
+/// value` per NUL so a base with a space survives: `(prefix, base, for a push only)`, grouped
+/// by base in the order each base first appears, as `remote.c` keeps its rewrite table.
 fn rewrites(entries: &str) -> Vec<(String, String, bool)> {
-    entries
+    let mut rules: Vec<(String, String, bool)> = entries
         .split('\0')
         .filter_map(|e| {
             let (key, prefix) = e.split_once('\n')?;
@@ -383,7 +383,10 @@ fn rewrites(entries: &str) -> Vec<(String, String, bool)> {
             };
             Some((prefix.to_owned(), base.to_owned(), push))
         })
-        .collect()
+        .collect();
+    let bases: Vec<String> = rules.iter().map(|(_, b, _)| b.clone()).collect();
+    rules.sort_by_key(|(_, b, _)| bases.iter().position(|x| x == b));
+    rules
 }
 
 /// `url` as git rewrites it (`remote.c::alias_url`): for a push the longest `pushInsteadOf`
@@ -456,6 +459,13 @@ mod tests {
              url.https://second.example.com/.insteadof\nex:\0",
         );
         assert_eq!(rules.len(), 5, "{rules:?}");
+        let grouped =
+            rewrites("url./A/.insteadof\ny:\0url./B/.insteadof\nx:\0url./A/.insteadof\nx:\0");
+        assert_eq!(
+            expand(&grouped, "x:foo", false),
+            "/A/foo",
+            "by the base seen first"
+        );
         assert_eq!(
             expand(&rules, "ex:app.git", true),
             "git@example.com:app.git"
