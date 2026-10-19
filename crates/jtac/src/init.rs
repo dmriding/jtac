@@ -20,7 +20,7 @@ use crate::keydir::Key;
 use crate::refspec::REFSPEC;
 use crate::refuse::Refusal;
 use crate::repo::RepoError;
-use crate::{Printed, detect, hookfile, keydir, refspec, render, repo};
+use crate::{Printed, agentcfg, detect, hookfile, keydir, refspec, render, repo};
 
 /// Everything init found, before it writes anything.
 struct Plan {
@@ -34,6 +34,7 @@ struct Plan {
     hook: PathBuf,
     script: String,
     install: Install,
+    agent: Option<agentcfg::Planned>,
     lever: Option<(GitOid, Sha256Digest)>,
 }
 
@@ -45,6 +46,7 @@ impl Plan {
             || self.policy.is_some()
             || !matches!(self.install, Install::Keep | Install::Foreign)
             || (self.remote.is_some() && !self.refspec_there)
+            || self.agent.as_ref().is_some_and(agentcfg::Planned::writes)
     }
 }
 
@@ -86,6 +88,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     let hook = hookfile::dir(&repo)?.join("pre-push");
     let install = hookfile::judge(&hookfile::read(&hook)?, &script, a.keep_hook)
         .ok_or_else(|| Refusal::init_foreign_hook(&hook, &exe))?;
+    let agent = agentcfg::plan(&repo, &exe, a.agent.as_deref())?;
     let mut plan = Plan {
         store_there: store.dir().is_dir(),
         repo,
@@ -97,6 +100,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
         hook,
         script,
         install,
+        agent,
         lever: None,
     };
     if plan.writes() {
@@ -185,6 +189,7 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
             out.wrote("refspec", format!("fetch refspec {REFSPEC} on {r}"));
         }
     }
+    agentcfg::apply(&mut out, p.agent.as_ref(), &p.repo, dry)?;
     lever_step(&mut out, p, id.as_ref(), dry)?;
     Ok(out)
 }

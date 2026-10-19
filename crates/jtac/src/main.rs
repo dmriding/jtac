@@ -2,6 +2,7 @@
 //! `CLEARED HOT`, 1 is `ABORT`, 2 is a refusal: the gate could not answer.
 
 mod agent;
+mod agentcfg;
 mod audit;
 mod chain;
 mod check;
@@ -19,6 +20,7 @@ mod ledger;
 mod lever;
 mod output;
 mod policy;
+mod pretool;
 mod range;
 mod reason;
 mod refspec;
@@ -37,6 +39,7 @@ mod update;
 mod verify;
 mod waive;
 mod why;
+mod wire;
 mod write;
 
 use std::path::Path;
@@ -136,6 +139,14 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
                 stdout: String::new(),
                 stderr,
                 code,
+            }
+        }
+        Some(Command::Hook(Hook::PreTool { agent })) => {
+            let (stdout, stderr) = pretool::pre_tool(&agent, cwd, stdin);
+            Run {
+                stdout,
+                stderr,
+                code: 0,
             }
         }
         Some(Command::Status(a)) => Run::verdict(status::status(cwd, a.json), a.json),

@@ -767,3 +767,60 @@ fn outside_a_repository_init_refuses() {
     assert_eq!(ran.code, 2, "{}", ran.stdout);
     assert!(ran.stderr.starts_with("jtac: "), "{}", ran.stderr);
 }
+
+/// `--agent claude-code` writes the per-clone settings file once and keeps it after; the
+/// entry names this binary; another agent refuses naming the one built; without the flag a
+/// clone with a `.claude` directory gets the note and one without gets nothing.
+#[test]
+fn the_agent_hook_is_opt_in_written_once_and_named_for_other_clones() {
+    let env = Env::new();
+    let ran = env.init(&[]);
+    assert!(!ran.stdout.contains("--agent"), "{}", ran.stdout);
+    std::fs::create_dir_all(env.repo.path().join(".claude")).unwrap();
+    let ran = env.init(&[]);
+    assert!(
+        ran.stdout.contains("`jtac init --agent claude-code`")
+            && ran.stdout.contains(".claude/settings.local.json"),
+        "{}",
+        ran.stdout
+    );
+    let ran = env.init(&["--agent", "claude-code"]);
+    assert!(
+        ran.stdout.contains("wrote tool-call hook "),
+        "{}",
+        ran.stdout
+    );
+    assert!(ran.stdout.contains("wrote lever node"), "{}", ran.stdout);
+    let settings = env.repo.path().join(".claude").join("settings.local.json");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    let entry = &v["hooks"]["PreToolUse"][0];
+    assert_eq!(entry["matcher"], "Bash");
+    assert_eq!(
+        entry["hooks"][0]["command"],
+        format!("'{}' hook pre-tool claude-code", exe())
+    );
+    let ran = env.init(&["--agent", "claude-code"]);
+    assert!(
+        ran.stdout.contains("kept tool-call hook "),
+        "{}",
+        ran.stdout
+    );
+    assert!(ran.stdout.contains("kept lever node"), "{}", ran.stdout);
+    let ran = env.jtac(&["init", "--agent", "other"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("no adapter") && ran.stderr.contains("`jtac init --agent claude-code`"),
+        "{}",
+        ran.stderr
+    );
+    assert!(ran.stderr.contains("negotiation: "), "{}", ran.stderr);
+    std::fs::write(&settings, "[]\n").unwrap();
+    let ran = env.jtac(&["init", "--agent", "claude-code"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(ran.stderr.contains("not a JSON object"), "{}", ran.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "[]\n",
+        "left alone"
+    );
+}
