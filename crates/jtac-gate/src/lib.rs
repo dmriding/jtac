@@ -10,4 +10,5 @@ mod shell;
 
 pub use advise::note;
 pub use audit::{CommitFact, RootFact, Row, Trust, Via, rows};
+pub use classify::bypasses;
 pub use push::{Coverage, Decision, History, Pass, RefUpdate, Refuse, decide, exempt};

@@ -50,7 +50,7 @@ impl Refusal {
             format!("`{command}` is not a command in this release."),
             format!(
                 "jtac {} ships `init`, `check`, `status`, `why`, `verify`, `replay`, `audit`, `show`, \
-                 `waive`, and `hook`; exiting zero on anything else would let a hook treat \"not \
+                 `waive`, `bench`, and `hook`; exiting zero on anything else would let a hook treat \"not \
                  built\" as \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),

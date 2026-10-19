@@ -3,6 +3,7 @@
 //! is already resolved against the `cd`s before it in the same shell; `ChangeDir` is reported
 //! so the advisory can say the shell moved.
 
+mod bypasses;
 mod git;
 mod indirect;
 mod program;
@@ -179,6 +180,8 @@ pub enum Action {
         raw: String,
     },
 }
+
+pub use bypasses::bypasses;
 
 /// Every action a script performs, in run order. The text is read to the first NUL, as the
 /// shell reads it.
