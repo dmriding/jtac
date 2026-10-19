@@ -1,9 +1,8 @@
 # Releasing
 
-`main` is the development line. Every merge is signed and green on the pull request gates;
-the Windows tests run on the merge itself, so a Windows-only break shows on `main` and is
-fixed forward. `main` is never promised to anyone. A release is a signed tag `vX.Y.Z` on a
-commit of `main`.
+`main` is the development line. Every merge is signed and green on the pull request gates,
+the Windows tests among them. `main` is never promised to anyone. A release is a signed tag
+`vX.Y.Z` on a commit of `main`.
 Nothing is "released" because it merged.
 
 ## Rules enforced by the repository

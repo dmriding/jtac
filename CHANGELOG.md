@@ -6,6 +6,12 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Changed
+
+- (0.1.4) The Windows test job runs on every pull request and is a required check, so a
+  Windows-only break stops at the pull request instead of landing on `main`. It skipped pull
+  requests while the repository was private, where Windows minutes bill double.
+
 ### Fixed
 
 - (0.1.3) The `signoff` CI job failed every pull request after GitHub's "Update branch" button:
