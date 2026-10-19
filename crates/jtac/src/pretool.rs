@@ -475,7 +475,7 @@ mod tests {
             "not a number",
             "-1",
             "1.5",
-            "1s",
+            "2s",
             "18446744073709551616",
         ] {
             assert_eq!(cap(Some(bad)), CAP, "{bad:?}");
