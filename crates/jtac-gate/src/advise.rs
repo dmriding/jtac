@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_command_is_noted_only_when_its_text_names_git() {
+    fn an_unreadable_command_is_noted_only_when_its_text_says_push() {
         let n = note(&classify("bash -c \"$X\""), &|_| None);
         assert_eq!(n, None);
         let n = note(&classify("eval \"git $ARGS\""), &|_| None);

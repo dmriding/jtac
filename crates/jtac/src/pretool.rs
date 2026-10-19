@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use jtac_gate::classify::{Dir, Push, classify};
-use jtac_gate::{Decision, Pass};
+use jtac_gate::{Decision, Pass, Refuse};
 use jtac_store::Store;
 
 use crate::wire::claude;
@@ -79,8 +79,9 @@ fn advise(stdin: &str, cwd: &Path) -> (Option<String>, Vec<String>) {
 }
 
 /// One push's decision, or `None` when where it runs is not named, is not a repository, or
-/// its targets cannot be told. The first refused refspec is the answer; a tag or evidence
-/// ref passes on its name before any fact is read, as the hook judges it.
+/// its targets cannot be told. A tag or evidence ref passes on its name before any fact is
+/// read, as the hook judges it; of several refspecs the worst answer is the note, so a fence
+/// never hides behind a missing root.
 fn judge(here: &Path, push: &Push) -> Result<Option<Decision>, String> {
     let dir = match &push.dir {
         Dir::Here => here.to_path_buf(),
@@ -91,12 +92,6 @@ fn judge(here: &Path, push: &Push) -> Result<Option<Decision>, String> {
         return Ok(None);
     };
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", push.raw);
-    let Some(targets) = targets(&repo, push).map_err(|e| fail(&e))? else {
-        return Ok(None);
-    };
-    let format = repo::format(&repo).map_err(|e| fail(&e))?;
-    let store = Store::open(&repo).map_err(|e| fail(&e))?;
-    let tool = coverage::verifier(&repo).map_err(|r| fail(&r.what))?;
     let remote = match &push.remote {
         Some(r) => named(&repo, r).map_err(|e| fail(&e))?,
         None => remote(&repo).map_err(|e| fail(&e))?,
@@ -105,47 +100,66 @@ fn judge(here: &Path, push: &Push) -> Result<Option<Decision>, String> {
     let fetch = repo::probe(&repo, &["config", "--get-all", &key], 1)
         .map_err(|e| fail(&e))?
         .unwrap_or_default();
+    let Some(targets) = targets(&repo, push, &fetch, &remote).map_err(|e| fail(&e))? else {
+        return Ok(None);
+    };
+    let format = repo::format(&repo).map_err(|e| fail(&e))?;
+    let store = Store::open(&repo).map_err(|e| fail(&e))?;
+    let tool = coverage::verifier(&repo).map_err(|r| fail(&r.what))?;
     let mut last = push.tags.then_some(Decision::Pass(Pass::Tag));
     for (src, dst) in targets {
-        if let Some(pass) = jtac_gate::exempt(&dst, src.is_none()) {
-            last = Some(Decision::Pass(pass));
-            continue;
-        }
-        let tip = match src {
-            Some(rev) => Some(repo::peel(&repo, &format, &rev).map_err(|e| fail(&e))?),
-            None => None,
+        let decision = if let Some(pass) = jtac_gate::exempt(&dst, src.is_none()) {
+            Decision::Pass(pass)
+        } else {
+            let tip = match src {
+                Some(rev) => Some(repo::peel(&repo, &format, &rev).map_err(|e| fail(&e))?),
+                None => None,
+            };
+            let old = tracking(&fetch, &remote, &dst)
+                .and_then(|r| repo::peel(&repo, &format, &r).ok())
+                .map(|h| h.commit);
+            let g = update::gather(
+                &repo,
+                &store,
+                &tool,
+                &format,
+                tip.as_ref(),
+                &dst,
+                old.as_ref(),
+            )
+            .map_err(|r| fail(&r.what))?;
+            jtac_gate::decide(&g.update)
         };
-        let old = tracking(&fetch, &remote, &dst)
-            .and_then(|r| repo::peel(&repo, &format, &r).ok())
-            .map(|h| h.commit);
-        let g = update::gather(
-            &repo,
-            &store,
-            &tool,
-            &format,
-            tip.as_ref(),
-            &dst,
-            old.as_ref(),
-        )
-        .map_err(|r| fail(&r.what))?;
-        let decision = jtac_gate::decide(&g.update);
-        if matches!(decision, Decision::Refuse(_)) {
-            return Ok(Some(decision));
+        if last.as_ref().is_none_or(|l| rank(l) < rank(&decision)) {
+            last = Some(decision);
         }
-        last = Some(decision);
     }
     Ok(last)
 }
 
-/// `(source, full remote ref)` per refspec; `None` when the targets cannot be told: every
-/// ref, a wildcard, a word the shell built, or a bare push from a detached HEAD. No refspec
-/// is HEAD to the branch it merges with, as `status` judges a bare `git push`, or only the
-/// tags under `--tags`; a bare name takes its namespace from the source, as git does (`v1`
-/// from a tag is `refs/tags/v1`).
+/// A fence, above a refusal a command clears, above a pass.
+fn rank(d: &Decision) -> u8 {
+    match d {
+        Decision::Pass(_) => 0,
+        Decision::Refuse(Refuse::Absent | Refuse::Unknown) => 1,
+        Decision::Refuse(Refuse::Rewind | Refuse::Delete) => 2,
+    }
+}
+
 /// A source rev (none for a deletion) and the full remote ref it goes to.
 type Target = (Option<String>, String);
 
-fn targets(repo: &Path, push: &Push) -> Result<Option<Vec<Target>>, String> {
+/// One [`Target`] per refspec; `None` when the targets cannot be told: every ref, a
+/// wildcard, a word the shell built, or a bare push from a detached HEAD. No refspec is HEAD
+/// to the branch it merges with, as `status` judges a bare `git push`, or only the tags under
+/// `--tags`. A bare name is the remote's ref of that name when this clone knows one, else it
+/// takes the source's namespace, in git's order (`v1` from a tag is `refs/tags/v1`).
+fn targets(
+    repo: &Path,
+    push: &Push,
+    fetch: &str,
+    remote: &str,
+) -> Result<Option<Vec<Target>>, String> {
     if push.all_refs || push.opaque {
         return Ok(None);
     }
@@ -168,8 +182,8 @@ fn targets(repo: &Path, push: &Push) -> Result<Option<Vec<Target>>, String> {
                 None => None,
             };
             match (dst.as_str(), named) {
-                ("HEAD", Some(full)) => full,
-                ("HEAD", None) => return Ok(None),
+                ("HEAD" | "@", Some(full)) => full,
+                ("HEAD" | "@", None) => return Ok(None),
                 (d, _)
                     if ["heads/", "tags/", "remotes/"]
                         .iter()
@@ -177,13 +191,36 @@ fn targets(repo: &Path, push: &Push) -> Result<Option<Vec<Target>>, String> {
                 {
                     format!("refs/{d}")
                 }
-                (_, Some(full)) if full.starts_with("refs/tags/") => format!("refs/tags/{dst}"),
-                _ => format!("refs/heads/{dst}"),
+                (d, named) => match known(repo, fetch, remote, d)? {
+                    Some(full) => full,
+                    None if named.is_some_and(|f| f.starts_with("refs/tags/")) => {
+                        format!("refs/tags/{d}")
+                    }
+                    None => format!("refs/heads/{d}"),
+                },
             }
         };
         out.push((src, full));
     }
     Ok(Some(out))
+}
+
+/// The remote's ref a bare `name` matches, as this clone last saw it: its branch through the
+/// remote-tracking ref, else its tag, which a fetch brings along. Git asks the remote.
+fn known(repo: &Path, fetch: &str, remote: &str, name: &str) -> Result<Option<String>, String> {
+    let seen = |r: &str| -> Result<bool, String> {
+        let args = ["rev-parse", "--verify", "--quiet", "--end-of-options", r];
+        let out = repo::probe(repo, &args, 1).map_err(|e| e.to_string())?;
+        Ok(out.is_some())
+    };
+    let branch = format!("refs/heads/{name}");
+    if let Some(tracked) = tracking(fetch, remote, &branch)
+        && seen(&tracked)?
+    {
+        return Ok(Some(branch));
+    }
+    let tag = format!("refs/tags/{name}");
+    Ok(seen(&tag)?.then_some(tag))
 }
 
 /// The remote-tracking ref `remote` keeps for `dst`, through its fetch refspecs; the
@@ -214,16 +251,26 @@ fn full_name(repo: &Path, rev: &str) -> Result<Option<String>, String> {
     Ok(out.filter(|f| f.starts_with("refs/")))
 }
 
-/// `given` as a remote's name: itself when configured, else the remote whose URL it is, so
-/// a push by URL still finds the old tip; else itself, which no fetch refspec maps.
+/// `given` as a remote's name: itself when configured, else the remote whose URL it spells
+/// once `insteadOf` and a trailing slash are allowed for, so a push by URL still finds the
+/// old tip; else itself, which no fetch refspec maps.
 fn named(repo: &Path, given: &str) -> Result<String, String> {
-    let url = |r: &str| repo::config(repo, &format!("remote.{r}.url")).map_err(|e| e.to_string());
-    if url(given)?.is_some() {
+    let key = format!("remote.{given}.url");
+    if repo::config(repo, &key)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
         return Ok(given.to_owned());
     }
+    let expand = |r: &str| -> Result<String, String> {
+        let out =
+            repo::probe(repo, &["ls-remote", "--get-url", r], 1).map_err(|e| e.to_string())?;
+        Ok(out.unwrap_or_default().trim_end_matches('/').to_owned())
+    };
+    let want = expand(given)?;
     let listed = repo::probe(repo, &["remote"], 1).map_err(|e| e.to_string())?;
     for name in listed.unwrap_or_default().lines() {
-        if url(name)?.is_some_and(|u| u == given) {
+        if expand(name)? == want {
             return Ok(name.to_owned());
         }
     }

@@ -10,6 +10,7 @@ use crate::init::ask;
 use crate::init::slashes;
 use crate::initout::InitOutput;
 use crate::refuse::Refusal;
+use crate::repo;
 use crate::wire::claude::{self, Merge};
 
 /// The write the flag asked for, judged before anything is written.
@@ -72,7 +73,12 @@ pub fn apply(
     };
     let shown = slashes(&p.path);
     match &p.merge {
-        Merge::Present => out.kept("agent", format!("tool-call hook {shown}")),
+        Merge::Present => {
+            if !dry {
+                exclude(repo)?;
+            }
+            out.kept("agent", format!("tool-call hook {shown}"));
+        }
         Merge::Written(text) => {
             if !dry {
                 if let Some(dir) = p.path.parent() {
@@ -89,13 +95,16 @@ pub fn apply(
     Ok(())
 }
 
-/// The per-clone file in git's per-clone exclude list, once: it names this machine's
-/// binary, so it is never committed, and left untracked it would make the work tree dirty
-/// for `jtac check` (`the_agent_hook_is_opt_in_written_once_and_named_for_other_clones`).
+/// The per-clone file in the exclude list git names, once, on every run: it names this
+/// machine's binary, so it is never committed, and untracked it would make the work tree
+/// dirty for `jtac check`. A linked worktree's `.git` is a file, so the path is asked of git
+/// (`the_agent_hook_in_a_linked_worktree_is_excluded_through_the_common_dir`).
 fn exclude(repo: &Path) -> Result<(), Refusal> {
     let line = format!("/{}", claude::SETTINGS);
-    let dir = repo.join(".git").join("info");
-    let path = dir.join("exclude");
+    let args = ["rev-parse", "--git-path", "info/exclude"];
+    let named = repo::probe(repo, &args, 1).map_err(|e| Refusal::repository(&e))?;
+    let path = repo.join(named.unwrap_or_else(|| ".git/info/exclude".to_owned()));
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let had = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),

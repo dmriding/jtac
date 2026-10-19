@@ -369,3 +369,57 @@ fn refspecs_resolve_as_git_does_and_the_old_tip_follows_the_fetch_refspec() {
         assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
     }
 }
+
+/// A bare destination is the remote's ref of that name before the source's namespace, as git
+/// resolves it; `@` is HEAD; of several refspecs the fence is the note; a remote given by
+/// URL with a trailing slash or through `insteadOf` still finds the old tip.
+#[test]
+fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_missing_root() {
+    let Checked { repo, base } = checked();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["tag", "v1", &base]);
+    repo.git(&["push", "-q", "origin", "v1"]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push --force origin v1:main"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(
+        n.contains("rewinds a protected branch"),
+        "a tag to the branch main: {n}"
+    );
+    repo.git(&["switch", "-q", "-c", "wip"]);
+    repo.write("w.txt", b"w\n");
+    repo.commit("wip");
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push --force origin wip:v1"),
+    );
+    assert_eq!(note(&ran), None, "a branch to the tag v1: {}", ran.stdout);
+    repo.git(&["branch", "-f", "main", &base]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push --force origin wip:wip main"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(
+        n.contains("rewinds a protected branch"),
+        "the fence, not wip's missing root: {n}"
+    );
+    repo.git(&["switch", "-q", "main"]);
+    let url = repo.git(&["config", "remote.origin.url"]);
+    let instead = format!("url.{url}.insteadOf");
+    repo.git(&["config", &instead, "example-app"]);
+    for script in [
+        "git push --force origin @".to_owned(),
+        format!("git push -f {url}/ main"),
+        "git push -f example-app main".to_owned(),
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
+        let n = note(&ran).unwrap_or_default();
+        assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
+    }
+}

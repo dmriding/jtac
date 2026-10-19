@@ -806,6 +806,18 @@ fn the_agent_hook_is_opt_in_written_once_and_named_for_other_clones() {
         ran.stdout
     );
     assert!(ran.stdout.contains("kept lever node"), "{}", ran.stdout);
+    let exclude = env.repo.path().join(".git").join("info").join("exclude");
+    let listed = |text: &str| text.matches("/.claude/settings.local.json").count();
+    assert_eq!(listed(&std::fs::read_to_string(&exclude).unwrap()), 1);
+    let status = env.git(&["status", "--porcelain"]);
+    assert!(!status.contains(".claude"), "excluded: {status}");
+    std::fs::write(&exclude, "").unwrap();
+    env.init(&["--agent", "claude-code"]);
+    assert_eq!(
+        listed(&std::fs::read_to_string(&exclude).unwrap()),
+        1,
+        "a kept file is excluded again"
+    );
     let ran = env.jtac(&["init", "--agent", "other"]);
     assert_eq!(ran.code, 2, "{}", ran.stdout);
     assert!(
@@ -823,6 +835,50 @@ fn the_agent_hook_is_opt_in_written_once_and_named_for_other_clones() {
         "[]\n",
         "left alone"
     );
+}
+
+#[test]
+fn the_agent_hook_in_a_linked_worktree_is_excluded_through_the_common_dir() {
+    let env = Env::new();
+    env.init(&[]);
+    env.repo.git(&["commit", "-q", "--allow-empty", "-m", "x"]);
+    let outside = Repo::empty();
+    let wt = outside.path().join("wt");
+    env.repo
+        .git(&["worktree", "add", "-q", &slashes(&wt), "-b", "wt"]);
+    let (global, xdg) = (env.global(), slashes(&env.xdg()));
+    let there = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_jtac"))
+            .args(args)
+            .current_dir(&wt)
+            .env_clear()
+            .envs(env.repo.env())
+            .envs([("GIT_CONFIG_GLOBAL", &global), ("XDG_CONFIG_HOME", &xdg)])
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8(out.stdout).unwrap(),
+            String::from_utf8(out.stderr).unwrap(),
+        )
+    };
+    let (code, stdout, stderr) = there(&["init", "--agent", "claude-code"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("wrote tool-call hook "), "{stdout}");
+    assert!(wt.join(".claude").join("settings.local.json").is_file());
+    let exclude = env.repo.path().join(".git").join("info").join("exclude");
+    let text = std::fs::read_to_string(&exclude).unwrap();
+    assert_eq!(text.matches("/.claude/settings.local.json").count(), 1);
+    let status = env
+        .repo
+        .git(&["-C", &slashes(&wt), "status", "--porcelain"]);
+    assert!(
+        !status.contains(".claude"),
+        "excluded in the worktree: {status}"
+    );
+    let (code, stdout, _) = there(&["init", "--agent", "claude-code"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("kept tool-call hook "), "{stdout}");
 }
 
 #[cfg(unix)]
