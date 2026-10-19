@@ -276,6 +276,7 @@ fn every_failure_prints_nothing_and_exits_zero_with_the_reason_on_stderr() {
         let ran = pre_tool(&repo, &["claude-code"], stdin);
         assert_eq!(ran.code, 0, "{claim}: {}", ran.stderr);
         assert_eq!(ran.stdout, "", "{claim}");
+        assert!(!ran.stderr.contains("gave up"), "{claim}: {}", ran.stderr);
         assert!(ran.stderr.contains(stderr), "{claim}: {:?}", ran.stderr);
     }
     let ran = pre_tool(&repo, &["claude-code"], &bash(None, "git push"));
