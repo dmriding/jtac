@@ -8,6 +8,9 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.1.5) The README is written for a reader who has never seen jtac: the install, the quick
+  start, a real block with its three parts, and how a clone checks someone else's evidence,
+  every command and line of output taken from the v0.1.2 release binary.
 - (0.1.4) The Windows test job runs on every pull request and is a required check, so a
   Windows-only break stops at the pull request instead of landing on `main`. It skipped pull
   requests while the repository was private, where Windows minutes bill double.
