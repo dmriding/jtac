@@ -41,8 +41,10 @@ request moves them under a dated heading and bumps nothing.
   told what lands and what `jtac verify` shows, an unreadable or unplaced push names
   `jtac status`. It never blocks: every failure and a one-second cap print nothing and exit
   0 (DESIGN.md 11.3, decision 37). `jtac init --agent claude-code` registers it in
-  `.claude/settings.local.json`; without the flag a clone that shows the agent gets the
-  command in a note (DESIGN.md 11.7 step 5).
+  `.claude/settings.local.json` and lists that file in `.git/info/exclude`; without the flag
+  a clone that shows the agent gets the command in a note (DESIGN.md 11.7 step 5). The
+  classifier's push gained `tags` (`--tags`) and a `:dst` deletion keeps its slot among the
+  sources.
 - (0.0.20, M10b) `jtac-gate` shell command classifier: a script's pushes (remote, refspecs,
   force form, deletions, the directory each runs in), hook bypasses in every spelling of
   `--no-verify` and `core.hooksPath`, directory changes, and what it cannot read, with the

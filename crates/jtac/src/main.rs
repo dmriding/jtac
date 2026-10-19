@@ -142,7 +142,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
             }
         }
         Some(Command::Hook(Hook::PreTool { agent })) => {
-            let (stdout, stderr) = pretool::pre_tool(&agent, cwd, stdin);
+            let (stdout, stderr) = pretool::pre_tool(&agent, cwd, Box::new(stdin_text));
             Run {
                 stdout,
                 stderr,
@@ -159,17 +159,25 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
     }
 }
 
+/// All of stdin; `pre-push` reads it before judging, `pre-tool` on its worker under the cap.
+fn stdin_text() -> Result<String, String> {
+    let mut bytes = Vec::new();
+    match std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes) {
+        Ok(_) => String::from_utf8(bytes).map_err(|_| "it is not UTF-8".to_owned()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    let mut stdin = Ok(String::new());
-    if args.first().is_some_and(|a| a == "hook") {
-        let mut bytes = Vec::new();
-        stdin = match std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes) {
-            Ok(_) => String::from_utf8(bytes).map_err(|_| "it is not UTF-8".to_owned()),
-            Err(e) => Err(e.to_string()),
-        };
-    }
+    let hook = args.first().is_some_and(|a| a == "hook");
+    let advisory = args.get(1).is_some_and(|a| a == "pre-tool");
+    let stdin = if hook && !advisory {
+        stdin_text()
+    } else {
+        Ok(String::new())
+    };
     let ran = run(&args, &cwd, &stdin);
     print!("{}", ran.stdout);
     eprint!("{}", ran.stderr);

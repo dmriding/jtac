@@ -218,18 +218,22 @@ fn an_unnamed_directory_a_non_repository_and_an_unreadable_script_are_short_note
     );
     let n = note(&ran).unwrap();
     assert!(
-        n.contains("could not judge") && n.contains("`jtac status`"),
+        n.contains("could not be judged") && n.contains("`jtac status`"),
         "{n}"
     );
     let elsewhere = Repo::empty();
     let far = elsewhere.path().to_string_lossy().replace('\\', "/");
     let ran = pre_tool(&repo, &["claude-code"], &bash(Some(&far), "git push"));
     assert!(
-        note(&ran).unwrap().contains("could not judge"),
+        note(&ran).unwrap().contains("could not be judged"),
         "{}",
         ran.stdout
     );
-    let ran = pre_tool(&repo, &["claude-code"], &bash(None, "eval \"git $ARGS\""));
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "eval \"git push $ARGS\""),
+    );
     assert!(
         note(&ran).unwrap().contains("nothing in it was judged"),
         "{}",
@@ -268,7 +272,7 @@ fn every_failure_prints_nothing_and_exits_zero_with_the_reason_on_stderr() {
     }
     let ran = pre_tool(&repo, &["claude-code"], &bash(None, "git push"));
     assert!(
-        note(&ran).unwrap().contains("could not judge"),
+        note(&ran).unwrap().contains("could not be judged"),
         "no commit yet: {}",
         ran.stdout
     );
@@ -284,4 +288,84 @@ fn every_failure_prints_nothing_and_exits_zero_with_the_reason_on_stderr() {
         "{}",
         ran.stderr
     );
+}
+
+/// Refspec forms resolve as git resolves them: a `:dst` beside an update deletes only its
+/// own ref; `HEAD` is the current branch, not the one it merges with, while a bare push is;
+/// a tag by bare name or full ref passes on its name; a wildcard and a word the shell built
+/// cannot be placed; the old tip follows the remote's fetch refspec.
+#[test]
+fn refspecs_resolve_as_git_does_and_the_old_tip_follows_the_fetch_refspec() {
+    let Checked { repo, base } = checked();
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push origin main :topic"),
+    );
+    assert_eq!(note(&ran), None, "{}", ran.stdout);
+    repo.git(&["tag", "v1"]);
+    repo.write("b.txt", b"b\n");
+    repo.commit("bare");
+    repo.git(&["tag", "v2"]);
+    for script in [
+        "git push origin v1",
+        "git push origin v2",
+        "git push origin refs/tags/v2",
+        "git push origin tag v2",
+        "git push origin --tags",
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, script));
+        assert_eq!(note(&ran), None, "{script}: {}", ran.stdout);
+    }
+    for script in [
+        "git push origin 'refs/heads/rel/*:refs/heads/rel/*'",
+        "git push origin \"$BRANCH\"",
+        "git push --all origin",
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, script));
+        let n = note(&ran).unwrap_or_default();
+        assert!(n.contains("could not be judged"), "{script}: {n}");
+    }
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["switch", "-q", "-c", "feature", &base]);
+    repo.git(&["branch", "--set-upstream-to=origin/main"]);
+    repo.write("c.txt", b"c\n");
+    repo.commit("rework");
+    let out = repo.command(env!("CARGO_BIN_EXE_jtac"), &["check"]);
+    assert!(out.status.success());
+    let ran = pre_tool(&repo, &["claude-code"], &bash(None, "git push origin HEAD"));
+    assert_eq!(note(&ran), None, "HEAD is feature: {}", ran.stdout);
+    let ran = pre_tool(&repo, &["claude-code"], &bash(None, "git push"));
+    let n = note(&ran).unwrap();
+    assert!(
+        n.contains("rewinds a protected branch"),
+        "bare push merges with main: {n}"
+    );
+    repo.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/*:refs/remotes/company/*",
+    ]);
+    let main = repo.git(&["rev-parse", "refs/remotes/origin/main"]);
+    repo.git(&["update-ref", "refs/remotes/company/main", &main]);
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push origin HEAD:main"),
+    );
+    let n = note(&ran).unwrap();
+    assert!(
+        n.contains("rewinds a protected branch"),
+        "through the fetch refspec: {n}"
+    );
+    let url = repo.git(&["config", "remote.origin.url"]);
+    for script in [
+        format!("git push -f {url} HEAD:main"),
+        "git push -f origin HEAD:heads/main".to_owned(),
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
+        let n = note(&ran).unwrap_or_default();
+        assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
+    }
 }

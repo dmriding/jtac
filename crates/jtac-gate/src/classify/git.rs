@@ -528,6 +528,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         force: Force::No,
         delete: false,
         all_refs: false,
+        tags: false,
         dry_run: false,
         bypass,
         opaque: args.iter().any(|w| w.unresolved),
@@ -577,6 +578,8 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
                     p.force = unforced(lease);
                 }
             }
+            Some("--tags") => p.tags = true,
+            Some("--no-tags") => p.tags = false,
             Some("--dry-run") => p.dry_run = true,
             Some("--no-dry-run") => p.dry_run = false,
             Some("--force-with-lease") => {
@@ -644,6 +647,7 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
         match spec.split_once(':') {
             Some(("", dst)) => {
                 p.delete = true;
+                p.sources.push(String::new());
                 p.destinations.push(dst.to_string());
             }
             Some((src, dst)) => {

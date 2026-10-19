@@ -8,8 +8,10 @@ use crate::push::{Decision, Refuse};
 /// The note for a script, `None` when nothing in it would meet the gate. `decided` is the
 /// push gatherer's answer for one push: `None` when where it runs is unnamed or not a
 /// repository this process can read. A pass
-/// and a dry run are silent; an unreadable command is noted only when its text names git,
-/// so a `bash -c` that cannot push stays quiet.
+/// and a dry run are silent; an unreadable command is noted only when its text says push,
+/// so a `bash -c` or an `xargs git show` that cannot push stays quiet. A bypass on a
+/// command that is not a push is silent unless it lasts past the command: jtac's gate is
+/// the pre-push hook, and `commit-msg` ships empty.
 pub fn note(actions: &[Action], decided: &dyn Fn(&Push) -> Option<Decision>) -> Option<String> {
     let lines: Vec<String> = actions
         .iter()
@@ -19,8 +21,11 @@ pub fn note(actions: &[Action], decided: &dyn Fn(&Push) -> Option<Decision>) -> 
                 Some(b) => Some(bypass(b, &p.raw)),
                 None => push(p, decided(p).as_ref()),
             },
-            Action::HookBypass { spelling, raw } => Some(bypass(*spelling, raw)),
-            Action::Unreadable { why, raw } if raw.contains("git") => Some(unread(why, raw)),
+            Action::HookBypass { spelling, raw } if lasts(*spelling) => {
+                Some(bypass(*spelling, raw))
+            }
+            Action::HookBypass { .. } => None,
+            Action::Unreadable { why, raw } if raw.contains("push") => Some(unread(why, raw)),
             Action::ChangeDir { .. } | Action::Unreadable { .. } => None,
         })
         .collect();
@@ -34,8 +39,8 @@ fn push(p: &Push, decided: Option<&Decision>) -> Option<String> {
     let cmd = short(&p.raw);
     let line = match decided {
         None => format!(
-            "jtac: `{cmd}` runs in a directory this reader could not judge. Run `jtac status` \
-             there before pushing."
+            "jtac: `{cmd}` could not be judged: where it runs or what it pushes is not named \
+             here. Run `jtac status` there before pushing."
         ),
         Some(Decision::Pass(_)) => return None,
         Some(Decision::Refuse(Refuse::Absent)) => format!(
@@ -68,11 +73,23 @@ fn bypass(spelling: Bypass, raw: &str) -> String {
              no push from here is judged until it is unset; `jtac verify` shows each one as \
              uncovered."
         ),
+        Bypass::ConfigParameters | Bypass::ConfigEnvVar => format!(
+            "jtac: `{cmd}` moves git's hooks for the rest of this script, so a push after it \
+             lands with no root and `jtac verify` shows it as uncovered."
+        ),
         _ => format!(
             "jtac: `{cmd}` skips the pre-push hook; the push lands with no root and \
              `jtac verify` shows it as uncovered."
         ),
     }
+}
+
+/// A bypass that outlives its own command: a config write, or an exported variable.
+fn lasts(spelling: Bypass) -> bool {
+    matches!(
+        spelling,
+        Bypass::ConfigWrite | Bypass::ConfigParameters | Bypass::ConfigEnvVar
+    )
 }
 
 fn unread(why: &Unread, raw: &str) -> String {
@@ -139,7 +156,7 @@ mod tests {
     fn an_unjudged_directory_says_so_and_names_status() {
         let n = note(&classify("cd \"$D\" && git push"), &|_| None).unwrap();
         assert!(
-            n.contains("could not judge") && n.contains("`jtac status`"),
+            n.contains("could not be judged") && n.contains("`jtac status`"),
             "{n}"
         );
     }
@@ -152,13 +169,28 @@ mod tests {
         assert!(!n.contains("Run `"), "{n}");
         let w = note(&classify("git config core.hooksPath /dev/null"), &|_| None).unwrap();
         assert!(w.contains("every later command"), "{w}");
+        let e = "export GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/dev/null'\"; git push";
+        let w = note(&classify(e), &|_| None).unwrap();
+        assert!(w.contains("rest of this script"), "{w}");
+        for quiet in [
+            "git commit --no-verify -m x",
+            "git commit -n -m x",
+            "git merge --no-verify topic",
+            "git -c core.hooksPath=/dev/null log",
+        ] {
+            assert_eq!(note(&classify(quiet), &|_| None), None, "{quiet}");
+        }
     }
 
     #[test]
     fn an_unreadable_command_is_noted_only_when_its_text_names_git() {
         let n = note(&classify("bash -c \"$X\""), &|_| None);
         assert_eq!(n, None);
-        let n = note(&classify("eval \"git $ARGS\""), &|_| None).unwrap();
+        let n = note(&classify("eval \"git $ARGS\""), &|_| None);
+        assert_eq!(n, None, "a reader cannot tell a push from a log");
+        let n = note(&classify("git log -n3 | xargs -n1 git show"), &|_| None);
+        assert_eq!(n, None);
+        let n = note(&classify("eval \"git push $ARGS\""), &|_| None).unwrap();
         assert!(n.contains("nothing in it was judged"), "{n}");
     }
 

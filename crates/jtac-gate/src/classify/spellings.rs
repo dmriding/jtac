@@ -13,6 +13,8 @@ fn show(actions: &[Action]) -> String {
                 for (src, dst) in p.sources.iter().zip(&p.destinations) {
                     s.push_str(&format!(" {src}>{dst}"));
                 }
+                // A `:dst` keeps its slot, so a deletion between two updates reads in order
+                // (`git push origin :old main` is `>old main>main`).
                 for dst in p.destinations.iter().skip(p.sources.len()) {
                     s.push_str(&format!(" >{dst}"));
                 }
@@ -26,6 +28,7 @@ fn show(actions: &[Action]) -> String {
                     (p.all_refs, "all"),
                     (p.dry_run, "dry"),
                     (p.opaque, "opaque"),
+                    (p.tags, "tags"),
                 ] {
                     if on {
                         s.push_str(&format!(" {word}"));
@@ -381,6 +384,11 @@ const FORCE: &[(&str, &str)] = &[
     ("git push --del origin old", "push origin >old delete"),
     ("git push --dry origin main", "push origin main>main dry"),
     ("git push --all origin", "push origin all"),
+    ("git push origin --tags", "push origin tags"),
+    (
+        "git push --tags --no-tags origin main",
+        "push origin main>main",
+    ),
     (
         "git push origin 'refs/heads/*'",
         "push origin refs/heads/*>refs/heads/* all",
@@ -392,6 +400,14 @@ const REFSPECS: &[(&str, &str)] = &[
     ("git push -d origin old", "push origin >old delete"),
     ("git push --delete origin a b", "push origin >a >b delete"),
     ("git push origin :old", "push origin >old delete"),
+    (
+        "git push origin main :old",
+        "push origin main>main >old delete",
+    ),
+    (
+        "git push origin :old main",
+        "push origin >old main>main delete",
+    ),
     ("git push -fd origin old", "push origin >old force delete"),
     (
         "git push origin main:refs/heads/x",

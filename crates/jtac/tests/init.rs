@@ -824,3 +824,35 @@ fn the_agent_hook_is_opt_in_written_once_and_named_for_other_clones() {
         "left alone"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_agent_directory_or_settings_file_is_refused_and_left_alone() {
+    let env = Env::new();
+    let outside = Repo::empty();
+    std::os::unix::fs::symlink(outside.path(), env.repo.path().join(".claude")).unwrap();
+    let ran = env.jtac(&["init", "--agent", "claude-code"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("is a symlink") && ran.stderr.contains("negotiation: "),
+        "{}",
+        ran.stderr
+    );
+    assert!(
+        std::fs::read_dir(outside.path()).unwrap().next().is_none(),
+        "nothing written through the link"
+    );
+    std::fs::remove_file(env.repo.path().join(".claude")).unwrap();
+    std::fs::create_dir(env.repo.path().join(".claude")).unwrap();
+    let target = outside.path().join("settings.json");
+    std::fs::write(&target, "{}").unwrap();
+    std::os::unix::fs::symlink(&target, env.repo.path().join(".claude/settings.local.json"))
+        .unwrap();
+    let ran = env.jtac(&["init", "--agent", "claude-code"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "{}",
+        "left alone"
+    );
+}

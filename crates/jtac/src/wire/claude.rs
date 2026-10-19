@@ -113,19 +113,28 @@ pub fn merge(existing: Option<&str>, exe: &str) -> Result<Merge, String> {
         return Err("`hooks.PreToolUse` is not a JSON array".to_owned());
     };
     let want = command_line(exe);
-    let suffix = format!(" hook pre-tool {NAME}");
     let ours = pre
         .iter_mut()
         .filter_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut))
         .flatten()
         .filter_map(|h| h.get_mut("command"))
-        .find(|c| c.as_str().is_some_and(|c| c.ends_with(&suffix)));
+        .find(|c| c.as_str().is_some_and(is_ours));
     match ours {
         Some(c) if c.as_str() == Some(&want) => return Ok(Merge::Present),
         Some(c) => *c = Value::String(want),
         None => pre.push(entry(exe)),
     }
     Ok(Merge::Written(pretty(&root)))
+}
+
+/// Exactly [`command_line`] for some path: a quoted path and nothing before it, so a
+/// command that merely ends in the words is someone else's and is kept.
+fn is_ours(command: &str) -> bool {
+    command
+        .strip_prefix('\'')
+        .and_then(|r| r.strip_suffix(&format!(" hook pre-tool {NAME}")))
+        .and_then(|r| r.strip_suffix('\''))
+        .is_some_and(|path| !path.contains('\''))
 }
 
 fn pretty(v: &Value) -> String {
@@ -198,7 +207,16 @@ mod tests {
         };
         let v: Value = serde_json::from_str(&both).unwrap();
         assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["permissions", "hooks"], "their order is kept");
         assert_eq!(v["permissions"]["allow"][0], "Bash(ls)");
+        let lookalike = r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+            {"type":"command","command":"echo hook pre-tool claude-code"}]}]}}"#;
+        let Merge::Written(kept) = merge(Some(lookalike), exe).unwrap() else {
+            panic!("a lookalike is not ours")
+        };
+        assert!(kept.contains("echo hook pre-tool claude-code"), "{kept}");
+        assert!(kept.contains(&command_line(exe)), "{kept}");
         assert!(
             merge(Some("[]"), exe)
                 .unwrap_err()

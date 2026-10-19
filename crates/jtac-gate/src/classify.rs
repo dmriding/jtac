@@ -111,7 +111,8 @@ pub enum Unread {
 pub struct Push {
     /// The repository argument, or `--repo`.
     pub remote: Option<String>,
-    /// Local sides of the refspecs; empty for a deletion.
+    /// Local sides of the refspecs, one per destination: an empty string for a `:dst`
+    /// deletion, none at all under `--delete`.
     pub sources: Vec<String>,
     /// Remote sides of the refspecs, `tag X` spelled out.
     pub destinations: Vec<String>,
@@ -121,6 +122,8 @@ pub struct Push {
     pub delete: bool,
     /// `--all`, `--branches`, `--mirror`, or a wildcard destination: no branch is named.
     pub all_refs: bool,
+    /// `--tags`: every tag, beside any refspec.
+    pub tags: bool,
     /// `--dry-run` or `-n`.
     pub dry_run: bool,
     /// How the pre-push hook is skipped, if it is.

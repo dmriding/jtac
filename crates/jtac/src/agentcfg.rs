@@ -28,6 +28,11 @@ pub fn plan(repo: &Path, exe: &str, name: Option<&str>) -> Result<Option<Planned
         return Err(Refusal::init_no_agent(name));
     }
     let path = repo.join(claude::SETTINGS);
+    for at in [path.parent().unwrap_or(&path), &path] {
+        if at.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+            return Err(Refusal::init_agent_symlink(at));
+        }
+    }
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -76,11 +81,37 @@ pub fn apply(
                 }
                 std::fs::write(&p.path, text)
                     .map_err(|e| Refusal::init_io("the agent settings", &p.path, &e))?;
+                exclude(repo)?;
             }
             out.wrote("agent", format!("tool-call hook {shown}"));
         }
     }
     Ok(())
+}
+
+/// The per-clone file in git's per-clone exclude list, once: it names this machine's
+/// binary, so it is never committed, and left untracked it would make the work tree dirty
+/// for `jtac check` (`the_agent_hook_is_opt_in_written_once_and_named_for_other_clones`).
+fn exclude(repo: &Path) -> Result<(), Refusal> {
+    let line = format!("/{}", claude::SETTINGS);
+    let dir = repo.join(".git").join("info");
+    let path = dir.join("exclude");
+    let had = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Refusal::init_io("the exclude list", &path, &e)),
+    };
+    if had.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| Refusal::init_io("the exclude list", &dir, &e))?;
+    let sep = if had.is_empty() || had.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::write(&path, format!("{had}{sep}{line}\n"))
+        .map_err(|e| Refusal::init_io("the exclude list", &path, &e))
 }
 
 impl Refusal {
@@ -91,6 +122,21 @@ impl Refusal {
             "Each agent's tool-call hook speaks its own wire; an adapter is written per agent \
              and v0.1 ships one.",
             format!("Run `jtac init --agent {}`.", claude::NAME),
+        )
+    }
+
+    /// `.claude` or the settings file is a link.
+    pub fn init_agent_symlink(path: &Path) -> Self {
+        let path = slashes(path);
+        ask(
+            format!("`{path}` is a symlink."),
+            "jtac writes the agent's settings only as a file of this clone, never through a \
+             link that can point anywhere on the machine.",
+            format!(
+                "Replace the link with a directory or file of this clone, then run `jtac init \
+                 --agent {}` again.",
+                claude::NAME
+            ),
         )
     }
 
