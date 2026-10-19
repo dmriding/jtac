@@ -82,8 +82,8 @@ if [ "$got" != "$want" ]; then
 fi
 
 tar xzf "$tmp/$archive" -C "$tmp"
-if ! { mkdir -p "$to" && cp "$tmp/${archive%.tar.gz}/jtac" "$to/.jtac.new" && chmod 755 "$to/.jtac.new" && mv -f "$to/.jtac.new" "$to/jtac"; }; then
-  rm -f "$to/.jtac.new"
+if ! { mkdir -p "$to" && [ ! -d "$to/jtac" ] && cp "$tmp/${archive%.tar.gz}/jtac" "$to/.jtac.new" && chmod 755 "$to/.jtac.new" && mv -f "$to/.jtac.new" "$to/jtac"; }; then
+  rm -f "$to/.jtac.new" 2>/dev/null || true
   echo "install.sh: could not write $to/jtac; nothing installed." >&2
   echo "The archive verified; only the destination refused the write." >&2
   echo "Pick a directory you can write with --to DIR, then run the installer again." >&2

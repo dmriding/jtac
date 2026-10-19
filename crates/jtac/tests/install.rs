@@ -126,6 +126,12 @@ fn the_installer_verifies_the_archive_and_installs_nothing_on_a_mismatch() {
     assert!(stderr.contains("could not fetch"), "{stderr}");
     assert!(!to.join("jtac").exists());
     release(lab.path(), target);
+    std::fs::create_dir_all(to.join("jtac")).unwrap();
+    let (code, _, stderr) = install(lab.path(), &to);
+    assert_eq!(code, 2, "a directory where the binary goes: {stderr}");
+    assert!(stderr.contains("could not write"), "{stderr}");
+    assert!(to.join("jtac").is_dir() && !to.join("jtac").join(".jtac.new").exists());
+    std::fs::remove_dir(to.join("jtac")).unwrap();
     let sealed = lab.path().join("sealed");
     std::fs::create_dir(&sealed).unwrap();
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();

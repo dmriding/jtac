@@ -49,7 +49,8 @@ pub struct Judged {
 /// Decision 38's fact: no parent of `head`, and nothing behind any of them, ever held
 /// `.jtac/policy.toml`. Read from history, never from the diff's base, which `--base` lets
 /// the pusher choose; every parent, since a merge whose first parent never held a policy
-/// would otherwise weaken the one its second parent holds
+/// would otherwise weaken the one its second parent holds; through `rev-list`, since `log`
+/// reads `log.follow` and `log.showRoot` from the pusher's own config and either hides the hit
 /// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`). A root commit
 /// has no parent and no diff to judge.
 fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
@@ -64,7 +65,7 @@ fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
     if parents.is_empty() {
         return Ok(false);
     }
-    let mut args = vec!["log", "-1", "--full-history", "--format=%H"];
+    let mut args = vec!["rev-list", "-1", "--full-history"];
     args.extend(parents.lines());
     args.extend(["--", jtac_policy::POLICY_PATH]);
     let touched = repo::probe(repo, &args, 128).map_err(git)?;
