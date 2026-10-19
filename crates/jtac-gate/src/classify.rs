@@ -59,6 +59,17 @@ impl Dir {
     }
 }
 
+/// How a refspec names its destination, which decides whether git asks the remote about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spec {
+    /// `main`: the source's own ref, mapped through `remote.<r>.push` or the upstream.
+    Bare,
+    /// `+main`: the source's own ref, unmapped, as git reads a forced bare name.
+    Forced,
+    /// `src:main`, `:main`, `--delete main`: a name the remote is asked about.
+    Spelled,
+}
+
 /// How a hook is skipped. Each is a row of the spellings table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bypass {
@@ -116,9 +127,8 @@ pub struct Push {
     pub sources: Vec<String>,
     /// Remote sides of the refspecs, `tag X` spelled out.
     pub destinations: Vec<String>,
-    /// Per destination, whether a colon spelled it: a bare `main` is the source's own ref,
-    /// which git never asks the remote about; `src:main` and `--delete main` it does.
-    pub spelled: Vec<bool>,
+    /// Per destination, how it was named.
+    pub specs: Vec<Spec>,
     /// How hard it lands.
     pub force: Force,
     /// `--delete`, `-d`, or a `:dst` refspec.

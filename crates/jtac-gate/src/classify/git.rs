@@ -3,7 +3,7 @@
 //! value never passes for the subcommand; a long option may be abbreviated, as git allows.
 
 use super::program::{base_name, is_assignment, names_git};
-use super::{Action, Bypass, Dir, Force, Push, Unread};
+use super::{Action, Bypass, Dir, Force, Push, Spec, Unread};
 use crate::shell::quote::{ansi_decode, spells_a_substitution};
 use crate::shell::{Simple, Word};
 
@@ -525,7 +525,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         remote: None,
         sources: Vec::new(),
         destinations: Vec::new(),
-        spelled: Vec::new(),
+        specs: Vec::new(),
         force: Force::No,
         delete: false,
         all_refs: false,
@@ -638,6 +638,7 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
         i += 1;
     }
     for spec in &specs {
+        let forced = spec.starts_with('+');
         let spec = match spec.strip_prefix('+') {
             Some(rest) => {
                 p.force = Force::Force;
@@ -650,23 +651,23 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
                 p.delete = true;
                 p.sources.push(String::new());
                 p.destinations.push(dst.to_string());
-                p.spelled.push(true);
+                p.specs.push(Spec::Spelled);
             }
             Some((src, dst)) => {
                 p.sources.push(src.to_string());
                 p.destinations.push(dst.to_string());
-                p.spelled.push(true);
+                p.specs.push(Spec::Spelled);
             }
             None => {
                 p.sources.push(spec.to_string());
                 p.destinations.push(spec.to_string());
-                p.spelled.push(false);
+                p.specs.push(if forced { Spec::Forced } else { Spec::Bare });
             }
         }
     }
     if delete_flag {
         p.sources.clear();
-        p.spelled = vec![true; p.destinations.len()];
+        p.specs = vec![Spec::Spelled; p.destinations.len()];
     }
     if p.destinations.iter().any(|d| d.contains('*')) {
         p.all_refs = true;

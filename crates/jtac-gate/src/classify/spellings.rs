@@ -2,7 +2,7 @@
 //! The one table (DESIGN.md section 11.4): every spelling the classifier must read, bypasses
 //! first. A new bypass is a new row, with the fix.
 
-use super::{Action, Dir, Force, Unread, classify};
+use super::{Action, Dir, Force, Spec, Unread, classify};
 
 fn show(actions: &[Action]) -> String {
     let mut lines = Vec::new();
@@ -10,11 +10,12 @@ fn show(actions: &[Action]) -> String {
         lines.push(match a {
             Action::Push(p) => {
                 let mut s = format!("push {}", p.remote.as_deref().unwrap_or("?"));
-                let specs = p.sources.iter().zip(&p.destinations).zip(&p.spelled);
-                for ((src, dst), spelled) in specs {
-                    match spelled {
-                        true => s.push_str(&format!(" {src}>{dst}")),
-                        false => s.push_str(&format!(" {src}")),
+                let specs = p.sources.iter().zip(&p.destinations).zip(&p.specs);
+                for ((src, dst), spec) in specs {
+                    match spec {
+                        Spec::Spelled => s.push_str(&format!(" {src}>{dst}")),
+                        Spec::Forced => s.push_str(&format!(" +{src}")),
+                        Spec::Bare => s.push_str(&format!(" {src}")),
                     }
                 }
                 // A `:dst` keeps its slot, so a deletion between two updates reads in order
@@ -303,7 +304,7 @@ const FORCE: &[(&str, &str)] = &[
         "git push --force-with-lease --force origin main",
         "push origin main force",
     ),
-    ("git push origin +main", "push origin main force"),
+    ("git push origin +main", "push origin +main force"),
     ("git push -fu origin main", "push origin main force"),
     ("git push --mirror origin", "push origin force all"),
     ("git push --mirr origin", "push origin force all"),

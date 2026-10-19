@@ -463,51 +463,107 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
         let ran = pre_tool(&repo, &["claude-code"], &bash(None, script));
         assert_eq!(note(&ran), None, "{script}: {}", ran.stdout);
     }
-    let parent = std::path::Path::new(&url).parent().unwrap();
-    let short = format!(
-        "pshort:{}",
-        std::path::Path::new(&url)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-    );
-    let rule = format!("url.{}/.pushInsteadOf", parent.to_str().unwrap());
-    repo.git(&["config", &rule, "pshort:"]);
+}
+
+/// A bare name is mapped as `builtin/push.c` maps it: through `remote.<r>.push` or, under
+/// `push.default = upstream`, the branch's one upstream with a remote, then resolved as a
+/// spelled name; `+name` and a push by URL are unmapped. A URL is matched through `insteadOf`
+/// and `pushInsteadOf` as git rewrites it. A name no fetch refspec covers and no tracking ref
+/// shows is unjudged.
+#[test]
+fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
+    let Checked { repo, base } = checked();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["reset", "-q", "--hard", &base]);
+    let url = repo.git(&["config", "remote.origin.url"]);
+    let judged = |script: &str| {
+        note(&pre_tool(&repo, &["claude-code"], &bash(None, script))).unwrap_or_default()
+    };
+    let fence = "rewinds a protected branch";
+    let path = std::path::Path::new(&url);
+    let parent = path.parent().unwrap().to_str().unwrap().to_owned();
+    let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+    repo.git(&["config", &format!("url.{parent}/.pushInsteadOf"), "pshort:"]);
     repo.git(&["config", "push.default", "upstream"]);
     repo.git(&["switch", "-q", "-c", "feature"]);
     repo.git(&["branch", "--set-upstream-to=origin/main"]);
-    let ran = pre_tool(
-        &repo,
-        &["claude-code"],
-        &bash(None, "git push --force origin feature"),
+    assert!(
+        judged("git push --force origin feature").contains(fence),
+        "upstream"
     );
-    let n = note(&ran).unwrap_or_default();
-    assert!(n.contains("rewinds a protected branch"), "upstream: {n}");
+    let full = judged("git push --force origin refs/heads/feature");
+    assert!(full.contains(fence), "a full source maps too: {full}");
+    repo.git(&[
+        "config",
+        "--add",
+        "branch.feature.merge",
+        "refs/heads/staging",
+    ]);
+    let two = judged("git push --force origin feature");
+    assert!(two.contains("no root"), "two upstreams map nothing: {two}");
+    repo.git(&[
+        "config",
+        "--replace-all",
+        "branch.feature.merge",
+        "refs/heads/main",
+    ]);
+    repo.git(&["config", "--unset", "branch.feature.remote"]);
+    let none = judged("git push --force origin feature");
+    assert!(
+        none.contains("no root"),
+        "an upstream with no remote maps nothing: {none}"
+    );
+    repo.git(&["config", "branch.feature.remote", "origin"]);
     repo.git(&["config", "push.default", "simple"]);
     repo.git(&[
         "config",
         "remote.origin.push",
         "refs/heads/feature:refs/heads/main",
     ]);
+    let spec = judged("git push --force origin feature");
+    assert!(spec.contains(fence), "remote.origin.push: {spec}");
+    let short = judged(&format!("git push -f pshort:{name} main"));
+    assert!(short.contains(fence), "pushInsteadOf: {short}");
     for script in [
-        "git push --force origin feature".to_owned(),
-        format!("git push -f {short} main"),
+        "git push origin +feature".to_owned(),
+        format!("git push --force {url} feature"),
     ] {
-        let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
-        let n = note(&ran).unwrap_or_default();
-        assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
+        let n = judged(&script);
+        assert!(
+            n.contains("no root"),
+            "unmapped, feature's own name: {script}: {n}"
+        );
     }
+    repo.git(&["config", "remote.origin.push", "refs/heads/feature:main"]);
+    let bare = judged("git push --force origin feature");
+    assert!(
+        bare.contains(fence),
+        "a mapped bare name is resolved: {bare}"
+    );
+    repo.git(&["config", &format!("url.{parent}/.insteadOf"), "al:"]);
+    repo.git(&["config", "remote.origin.url", &format!("al:{name}")]);
+    let fetched = judged(&format!("git push --force {url} HEAD:main"));
+    assert!(
+        fetched.contains(fence),
+        "the fetch form of an aliased url: {fetched}"
+    );
+    repo.git(&["config", "remote.origin.url", &url]);
+    repo.git(&["tag", "main", &base]);
     repo.git(&[
         "config",
         "remote.origin.fetch",
         "+refs/heads/dev:refs/remotes/origin/dev",
     ]);
-    let ran = pre_tool(
-        &repo,
-        &["claude-code"],
-        &bash(None, "git push --force origin v1:main"),
+    let del = judged("git push origin --delete main");
+    assert!(
+        del.contains("deletes a protected branch"),
+        "the tracking ref before a local tag: {del}"
     );
-    let n = note(&ran).unwrap_or_default();
-    assert!(n.contains("could not be judged"), "single-branch: {n}");
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    repo.git(&["tag", "v1", &base]);
+    let blind = judged("git push --force origin v1:main");
+    assert!(
+        blind.contains("could not be judged"),
+        "uncovered and untracked: {blind}"
+    );
 }
