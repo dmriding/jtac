@@ -42,17 +42,31 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request_target'
     steps:
+      # The base branch is checked out, never the pull request; its commits are only read.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: every commit carries a Signed-off-by trailer
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
-          missing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
-            --jq '.[] | select(.commit.message | test("(^|\n)Signed-off-by: .+ <.+@.+>") | not) | .sha')
+          git fetch -q --no-tags origin "refs/pull/${PR}/head"
+          commits=$(git rev-list "${PR_BASE}..${PR_HEAD}")
+          missing=
+          for c in $commits; do
+            if git show -s --format=%B "$c" | grep -Eq '^Signed-off-by: .+ <.+@.+>'; then continue; fi
+            # An unsigned merge passes only as the clean merge of its two parents: nothing of its own (#74).
+            set -- $(git show -s --format=%P "$c")
+            if [ $# -eq 2 ] && clean=$(git merge-tree --write-tree "$1" "$2" 2>/dev/null) \
+               && [ "$clean" = "$(git show -s --format=%T "$c")" ]; then continue; fi
+            missing="$missing $c"
+          done
           if [ -n "$missing" ]; then
             echo "Commits without a Signed-off-by trailer (CLA.md section 10):"
-            echo "$missing"
+            for c in $missing; do echo "$c"; done
             echo 'Fix: git rebase --signoff origin/main, then force-push your branch.'
             exit 1
           fi

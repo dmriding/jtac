@@ -6,6 +6,14 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.1.3) The `signoff` CI job failed every pull request after GitHub's "Update branch" button:
+  the merge commit it writes carries no `Signed-off-by` trailer. A merge whose tree is exactly
+  the clean merge of its two parents is now exempt, proven with `git merge-tree` on the runner;
+  any other merge can carry content of its own and is checked like any commit. The job walks
+  the commits with git instead of the API, which listed at most 250 and passed the rest unseen.
+
 ## [0.1.2] - 2026-10-19
 
 ### Fixed

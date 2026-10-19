@@ -7,7 +7,8 @@ Before anything is merged:
    credited as a contributor in the history, contributor list, and release
    notes. Post the acceptance comment from section 10 on your first pull
    request and add a `Signed-off-by` trailer with your real name and email to
-   every commit.
+   every commit. A merge that is exactly the clean merge of its parents, such
+   as the "Update branch" button writes, is exempt.
 2. **Read `DESIGN.md`.** It is the source of truth. If the code and the design
    disagree, say so in the pull request instead of picking one.
 3. **Pass the quality bars.** Every commit runs clean through:
