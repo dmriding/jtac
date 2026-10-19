@@ -2,7 +2,8 @@
 //! into actions, each push judged where it would run by the decision the `pre-push` hook
 //! asks, and the note handed back on the agent's wire. It advises and never blocks: every
 //! failure prints nothing and exits 0, and the work, stdin included, runs on a thread the
-//! main one abandons at the cap, so a slow script or a held pipe costs the agent one second.
+//! main one abandons at the cap, so a slow script or a held pipe costs the agent one second,
+//! or what `JTAC_PRETOOL_CAP_MS` says on a machine where git is slower to start.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -16,8 +17,13 @@ use jtac_store::Store;
 use crate::wire::claude;
 use crate::{coverage, repo, update};
 
-/// The wall clock the hook gives itself (decided 2026-10-19).
+/// The wall clock the hook gives itself (decided 2026-10-19) when [`CAP_VAR`] is unset.
 pub const CAP: Duration = Duration::from_millis(1000);
+
+/// Milliseconds in place of [`CAP`]; one judgment is thirty-odd git processes, past a
+/// second where each one starts slowly (issue 64). The agent's own timeout still bounds the
+/// hook: the settings `init` writes give Claude Code two seconds ([`claude::TIMEOUT`]).
+pub const CAP_VAR: &str = "JTAC_PRETOOL_CAP_MS";
 
 /// What reads the agent's JSON, on the worker.
 pub type Stdin = Box<dyn FnOnce() -> Result<String, String> + Send>;
@@ -31,6 +37,7 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
         );
         return (String::new(), why);
     }
+    let cap = cap(std::env::var(CAP_VAR).ok().as_deref());
     let cwd = cwd.to_path_buf();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -40,7 +47,7 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
         };
         let _ = tx.send(answer);
     });
-    match rx.recv_timeout(CAP) {
+    match rx.recv_timeout(cap) {
         Ok((note, diagnostics)) => (
             note.as_deref().map(claude::output).unwrap_or_default(),
             diagnostics
@@ -52,10 +59,16 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
             String::new(),
             format!(
                 "jtac: pre-tool gave up after {}ms; the pre-push hook still judges the push\n",
-                CAP.as_millis()
+                cap.as_millis()
             ),
         ),
     }
+}
+
+/// [`CAP_VAR`]'s value as the cap; unset or not a count of milliseconds is [`CAP`].
+fn cap(var: Option<&str>) -> Duration {
+    var.and_then(|v| v.parse().ok())
+        .map_or(CAP, Duration::from_millis)
 }
 
 /// The note and what could not be judged, for stderr.
@@ -450,6 +463,24 @@ fn short_branch(repo: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cap_is_the_variable_in_milliseconds_and_anything_else_is_the_default() {
+        assert_eq!(cap(None), CAP);
+        assert_eq!(cap(Some("1")), Duration::from_millis(1));
+        assert_eq!(cap(Some("60000")), Duration::from_secs(60));
+        assert_eq!(cap(Some("0")), Duration::ZERO);
+        for bad in [
+            "",
+            "not a number",
+            "-1",
+            "1.5",
+            "2s",
+            "18446744073709551616",
+        ] {
+            assert_eq!(cap(Some(bad)), CAP, "{bad:?}");
+        }
+    }
 
     #[test]
     fn a_url_is_rewritten_as_git_does_longest_prefix_first_and_push_rules_only_for_a_push() {
