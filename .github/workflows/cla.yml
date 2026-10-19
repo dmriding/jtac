@@ -42,16 +42,27 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request_target'
     steps:
-      # Merge commits are exempt: the "Update branch" button writes one with no trailer (#74).
-      - name: every non-merge commit carries a Signed-off-by trailer
+      # Exempt only a merge GitHub wrote and signed itself: the "Update branch" button's (#74).
+      # A hand-made merge can carry new content, so it is checked like any commit.
+      - name: every commit carries a Signed-off-by trailer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -eu
-          missing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
-            --jq '.[] | select((.parents | length) < 2)
-                  | select(.commit.message | test("(^|\n)Signed-off-by: .+ <.+@.+>") | not) | .sha')
+          api="repos/${GITHUB_REPOSITORY}/pulls/${PR}"
+          gh api --paginate "$api/commits" --jq '.[]' > commits.json
+          listed=$(jq -s length commits.json)
+          expected=$(gh api "$api" --jq .commits)
+          if [ "$listed" != "$expected" ]; then
+            echo "The API listed $listed of the pull request's $expected commits (it stops at 250)."
+            echo 'Fix: squash or split the pull request to fewer than 250 commits, then push.'
+            exit 1
+          fi
+          missing=$(jq -r '
+            select((.parents | length) >= 2 and .committer.login == "web-flow"
+                   and .commit.verification.verified == true | not)
+            | select(.commit.message | test("(^|\n)Signed-off-by: .+ <.+@.+>") | not) | .sha' commits.json)
           if [ -n "$missing" ]; then
             echo "Commits without a Signed-off-by trailer (CLA.md section 10):"
             echo "$missing"

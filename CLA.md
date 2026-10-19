@@ -105,8 +105,9 @@ I have read and accept the jtac Contributor Assignment Agreement, version 1.
 Add a `Signed-off-by: Real Name <email>` trailer to every commit you submit.
 The name and email must identify you or the entity you represent. A pseudonym
 or a no-reply address does not satisfy this section. A pull request without the
-acceptance comment, or a commit without the trailer, is not merged. A merge
-commit carries no contribution of its own and needs no trailer.
+acceptance comment, or a commit without the trailer, is not merged. The one
+exemption is a merge commit GitHub writes and signs itself, such as the
+"Update branch" button's: it carries no contribution of yours.
 
 If You are an entity, the person posting the acceptance must be authorized to
 bind You, and the Owner may ask for written confirmation of that authority

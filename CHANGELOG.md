@@ -9,8 +9,10 @@ request moves them under a dated heading and bumps nothing.
 ### Fixed
 
 - (0.1.3) The `signoff` CI job failed every pull request after GitHub's "Update branch" button:
-  the merge commit it writes carries no `Signed-off-by` trailer. Merge commits are now exempt,
-  as a merge carries no contribution of its own; every other commit is still checked.
+  the merge commit it writes carries no `Signed-off-by` trailer. A merge that GitHub wrote and
+  signed itself is now exempt; a hand-made merge can carry new content and is checked like any
+  commit. The job also fails when the API lists fewer commits than the pull request holds (it
+  stops at 250), where it used to check the listed ones and pass.
 
 ## [0.1.2] - 2026-10-19
 
