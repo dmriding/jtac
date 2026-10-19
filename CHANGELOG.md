@@ -6,6 +6,8 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-19
+
 ### Fixed
 
 - (0.0.15) `JT-SUP-001` and `JT-TEST-002` count the copies of a multi-line attribute per item
