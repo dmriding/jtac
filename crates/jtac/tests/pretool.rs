@@ -455,4 +455,59 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
         let n = note(&ran).unwrap_or_default();
         assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
     }
+    for script in [
+        "git push --delete origin v1",
+        "git push origin :v1",
+        "git push origin v1:v2",
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, script));
+        assert_eq!(note(&ran), None, "{script}: {}", ran.stdout);
+    }
+    let parent = std::path::Path::new(&url).parent().unwrap();
+    let short = format!(
+        "pshort:{}",
+        std::path::Path::new(&url)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    let rule = format!("url.{}/.pushInsteadOf", parent.to_str().unwrap());
+    repo.git(&["config", &rule, "pshort:"]);
+    repo.git(&["config", "push.default", "upstream"]);
+    repo.git(&["switch", "-q", "-c", "feature"]);
+    repo.git(&["branch", "--set-upstream-to=origin/main"]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push --force origin feature"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(n.contains("rewinds a protected branch"), "upstream: {n}");
+    repo.git(&["config", "push.default", "simple"]);
+    repo.git(&[
+        "config",
+        "remote.origin.push",
+        "refs/heads/feature:refs/heads/main",
+    ]);
+    for script in [
+        "git push --force origin feature".to_owned(),
+        format!("git push -f {short} main"),
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
+        let n = note(&ran).unwrap_or_default();
+        assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
+    }
+    repo.git(&[
+        "config",
+        "remote.origin.fetch",
+        "+refs/heads/dev:refs/remotes/origin/dev",
+    ]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push --force origin v1:main"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(n.contains("could not be judged"), "single-branch: {n}");
 }

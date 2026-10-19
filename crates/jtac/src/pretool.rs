@@ -180,9 +180,10 @@ fn targets(
         let full = if dst.starts_with("refs/") {
             dst.clone()
         } else if !spelled {
-            match named {
-                Some(full) => full,
-                None => return Ok(None),
+            match (src.as_deref(), named) {
+                (Some("HEAD" | "@"), Some(full)) => full,
+                (_, Some(full)) => mapped(repo, remote, &full)?,
+                (_, None) => return Ok(None),
             }
         } else {
             match (dst.as_str(), named) {
@@ -195,7 +196,7 @@ fn targets(
                 {
                     format!("refs/{d}")
                 }
-                (d, named) => match known(repo, fetch, remote, d, named.as_deref())? {
+                (d, named) => match known(repo, fetch, d, named.as_deref())? {
                     Some(full) => full,
                     None => return Ok(None),
                 },
@@ -207,13 +208,13 @@ fn targets(
 }
 
 /// Where a spelled bare `name` lands, as git resolves it against the remote's refs with what
-/// this clone holds: the remote's branch when its remote-tracking ref exists; else the tag
-/// namespace when the source is a tag; else `None` when a local tag of that name leaves the
-/// remote's unknown (git asks the remote, this clone cannot); else a new branch.
+/// this clone holds: the remote's branch when its remote-tracking ref exists; `None` when no
+/// fetch refspec covers the branch, so the remote's are not held here; the tag namespace
+/// when the source is a tag; a local tag of that name for a deletion, `None` for an update,
+/// since the remote's tags are not held here; else a new branch.
 fn known(
     repo: &Path,
     fetch: &str,
-    remote: &str,
     name: &str,
     source: Option<&str>,
 ) -> Result<Option<String>, String> {
@@ -223,37 +224,74 @@ fn known(
         Ok(out.is_some())
     };
     let branch = format!("refs/heads/{name}");
-    if let Some(tracked) = tracking(fetch, remote, &branch)
-        && seen(&tracked)?
+    let covered = map(fetch, &branch);
+    if let Some(tracked) = &covered
+        && seen(tracked)?
     {
         return Ok(Some(branch));
+    }
+    if covered.is_none() && source.is_some() {
+        return Ok(None);
     }
     let tag = format!("refs/tags/{name}");
     if source.is_some_and(|f| f.starts_with("refs/tags/")) {
         return Ok(Some(tag));
     }
-    Ok((!seen(&tag)?).then_some(branch))
+    Ok(match (seen(&tag)?, source) {
+        (false, _) => Some(branch),
+        (true, None) => Some(tag),
+        (true, Some(_)) => None,
+    })
+}
+
+/// Where git sends a colon-less `full` ref (`builtin/push.c`): through `remote.<r>.push`,
+/// else to the branch's upstream under `push.default = upstream`, else to its own name.
+fn mapped(repo: &Path, remote: &str, full: &str) -> Result<String, String> {
+    let key = format!("remote.{remote}.push");
+    let specs = repo::probe(repo, &["config", "--get-all", &key], 1)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    if let Some(dst) = map(&specs, full) {
+        return Ok(dst);
+    }
+    let default = repo::config(repo, "push.default").map_err(|e| e.to_string())?;
+    if let Some(branch) = full.strip_prefix("refs/heads/")
+        && matches!(default.as_deref(), Some("upstream" | "tracking"))
+    {
+        let key = format!("branch.{branch}.merge");
+        if let Some(merge) = repo::config(repo, &key).map_err(|e| e.to_string())? {
+            return Ok(merge);
+        }
+    }
+    Ok(full.to_owned())
+}
+
+/// `name` through refspecs one per line, fetch or push: a `*` pattern or an exact match.
+fn map(specs: &str, name: &str) -> Option<String> {
+    for spec in specs.lines().map(|l| l.trim_start_matches('+')) {
+        let Some((src, dst)) = spec.split_once(':') else {
+            continue;
+        };
+        match (src.split_once('*'), dst.split_once('*')) {
+            (Some((head, tail)), Some((dhead, dtail))) => {
+                if let Some(mid) = name.strip_prefix(head).and_then(|r| r.strip_suffix(tail)) {
+                    return Some(format!("{dhead}{mid}{dtail}"));
+                }
+            }
+            (None, None) if src == name => return Some(dst.to_owned()),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The remote-tracking ref `remote` keeps for `dst`, through its fetch refspecs; the
 /// conventional one when none maps it.
 fn tracking(fetch: &str, remote: &str, dst: &str) -> Option<String> {
-    for spec in fetch.lines().map(|l| l.trim_start_matches('+')) {
-        let Some((src, local)) = spec.split_once(':') else {
-            continue;
-        };
-        match (src.split_once('*'), local.split_once('*')) {
-            (Some((head, tail)), Some((lhead, ltail))) => {
-                if let Some(mid) = dst.strip_prefix(head).and_then(|r| r.strip_suffix(tail)) {
-                    return Some(format!("{lhead}{mid}{ltail}"));
-                }
-            }
-            (None, None) if src == dst => return Some(local.to_owned()),
-            _ => {}
-        }
-    }
-    let branch = dst.strip_prefix("refs/heads/")?;
-    Some(format!("refs/remotes/{remote}/{branch}"))
+    map(fetch, dst).or_else(|| {
+        let branch = dst.strip_prefix("refs/heads/")?;
+        Some(format!("refs/remotes/{remote}/{branch}"))
+    })
 }
 
 /// The full ref `rev` names, `None` for a hash or a detached HEAD.
@@ -264,9 +302,9 @@ fn full_name(repo: &Path, rev: &str) -> Result<Option<String>, String> {
 }
 
 /// `given` as a remote's name: itself when configured; else the remote whose `url` or
-/// `pushurl` spells it, raw or through `insteadOf`, a trailing slash allowed for, a fetched
-/// one first when two share it, so a push by URL still finds the old tip; else itself,
-/// which no fetch refspec maps. Every word reaches git after `--end-of-options`.
+/// `pushurl` spells it, raw or through `insteadOf` and `pushInsteadOf`, a trailing slash
+/// allowed for, a fetched one first when two share it, so a push by URL still finds the old
+/// tip; else itself, which no fetch refspec maps.
 fn named(repo: &Path, given: &str) -> Result<String, String> {
     let get = |args: &[&str]| -> Result<String, String> {
         let out = repo::probe(repo, args, 1).map_err(|e| e.to_string())?;
@@ -275,16 +313,21 @@ fn named(repo: &Path, given: &str) -> Result<String, String> {
     if !get(&["config", "--get-all", &format!("remote.{given}.url")])?.is_empty() {
         return Ok(given.to_owned());
     }
+    let rules = rewrites(&get(&[
+        "config",
+        "--get-regexp",
+        r"^url\..*\.(push)?insteadof$",
+    ])?);
     let trim = |u: &str| u.trim_end_matches('/').to_owned();
-    let expand =
-        |r: &str| get(&["ls-remote", "--get-url", "--end-of-options", r]).map(|u| trim(&u));
-    let wants = [trim(given), expand(given)?];
+    let wants = [trim(given), trim(&expand(&rules, given, true))];
     let mut unfetched = None;
     for name in get(&["remote"])?.lines() {
-        let mut urls = vec![expand(name)?];
-        for key in ["url", "pushurl"] {
-            let listed = get(&["config", "--get-all", &format!("remote.{name}.{key}")])?;
-            urls.extend(listed.lines().map(trim));
+        let mut urls = Vec::new();
+        for (key, push) in [("url", true), ("pushurl", false)] {
+            for u in get(&["config", "--get-all", &format!("remote.{name}.{key}")])?.lines() {
+                urls.push(trim(u));
+                urls.push(trim(&expand(&rules, u, push)));
+            }
         }
         if !urls.iter().any(|u| wants.contains(u)) {
             continue;
@@ -296,6 +339,41 @@ fn named(repo: &Path, given: &str) -> Result<String, String> {
         unfetched.get_or_insert_with(|| name.to_owned());
     }
     Ok(unfetched.unwrap_or_else(|| given.to_owned()))
+}
+
+/// `url.<base>.insteadOf` and `pushInsteadOf` from `config --get-regexp` lines:
+/// `(prefix, base, for a push only)`.
+fn rewrites(lines: &str) -> Vec<(String, String, bool)> {
+    lines
+        .lines()
+        .filter_map(|l| {
+            let (key, prefix) = l.split_once(' ')?;
+            let rest = key.strip_prefix("url.")?;
+            let (base, push) = match rest.strip_suffix(".pushinsteadof") {
+                Some(base) => (base, true),
+                None => (rest.strip_suffix(".insteadof")?, false),
+            };
+            Some((prefix.to_owned(), base.to_owned(), push))
+        })
+        .collect()
+}
+
+/// `url` as git rewrites it: for a push the longest `pushInsteadOf` prefix first, then the
+/// longest `insteadOf` prefix; a `pushurl` or a fetch takes `insteadOf` only.
+fn expand(rules: &[(String, String, bool)], url: &str, push: bool) -> String {
+    for want_push in [true, false] {
+        if want_push && !push {
+            continue;
+        }
+        let best = rules
+            .iter()
+            .filter(|(prefix, _, p)| *p == want_push && url.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _, _)| prefix.len());
+        if let Some((prefix, base, _)) = best {
+            return format!("{base}{}", &url[prefix.len()..]);
+        }
+    }
+    url.to_owned()
 }
 
 /// The remote a bare `git push` goes to.
@@ -337,6 +415,28 @@ fn short_branch(repo: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_url_is_rewritten_as_git_does_longest_prefix_first_and_push_rules_only_for_a_push() {
+        let rules = rewrites(
+            "url.https://example.com/.insteadof ex:\nurl.git@example.com:.pushinsteadof ex:\n\
+             url.git@example.com:deep/.pushinsteadof ex:deep/\n",
+        );
+        assert_eq!(
+            expand(&rules, "ex:app.git", true),
+            "git@example.com:app.git"
+        );
+        assert_eq!(
+            expand(&rules, "ex:app.git", false),
+            "https://example.com/app.git"
+        );
+        assert_eq!(
+            expand(&rules, "ex:deep/app.git", true),
+            "git@example.com:deep/app.git"
+        );
+        assert_eq!(expand(&rules, "other:app.git", true), "other:app.git");
+        assert_eq!(rewrites("url.x.other y\nnonsense\n"), Vec::new());
+    }
 
     #[test]
     fn the_old_tip_follows_the_fetch_refspec_and_falls_back_to_the_conventional_ref() {
