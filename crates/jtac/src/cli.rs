@@ -65,6 +65,10 @@ pub struct InitArgs {
     /// Keep a pre-push hook jtac did not write, unread: you added the exec line to it
     #[arg(long)]
     pub keep_hook: bool,
+    /// Register the advisory tool-call hook with this agent (`claude-code`), in its
+    /// per-clone settings file
+    #[arg(long, value_name = "NAME")]
+    pub agent: Option<String>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -80,6 +84,12 @@ pub enum Hook {
         remote: String,
         /// The remote's URL
         url: String,
+    },
+    /// The advisory on an agent's proposed command: the agent's hook JSON on stdin, a
+    /// note on stdout, never a block
+    PreTool {
+        /// Which agent's wire to speak: `claude-code`
+        agent: String,
     },
 }
 
@@ -215,7 +225,15 @@ mod tests {
                 dry_run: true,
                 remote: Some("up".into()),
                 keep_hook: false,
+                agent: None,
                 json: false,
+            }))
+        );
+        let cli = Cli::try_parse_from(["jtac", "hook", "pre-tool", "claude-code"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Hook(Hook::PreTool {
+                agent: "claude-code".into()
             }))
         );
         let cli = Cli::try_parse_from(["jtac", "hook", "pre-push", "origin", "x.git"]).unwrap();

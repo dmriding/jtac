@@ -3,7 +3,7 @@
 //! value never passes for the subcommand; a long option may be abbreviated, as git allows.
 
 use super::program::{base_name, is_assignment, names_git};
-use super::{Action, Bypass, Dir, Force, Push, Unread};
+use super::{Action, Bypass, Dir, Force, Push, Spec, Unread};
 use crate::shell::quote::{ansi_decode, spells_a_substitution};
 use crate::shell::{Simple, Word};
 
@@ -525,9 +525,11 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         remote: None,
         sources: Vec::new(),
         destinations: Vec::new(),
+        specs: Vec::new(),
         force: Force::No,
         delete: false,
         all_refs: false,
+        tags: false,
         dry_run: false,
         bypass,
         opaque: args.iter().any(|w| w.unresolved),
@@ -577,6 +579,8 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
                     p.force = unforced(lease);
                 }
             }
+            Some("--tags") => p.tags = true,
+            Some("--no-tags") => p.tags = false,
             Some("--dry-run") => p.dry_run = true,
             Some("--no-dry-run") => p.dry_run = false,
             Some("--force-with-lease") => {
@@ -624,16 +628,20 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
 
 // `tag v1` is one refspec; `+` forces; `:dst` deletes; a `*` destination is every ref.
 fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
-    let mut specs: Vec<String> = positional.iter().map(|s| (*s).to_string()).collect();
+    let mut specs: Vec<(String, bool)> = positional
+        .iter()
+        .map(|s| ((*s).to_string(), false))
+        .collect();
     let mut i = 0;
     while i + 1 < specs.len() {
-        if specs[i] == "tag" {
-            specs[i] = format!("refs/tags/{}", specs[i + 1]);
+        if specs[i].0 == "tag" {
+            specs[i] = (format!("refs/tags/{}", specs[i + 1].0), true);
             specs.remove(i + 1);
         }
         i += 1;
     }
-    for spec in &specs {
+    for (spec, tag) in &specs {
+        let forced = spec.starts_with('+');
         let spec = match spec.strip_prefix('+') {
             Some(rest) => {
                 p.force = Force::Force;
@@ -644,20 +652,29 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
         match spec.split_once(':') {
             Some(("", dst)) => {
                 p.delete = true;
+                p.sources.push(String::new());
                 p.destinations.push(dst.to_string());
+                p.specs.push(Spec::Spelled);
             }
             Some((src, dst)) => {
                 p.sources.push(src.to_string());
                 p.destinations.push(dst.to_string());
+                p.specs.push(Spec::Spelled);
             }
             None => {
                 p.sources.push(spec.to_string());
                 p.destinations.push(spec.to_string());
+                p.specs.push(match (tag, forced) {
+                    (true, _) => Spec::Tag,
+                    (false, true) => Spec::Forced,
+                    (false, false) => Spec::Bare,
+                });
             }
         }
     }
     if delete_flag {
         p.sources.clear();
+        p.specs = vec![Spec::Spelled; p.destinations.len()];
     }
     if p.destinations.iter().any(|d| d.contains('*')) {
         p.all_refs = true;

@@ -59,6 +59,19 @@ impl Dir {
     }
 }
 
+/// How a refspec names its destination, which decides whether git asks the remote about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spec {
+    /// `main`: the source's own ref, mapped through `remote.<r>.push` or the upstream.
+    Bare,
+    /// `+main`: the source's own ref, unmapped, as git reads a forced bare name.
+    Forced,
+    /// `tag v1`: the tag's own ref, unmapped, as git spells the shorthand out.
+    Tag,
+    /// `src:main`, `:main`, `--delete main`: a name the remote is asked about.
+    Spelled,
+}
+
 /// How a hook is skipped. Each is a row of the spellings table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bypass {
@@ -111,16 +124,21 @@ pub enum Unread {
 pub struct Push {
     /// The repository argument, or `--repo`.
     pub remote: Option<String>,
-    /// Local sides of the refspecs; empty for a deletion.
+    /// Local sides of the refspecs, one per destination: an empty string for a `:dst`
+    /// deletion, none at all under `--delete`.
     pub sources: Vec<String>,
     /// Remote sides of the refspecs, `tag X` spelled out.
     pub destinations: Vec<String>,
+    /// Per destination, how it was named.
+    pub specs: Vec<Spec>,
     /// How hard it lands.
     pub force: Force,
     /// `--delete`, `-d`, or a `:dst` refspec.
     pub delete: bool,
     /// `--all`, `--branches`, `--mirror`, or a wildcard destination: no branch is named.
     pub all_refs: bool,
+    /// `--tags`: every tag, beside any refspec.
+    pub tags: bool,
     /// `--dry-run` or `-n`.
     pub dry_run: bool,
     /// How the pre-push hook is skipped, if it is.
