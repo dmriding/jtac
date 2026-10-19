@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 license = "FSL-1.1-ALv2"
@@ -12,13 +12,13 @@ authors = ["David Riding"]
 publish = false
 
 [workspace.dependencies]
-jtac-core = { path = "crates/jtac-core", version = "0.1.1" }
-jtac-policy = { path = "crates/jtac-policy", version = "0.1.1" }
-jtac-gate = { path = "crates/jtac-gate", version = "0.1.1" }
-jtac-checks = { path = "crates/jtac-checks", version = "0.1.1" }
-jtac-store = { path = "crates/jtac-store", version = "0.1.1" }
-jtac-sign = { path = "crates/jtac-sign", version = "0.1.1" }
-jtac-testkit = { path = "crates/jtac-testkit", version = "0.1.1" }
+jtac-core = { path = "crates/jtac-core", version = "0.1.2" }
+jtac-policy = { path = "crates/jtac-policy", version = "0.1.2" }
+jtac-gate = { path = "crates/jtac-gate", version = "0.1.2" }
+jtac-checks = { path = "crates/jtac-checks", version = "0.1.2" }
+jtac-store = { path = "crates/jtac-store", version = "0.1.2" }
+jtac-sign = { path = "crates/jtac-sign", version = "0.1.2" }
+jtac-testkit = { path = "crates/jtac-testkit", version = "0.1.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

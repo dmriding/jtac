@@ -301,12 +301,10 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
         _ => false,
     };
     assert!(refused_as_directory, "{err}");
-    let mut rows = vec![(big, "larger than the trust file cap")];
     #[cfg(unix)]
-    {
+    let unix_rows = {
         let link = k.path("link");
         std::os::unix::fs::symlink(&trust, &link).unwrap();
-        rows.push((link, "not a plain file"));
         let fifo = k.path("fifo");
         assert!(
             Command::new("mkfifo")
@@ -315,8 +313,13 @@ fn a_named_trust_file_that_is_missing_a_link_a_directory_or_huge_is_an_error() {
                 .unwrap()
                 .success()
         );
-        rows.push((fifo, "not a plain file"));
-    }
+        vec![(link, "not a plain file"), (fifo, "not a plain file")]
+    };
+    #[cfg(not(unix))]
+    let unix_rows = Vec::new();
+    let rows = [(big, "larger than the trust file cap")]
+        .into_iter()
+        .chain(unix_rows);
     let started = Instant::now();
     for (path, want) in rows {
         let err = verify(
