@@ -6,6 +6,17 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.1.2) `jtac hook pre-tool` compared a push's URL with each configured remote's as text,
+  and on Windows git opens `C:\srv\app`, `C:/srv/app` and `c:/srv/app` as one directory: a
+  push by the forward-slash spelling, which bash passes through where a backslash is an
+  escape, or through an `insteadOf` base ending in the other separator, found no old tip and
+  reported no fence. The three pre-tool tests that push by URL failed on every Windows run of
+  `main`; they also wrote the backslash path straight into the bash script. On Windows a path
+  by drive letter or UNC share now compares forward-slashed in lower case; the tests spell the
+  path as bash does, and one row keeps the backslashes in quotes.
+
 ## [0.1.1] - 2026-10-19
 
 ### Fixed

@@ -342,9 +342,9 @@ fn full_name(repo: &Path, rev: &str) -> Result<Option<String>, String> {
 }
 
 /// `given` as a remote's name: itself when configured; else the remote whose `url` or
-/// `pushurl` spells it, raw or through `insteadOf` and `pushInsteadOf`, a trailing slash
-/// allowed for, a fetched one first when two share it, so a push by URL still finds the old
-/// tip; else itself, which no fetch refspec maps.
+/// `pushurl` spells it, raw or through `insteadOf` and `pushInsteadOf`, as `canon` compares
+/// them, a fetched one first when two share it, so a push by URL still finds the old tip; else
+/// itself, which no fetch refspec maps.
 fn named(repo: &Path, given: &str) -> Result<String, String> {
     let get = |args: &[&str]| -> Result<String, String> {
         let out = repo::probe(repo, args, 1).map_err(|e| e.to_string())?;
@@ -355,21 +355,20 @@ fn named(repo: &Path, given: &str) -> Result<String, String> {
     }
     let regexp = r"^url\..*\.(push)?insteadof$";
     let rules = rewrites(&get(&["config", "-z", "--get-regexp", regexp])?);
-    let trim = |u: &str| u.trim_end_matches('/').to_owned();
-    let wants = [trim(given), trim(&expand(&rules, given, true))];
+    let want = canon(&expand(&rules, given, true));
     let mut unfetched = None;
     for name in get(&["remote"])?.lines() {
         let mut urls = Vec::new();
         for key in ["url", "pushurl"] {
             for u in get(&["config", "--get-all", &format!("remote.{name}.{key}")])?.lines() {
-                urls.push(trim(u));
-                urls.push(trim(&expand(&rules, u, false)));
+                urls.push(canon(u));
+                urls.push(canon(&expand(&rules, u, false)));
                 if key == "url" {
-                    urls.push(trim(&expand(&rules, u, true)));
+                    urls.push(canon(&expand(&rules, u, true)));
                 }
             }
         }
-        if !urls.iter().any(|u| wants.contains(u)) {
+        if !urls.contains(&want) {
             continue;
         }
         let refs = format!("refs/remotes/{name}/");
@@ -379,6 +378,21 @@ fn named(repo: &Path, given: &str) -> Result<String, String> {
         unfetched.get_or_insert_with(|| name.to_owned());
     }
     Ok(unfetched.unwrap_or_else(|| given.to_owned()))
+}
+
+/// A URL as compared: no trailing slash; on Windows, where git opens `C:\srv\app` and
+/// `c:/srv/app` as one directory, a path by drive letter or UNC share is forward-slashed and
+/// lower-cased, and any other URL keeps its case, since a server's path may not fold it.
+fn canon(url: &str) -> String {
+    let mut url = url.to_owned();
+    if cfg!(windows) {
+        url = url.replace('\\', "/");
+        let drive = matches!(url.as_bytes(), [d, b':', b'/', ..] if d.is_ascii_alphabetic());
+        if drive || url.starts_with("//") {
+            url.make_ascii_lowercase();
+        }
+    }
+    url.trim_end_matches('/').to_owned()
 }
 
 /// `url.<base>.insteadOf` and `pushInsteadOf` from `config -z --get-regexp`, one `key\n
@@ -513,6 +527,20 @@ mod tests {
         assert_eq!(expand(&rules, "sp:app.git", true), "/srv/space dir/app.git");
         assert_eq!(expand(&rules, "other:app.git", true), "other:app.git");
         assert_eq!(rewrites("url.x.other\ny\0nonsense\0"), Vec::new());
+    }
+
+    #[test]
+    fn a_url_compares_without_its_trailing_slash_and_on_windows_a_local_path_in_one_spelling() {
+        assert_eq!(canon("https://example.com/app/"), "https://example.com/app");
+        assert_eq!(canon("https://example.com/App"), "https://example.com/App");
+        let windows = cfg!(windows);
+        let kept = "C:\\srv\\app";
+        assert_eq!(canon(kept), if windows { "c:/srv/app" } else { kept });
+        let mixed = "C:\\SRV/app/";
+        let trimmed = "C:\\SRV/app";
+        assert_eq!(canon(mixed), if windows { "c:/srv/app" } else { trimmed });
+        let unc = "\\\\server\\Share\\app";
+        assert_eq!(canon(unc), if windows { "//server/share/app" } else { unc });
     }
 
     #[test]

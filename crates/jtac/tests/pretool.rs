@@ -9,7 +9,12 @@ use jtac_testkit::Repo;
 use serde_json::Value;
 
 fn me() -> String {
-    env!("CARGO_BIN_EXE_jtac").replace('\\', "/")
+    slashed(env!("CARGO_BIN_EXE_jtac"))
+}
+
+/// A path as a bash script spells it: there a backslash quotes the character after it.
+fn slashed(s: &str) -> String {
+    s.replace('\\', "/")
 }
 
 /// The binary under coverage drops a profile file where it runs; ignored, it leaves the tree
@@ -44,7 +49,7 @@ fn keyed(repo: &Repo) {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let path = key.to_string_lossy().replace('\\', "/");
+    let path = slashed(&key.to_string_lossy());
     repo.git(&["config", "jtac.signingkey", &path]);
     repo.git(&["config", "user.email", "dev@example.com"]);
 }
@@ -138,7 +143,7 @@ fn checked() -> Checked {
 #[test]
 fn a_push_of_an_uncovered_tip_names_jtac_check_and_a_covered_one_is_silent() {
     let Checked { repo, .. } = checked();
-    let cwd = repo.path().to_string_lossy().replace('\\', "/");
+    let cwd = slashed(&repo.path().to_string_lossy());
     for script in [
         "git push",
         "git push origin main",
@@ -230,7 +235,7 @@ fn an_unnamed_directory_a_non_repository_and_an_unreadable_script_are_short_note
         "{n}"
     );
     let elsewhere = Repo::empty();
-    let far = elsewhere.path().to_string_lossy().replace('\\', "/");
+    let far = slashed(&elsewhere.path().to_string_lossy());
     let ran = pre_tool(&repo, &["claude-code"], &bash(Some(&far), "git push"));
     assert!(
         note(&ran).unwrap().contains("could not be judged"),
@@ -384,7 +389,8 @@ fn refspecs_resolve_as_git_does_and_the_old_tip_follows_the_fetch_refspec() {
     );
     let url = repo.git(&["config", "remote.origin.url"]);
     for script in [
-        format!("git push -f {url} HEAD:main"),
+        format!("git push -f {} HEAD:main", slashed(&url)),
+        format!("git push -f '{url}' HEAD:main"),
         "git push -f origin HEAD:heads/main".to_owned(),
     ] {
         let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
@@ -442,7 +448,7 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
     repo.git(&["config", &instead, "example-app"]);
     for script in [
         "git push --force origin @".to_owned(),
-        format!("git push -f {url}/ main"),
+        format!("git push -f {}/ main", slashed(&url)),
         "git push -f example-app main".to_owned(),
     ] {
         let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
@@ -471,7 +477,7 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
     repo.git(&["remote", "add", "never-fetched", &url]);
     repo.git(&["config", "remote.origin.pushurl", "pushalias:origin.git"]);
     for script in [
-        format!("git push --force {url} HEAD:main"),
+        format!("git push --force {} HEAD:main", slashed(&url)),
         "git push --force pushalias:origin.git HEAD:main".to_owned(),
     ] {
         let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
@@ -550,7 +556,7 @@ fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
     assert!(short.contains(fence), "pushInsteadOf: {short}");
     for script in [
         "git push origin +feature".to_owned(),
-        format!("git push --force {url} feature"),
+        format!("git push --force {} feature", slashed(&url)),
     ] {
         let n = judged(&script);
         assert!(
@@ -584,7 +590,7 @@ fn a_bare_name_is_mapped_through_push_config_as_git_maps_it() {
         "al:",
     ]);
     repo.git(&["config", "remote.origin.url", &format!("al:{name}")]);
-    let fetched = judged(&format!("git push --force {url} HEAD:main"));
+    let fetched = judged(&format!("git push --force {} HEAD:main", slashed(&url)));
     assert!(
         fetched.contains(fence),
         "the fetch form of an aliased url: {fetched}"

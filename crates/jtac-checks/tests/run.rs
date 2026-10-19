@@ -201,6 +201,8 @@ fn a_leader_that_leaves_its_group_is_still_killed_at_the_deadline() {
     assert_dead(&ran.stdout);
 }
 
+/// Two seconds, not 300 ms: the leader's `exit 0` has to land before the deadline, and with
+/// the binary's other tests spawning beside it a `cmd` start alone can take longer.
 #[test]
 fn a_descendant_holding_the_pipe_after_exit_is_error_at_the_deadline() {
     let started = Instant::now();
@@ -210,7 +212,7 @@ fn a_descendant_holding_the_pipe_after_exit_is_error_at_the_deadline() {
                 "sleep 30 & echo $!; exit 0",
                 "start /b waitfor /t 30 jtacHolder & echo early& exit 0",
             ),
-            Duration::from_millis(300),
+            Duration::from_secs(2),
         ),
         &ctx(CAPTURE_CAP),
     );
@@ -220,7 +222,7 @@ fn a_descendant_holding_the_pipe_after_exit_is_error_at_the_deadline() {
         "{:?}",
         started.elapsed()
     );
-    assert!(ran.body.duration_ms >= 300);
+    assert!(ran.body.duration_ms >= 2000);
     #[cfg(unix)]
     assert_dead(&ran.stdout);
     #[cfg(windows)]
