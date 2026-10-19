@@ -6,6 +6,15 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.1.1) `jtac hook pre-tool` gives up at its one-second cap with no note on a machine where
+  git starts slowly: one push judgment is thirty-odd git processes, which the Windows runner
+  cannot finish in time, so the pre-tool tests failed on every push to `main` since 0.0.21 and
+  the v0.1.0 tag built no release (issue 64). `JTAC_PRETOOL_CAP_MS` in the hook's environment
+  now sets the cap; the tests run under a minute and fail with the reason on a hit instead of
+  reading silence as a verdict. A new test covers the cap firing.
+
 ## [0.1.0] - 2026-10-19
 
 ### Fixed

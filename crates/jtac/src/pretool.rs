@@ -2,7 +2,8 @@
 //! into actions, each push judged where it would run by the decision the `pre-push` hook
 //! asks, and the note handed back on the agent's wire. It advises and never blocks: every
 //! failure prints nothing and exits 0, and the work, stdin included, runs on a thread the
-//! main one abandons at the cap, so a slow script or a held pipe costs the agent one second.
+//! main one abandons at the cap, so a slow script or a held pipe costs the agent one second,
+//! or what `JTAC_PRETOOL_CAP_MS` says on a machine where git is slower to start.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -16,8 +17,12 @@ use jtac_store::Store;
 use crate::wire::claude;
 use crate::{coverage, repo, update};
 
-/// The wall clock the hook gives itself (decided 2026-10-19).
+/// The wall clock the hook gives itself (decided 2026-10-19) when [`CAP_VAR`] is unset.
 pub const CAP: Duration = Duration::from_millis(1000);
+
+/// Milliseconds in place of [`CAP`]; one judgment is thirty-odd git processes, past a
+/// second where each one starts slowly (issue 64).
+pub const CAP_VAR: &str = "JTAC_PRETOOL_CAP_MS";
 
 /// What reads the agent's JSON, on the worker.
 pub type Stdin = Box<dyn FnOnce() -> Result<String, String> + Send>;
@@ -31,6 +36,10 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
         );
         return (String::new(), why);
     }
+    let cap = std::env::var(CAP_VAR)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(CAP, Duration::from_millis);
     let cwd = cwd.to_path_buf();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -40,7 +49,7 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
         };
         let _ = tx.send(answer);
     });
-    match rx.recv_timeout(CAP) {
+    match rx.recv_timeout(cap) {
         Ok((note, diagnostics)) => (
             note.as_deref().map(claude::output).unwrap_or_default(),
             diagnostics
@@ -52,7 +61,7 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
             String::new(),
             format!(
                 "jtac: pre-tool gave up after {}ms; the pre-push hook still judges the push\n",
-                CAP.as_millis()
+                cap.as_millis()
             ),
         ),
     }

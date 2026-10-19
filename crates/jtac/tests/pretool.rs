@@ -56,13 +56,19 @@ struct Ran {
 }
 
 /// The hook as the agent runs it: its JSON on stdin, the repository as cwd unless `cwd`
-/// names another, `args` after `pre-tool`.
+/// names another, `args` after `pre-tool`. The cap is a minute: a judgment is thirty-odd
+/// git processes, and under the default a loaded runner gives up with no note (issue 64).
 fn pre_tool(repo: &Repo, args: &[&str], stdin: &[u8]) -> Ran {
+    capped(repo, args, stdin, "60000")
+}
+
+fn capped(repo: &Repo, args: &[&str], stdin: &[u8], cap_ms: &str) -> Ran {
     let mut child = Command::new(env!("CARGO_BIN_EXE_jtac"))
         .args([&["hook", "pre-tool"], args].concat())
         .current_dir(repo.path())
         .env_clear()
         .envs(repo.env())
+        .env("JTAC_PRETOOL_CAP_MS", cap_ms)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -88,9 +94,11 @@ fn bash(cwd: Option<&str>, command: &str) -> Vec<u8> {
     v.to_string().into_bytes()
 }
 
-/// The note a run returned, `None` when stdout was empty; exit 0 either way.
+/// The note a run returned, `None` when stdout was empty; exit 0 either way. A cap hit is
+/// never a silent `None`: it fails here with the reason.
 fn note(ran: &Ran) -> Option<String> {
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(!ran.stderr.contains("gave up"), "{}", ran.stderr);
     if ran.stdout.is_empty() {
         return None;
     }
@@ -286,6 +294,32 @@ fn every_failure_prints_nothing_and_exits_zero_with_the_reason_on_stderr() {
     assert!(
         ran.stderr.contains("no adapter for `other-agent`") && ran.stderr.contains("claude-code"),
         "{}",
+        ran.stderr
+    );
+}
+
+/// The cap is `JTAC_PRETOOL_CAP_MS`; at the cap the hook prints no note, exits 0, and says
+/// so on stderr with the pre-push hook named as the judge that still runs.
+#[test]
+fn the_cap_is_the_variable_and_a_hit_is_silent_with_the_reason_on_stderr() {
+    let Checked { repo, .. } = checked();
+    let ran = capped(&repo, &["claude-code"], &bash(None, "git push"), "1");
+    assert_eq!((ran.code, ran.stdout.as_str()), (0, ""), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("gave up after 1ms") && ran.stderr.contains("pre-push"),
+        "{}",
+        ran.stderr
+    );
+    let ran = capped(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push"),
+        "not a number",
+    );
+    assert_eq!(
+        note(&ran),
+        None,
+        "the default cap, a covered tip: {}",
         ran.stderr
     );
 }
