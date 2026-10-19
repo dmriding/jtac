@@ -15,8 +15,9 @@ pub const SETTINGS: &str = ".claude/settings.local.json";
 /// The longest `additionalContext` the agent hands its model whole.
 pub const MAX_CONTEXT: usize = 10_000;
 
-/// The seconds the agent waits on the hook, above [`crate::pretool::CAP`].
-const TIMEOUT: u64 = 2;
+/// The seconds the agent waits on the hook, above [`crate::pretool::CAP`]; a cap set past
+/// it is the agent's to cut, with no line on stderr.
+pub const TIMEOUT: u64 = 2;
 
 #[derive(Deserialize)]
 struct Input {

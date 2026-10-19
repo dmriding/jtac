@@ -310,18 +310,6 @@ fn the_cap_is_the_variable_and_a_hit_is_silent_with_the_reason_on_stderr() {
         "{}",
         ran.stderr
     );
-    let ran = capped(
-        &repo,
-        &["claude-code"],
-        &bash(None, "git push"),
-        "not a number",
-    );
-    assert_eq!(
-        note(&ran),
-        None,
-        "the default cap, a covered tip: {}",
-        ran.stderr
-    );
 }
 
 /// Refspec forms resolve as git resolves them: a `:dst` beside an update deletes only its

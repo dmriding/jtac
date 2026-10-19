@@ -21,7 +21,8 @@ use crate::{coverage, repo, update};
 pub const CAP: Duration = Duration::from_millis(1000);
 
 /// Milliseconds in place of [`CAP`]; one judgment is thirty-odd git processes, past a
-/// second where each one starts slowly (issue 64).
+/// second where each one starts slowly (issue 64). The agent's own timeout still bounds the
+/// hook: the settings `init` writes give Claude Code two seconds ([`claude::TIMEOUT`]).
 pub const CAP_VAR: &str = "JTAC_PRETOOL_CAP_MS";
 
 /// What reads the agent's JSON, on the worker.
@@ -36,10 +37,7 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
         );
         return (String::new(), why);
     }
-    let cap = std::env::var(CAP_VAR)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map_or(CAP, Duration::from_millis);
+    let cap = cap(std::env::var(CAP_VAR).ok().as_deref());
     let cwd = cwd.to_path_buf();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -65,6 +63,12 @@ pub fn pre_tool(agent: &str, cwd: &Path, stdin: Stdin) -> (String, String) {
             ),
         ),
     }
+}
+
+/// [`CAP_VAR`]'s value as the cap; unset or not a count of milliseconds is [`CAP`].
+fn cap(var: Option<&str>) -> Duration {
+    var.and_then(|v| v.parse().ok())
+        .map_or(CAP, Duration::from_millis)
 }
 
 /// The note and what could not be judged, for stderr.
@@ -459,6 +463,24 @@ fn short_branch(repo: &Path) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cap_is_the_variable_in_milliseconds_and_anything_else_is_the_default() {
+        assert_eq!(cap(None), CAP);
+        assert_eq!(cap(Some("1")), Duration::from_millis(1));
+        assert_eq!(cap(Some("60000")), Duration::from_secs(60));
+        assert_eq!(cap(Some("0")), Duration::ZERO);
+        for bad in [
+            "",
+            "not a number",
+            "-1",
+            "1.5",
+            "1s",
+            "18446744073709551616",
+        ] {
+            assert_eq!(cap(Some(bad)), CAP, "{bad:?}");
+        }
+    }
 
     #[test]
     fn a_url_is_rewritten_as_git_does_longest_prefix_first_and_push_rules_only_for_a_push() {
