@@ -106,8 +106,8 @@ Add a `Signed-off-by: Real Name <email>` trailer to every commit you submit.
 The name and email must identify you or the entity you represent. A pseudonym
 or a no-reply address does not satisfy this section. A pull request without the
 acceptance comment, or a commit without the trailer, is not merged. The one
-exemption is a merge commit GitHub writes and signs itself, such as the
-"Update branch" button's: it carries no contribution of yours.
+exemption is a merge commit that is exactly the clean merge of its parents,
+such as the "Update branch" button writes: it carries no contribution of yours.
 
 If You are an entity, the person posting the acceptance must be authorized to
 bind You, and the Owner may ask for written confirmation of that authority

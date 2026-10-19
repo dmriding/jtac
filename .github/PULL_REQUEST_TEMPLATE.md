@@ -12,6 +12,6 @@ Checklist:
 - [ ] Line coverage stays at or above 80% (`cargo llvm-cov --workspace --summary-only`)
 - [ ] Workspace version bumped and `CHANGELOG.md` entry added
 - [ ] No real transcripts, logs, paths, hostnames, credentials, or organisation names anywhere in the diff
-- [ ] Every commit is signed and carries `Signed-off-by` (a merge GitHub wrote itself is exempt)
+- [ ] Every commit is signed and carries `Signed-off-by` (a clean merge of its parents is exempt)
 - [ ] If it changes a shipped format, the verdict function, policy, signing, storage, or a hook: `DESIGN.md` updated in this PR and the change called out above
 - [ ] I am the author of this change and can answer for every line, whatever tools helped write it (see `CONTRIBUTING.md`)
