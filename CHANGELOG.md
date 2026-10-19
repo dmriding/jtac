@@ -25,6 +25,10 @@ request moves them under a dated heading and bumps nothing.
   (issue 33). A remote, branch, ref, key or path that enters a refusal's command is rendered
   by one `sh` word renderer: plain as is, quoted otherwise, a placeholder when no code span
   can show it; the gate printed them bare since M10.
+- (0.0.5, issue #6) `jtac-policy` globs: a branch pattern git could never name (`HEAD`,
+  `main.lock`, `.hidden`, `v1..2`, a space, `~`, `^`, `:`) is refused like an unmatchable path;
+  `?` is documented as one byte; the refusal table covers control characters, DEL, and lone
+  brackets.
 
 ### Changed
 
@@ -161,15 +165,6 @@ request moves them under a dated heading and bumps nothing.
   applied. Waiver scope (expiry, 30-day cap, written-after-`now`, commit match, path prefix by
   component) lives once in `waiver.rs` and `Root::validate` shares it. `jtac_policy::facts`
   builds the inputs from a resolved policy. DESIGN.md 11.2 rewritten; decision 27.
-
-### Fixed
-
-- (0.0.5, issue #6) `jtac-policy` globs: a branch pattern git could never name (`HEAD`,
-  `main.lock`, `.hidden`, `v1..2`, a space, `~`, `^`, `:`) is refused like an unmatchable path;
-  `?` is documented as one byte; the refusal table covers control characters, DEL, and lone
-  brackets.
-
-### Added
 
 - (0.0.4, M2) `jtac-policy`: parse `.jtac/policy.toml`, refuse unknown keys, floats, and
   integers past 2^53, validate check ids, argv, timeouts, and globs (literals, `?`, `*`, `**` only; a pattern that
