@@ -6,6 +6,8 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-19
+
 ### Fixed
 
 - (0.1.2) `jtac hook pre-tool` compared a push's URL with each configured remote's as text,
