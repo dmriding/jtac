@@ -26,8 +26,8 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
-- (0.1.0, M14) The commit that adds `.jtac/policy.toml` had no policy in force under
-  `.jtac/`, so `JT-PROT-001` there is minor and says so; adopting jtac no longer needs a
+- (0.1.0, M14) The commit that adds `.jtac/policy.toml` where no first-parent ancestor held
+  one had nothing in force under `.jtac/`, so `JT-PROT-001` there is minor and says so; adopting jtac no longer needs a
   waiver (DESIGN.md decision 38). `jtac policy` and `jtac scope` move to v0.2 (7.2). The
   release workflow publishes `SHA256SUMS` over the archives. Open question 5 is closed:
   Windows runs the test suite, the hooks are unverified there, the install script is `sh`.
@@ -45,7 +45,8 @@ request moves them under a dated heading and bumps nothing.
   clean change lands with its root; no root, a replaced `root.sig`, a `root.json` naming
   another tree, a deleted `#[test]`, a new `#[allow]`, a policy that does not parse, a check
   naming a missing tool and a `--force` rewind of a protected branch are refused; every
-  bypass spelling in the classifier's table is named by the advisory. Each row quotes the
+  bypass spelling in the classifier's table classifies as one, and the advisory names what
+  lands where one is due. Each row quotes the
   gate's line; `--json` carries the rows; exit 0, 1 when a row did not hold, 2 when git or
   `ssh-keygen` cannot start (DESIGN.md section 13). `install.sh` fetches the release
   archive named by `SHA256SUMS`, verifies it, installs under `~/.local/bin` or `--to`, and

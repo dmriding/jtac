@@ -44,7 +44,7 @@ pub struct BenchOut {
 pub fn bench(json: bool) -> Result<Printed, Refusal> {
     let exe = std::env::current_exe().map_err(|e| Refusal::exe(&e))?;
     let lab = scratch::Lab::new(&exe)?;
-    let out = judged(cases::run(&lab));
+    let out = judged(cases::run(&lab)?);
     let text = if json {
         crate::render::json(&out)?
     } else {

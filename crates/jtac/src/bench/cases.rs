@@ -2,7 +2,7 @@
 //! A case returns the gate's own line and whether the control held; a setup refusal is a row
 //! that did not hold, with the refusal as its line.
 
-use jtac_gate::classify::{Action, classify};
+use jtac_gate::classify::{Action, Bypass, classify};
 
 use super::Row;
 use super::scratch::{Lab, Repo};
@@ -11,8 +11,8 @@ use crate::refuse::Refusal;
 const TEST: &str = "#[test]\nfn keeps() {}\nfn a() {}\n";
 const PUSH: &[&str] = &["push", "origin", "main"];
 
-/// Every control, run in order.
-pub fn run(lab: &Lab) -> Vec<Row> {
+/// Every control, run in order. A lab that cannot be built is a refusal, never a row.
+pub fn run(lab: &Lab) -> Result<Vec<Row>, Refusal> {
     let rows: [(&'static str, &'static str, &'static str, Case); 10] = [
         ("clean change", "a change with its root", "passed", clean),
         ("no root", "push without `jtac check`", "refused", no_root),
@@ -62,14 +62,14 @@ pub fn run(lab: &Lab) -> Vec<Row> {
     ];
     rows.into_iter()
         .map(|(control, attack, expected, case)| {
-            let (observed, held) = case(lab).unwrap_or_else(|r| (r.what, false));
-            Row {
+            let (observed, held) = case(lab)?;
+            Ok(Row {
                 control,
                 attack,
                 expected,
                 observed,
                 held,
-            }
+            })
         })
         .collect()
 }
@@ -123,6 +123,7 @@ fn refused_push(repo: &Repo<'_>, args: &[&str], needle: &str) -> Result<(String,
     ))
 }
 
+/// The root reached origin as the same object: the hook's own push, not only the code's.
 fn clean(lab: &Lab) -> Result<(String, bool), Refusal> {
     let repo = gated(lab, "fn a() {}\n")?;
     repo.write("src/lib.rs", "fn a() {}\nfn b() {}\n")?;
@@ -130,11 +131,17 @@ fn clean(lab: &Lab) -> Result<(String, bool), Refusal> {
     let (code, stdout, _) = check(&repo)?;
     let (ok, stderr) = push(&repo)?;
     let landed = repo.git_in(&repo.bare.clone(), &["rev-parse", "main"], None)? == tip;
+    let root = repo.git(&["rev-parse", &root_ref(&tip)])?;
+    let carried = repo.try_git_in(
+        &repo.bare.clone(),
+        &["rev-parse", "--verify", &root_ref(&tip)],
+    )?;
     let first = line(&stdout, None);
     let held = code == 0
         && first.starts_with("CLEARED HOT")
         && ok
         && landed
+        && String::from_utf8_lossy(&carried.stdout).trim() == root
         && String::from_utf8_lossy(&stderr).contains("has a root, covered");
     Ok((first, held))
 }
@@ -224,23 +231,47 @@ fn suppression(lab: &Lab) -> Result<(String, bool), Refusal> {
 }
 
 /// Every spelling the table marks as a bypass classifies as one, and the advisory names what
-/// lands. Pure, so no repository is built.
+/// lands wherever one is due: on a push, and on a bypass that outlives its command. A bypass
+/// on a commit, merge or am alone is silent by design (section 11.3). Pure, so no repository.
 fn bypasses(_: &Lab) -> Result<(String, bool), Refusal> {
     let scripts = jtac_gate::bypasses();
-    let named = scripts
-        .iter()
-        .filter(|s| {
-            classify(s).iter().any(|a| match a {
-                Action::Push(p) => p.bypass.is_some(),
-                Action::HookBypass { .. } => true,
-                Action::ChangeDir { .. } | Action::Unreadable { .. } => false,
-            })
-        })
-        .count();
-    let note = jtac_gate::note(&classify("git push --no-verify"), &|_| None).unwrap_or_default();
+    let (mut named, mut noted, mut silent) = (0, 0, 0);
+    for script in &scripts {
+        let actions = classify(script);
+        let due = actions.iter().any(|a| match a {
+            Action::Push(p) => p.bypass.is_some(),
+            Action::HookBypass { spelling, .. } => matches!(
+                spelling,
+                Bypass::ConfigWrite | Bypass::ConfigParameters | Bypass::ConfigEnvVar
+            ),
+            Action::ChangeDir { .. } | Action::Unreadable { .. } => false,
+        });
+        let is_bypass = due
+            || actions
+                .iter()
+                .any(|a| matches!(a, Action::HookBypass { .. }));
+        let note = jtac_gate::note(&actions, &|_| None);
+        let right = match (due, &note) {
+            (true, Some(n)) => n.contains("no root") || n.contains("uncovered"),
+            (false, None) => true,
+            _ => false,
+        };
+        if is_bypass && right {
+            named += 1;
+            if due {
+                noted += 1;
+            } else {
+                silent += 1;
+            }
+        }
+    }
+    let example = jtac_gate::note(&classify("git push --no-verify"), &|_| None).unwrap_or_default();
     Ok((
-        format!("{named} of {} spellings named; {note}", scripts.len()),
-        named == scripts.len() && !scripts.is_empty() && note.contains("no root"),
+        format!(
+            "{named} of {} spellings named, {noted} with an advisory, {silent} silent by design; {example}",
+            scripts.len()
+        ),
+        named == scripts.len() && !scripts.is_empty() && noted > 0,
     ))
 }
 
@@ -249,7 +280,11 @@ fn bad_policy(lab: &Lab) -> Result<(String, bool), Refusal> {
     repo.write(".jtac/policy.toml", "version = \n")?;
     repo.commit("tip")?;
     let (code, _, stderr) = check(&repo)?;
-    Ok((line(&stderr, None), code == 2))
+    let text = String::from_utf8_lossy(&stderr);
+    Ok((
+        line(&stderr, None),
+        code == 2 && text.contains(".jtac/policy.toml") && text.contains("negotiation"),
+    ))
 }
 
 fn no_spawn(lab: &Lab) -> Result<(String, bool), Refusal> {
@@ -260,7 +295,7 @@ fn no_spawn(lab: &Lab) -> Result<(String, bool), Refusal> {
     let repo = lab.repo(&policy(lab, &missing), "fn a() {}\n")?;
     repo.write("src/lib.rs", "fn a() {}\nfn b() {}\n")?;
     repo.commit("tip")?;
-    aborted(&repo, "error")
+    aborted(&repo, "check `self` error")
 }
 
 fn rewind(lab: &Lab) -> Result<(String, bool), Refusal> {

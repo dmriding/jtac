@@ -5,7 +5,7 @@
 # JTAC_INSTALL_BASE names where archives come from instead of GitHub: a URL or a directory.
 set -eu
 
-to="${HOME}/.local/bin"
+to="${HOME:-}/.local/bin"
 version=latest
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -15,6 +15,11 @@ while [ $# -gt 0 ]; do
     *) echo "install.sh: unknown argument $1; usage: sh install.sh [--to DIR] [--version vX.Y.Z]" >&2; exit 2 ;;
   esac
 done
+
+if [ "$to" = /.local/bin ]; then
+  echo "install.sh: HOME is unset, so there is no default directory; say where with --to DIR." >&2
+  exit 2
+fi
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -40,14 +45,19 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fetch() {
-  case "$base" in
-    /*|file://*) cp "${base#file://}/$1" "$2" ;;
-    *)
-      if command -v curl >/dev/null 2>&1; then curl -fsSL "$base/$1" -o "$2"
-      elif command -v wget >/dev/null 2>&1; then wget -q "$base/$1" -O "$2"
-      else echo "install.sh: needs curl or wget to fetch $base/$1" >&2; exit 2
-      fi ;;
-  esac
+  if [ -d "${base#file://}" ]; then
+    cp "${base#file://}/$1" "$2" && return
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$base/$1" -o "$2" && return
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$base/$1" -O "$2" && return
+  else
+    echo "install.sh: needs curl or wget to fetch $base/$1; nothing installed." >&2
+    exit 2
+  fi
+  echo "install.sh: could not fetch $base/$1; nothing installed." >&2
+  echo "Check the network and the release page, then run the installer again; JTAC_INSTALL_BASE names another source." >&2
+  exit 2
 }
 
 fetch SHA256SUMS "$tmp/SHA256SUMS"
@@ -73,8 +83,9 @@ fi
 
 tar xzf "$tmp/$archive" -C "$tmp"
 mkdir -p "$to"
-cp "$tmp/${archive%.tar.gz}/jtac" "$to/jtac"
-chmod 755 "$to/jtac"
+cp "$tmp/${archive%.tar.gz}/jtac" "$to/.jtac.new"
+chmod 755 "$to/.jtac.new"
+mv -f "$to/.jtac.new" "$to/jtac"
 echo "installed $("$to/jtac" --version) at $to/jtac, verified against SHA256SUMS"
 case ":$PATH:" in
   *":$to:"*) ;;

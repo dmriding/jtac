@@ -33,12 +33,18 @@ fn release(dir: &Path, target: &str) -> String {
         "{}",
         String::from_utf8_lossy(&tar.stderr)
     );
-    let sums = Command::new("sha256sum")
-        .arg(&archive)
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(sums.status.success());
+    let sums = [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])]
+        .into_iter()
+        .find_map(|(tool, flags)| {
+            Command::new(tool)
+                .args(flags)
+                .arg(&archive)
+                .current_dir(dir)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+        })
+        .expect("sha256sum or shasum, the tools the installer verifies with");
     std::fs::write(dir.join("SHA256SUMS"), &sums.stdout).unwrap();
     archive
 }
@@ -81,6 +87,15 @@ fn the_installer_verifies_the_archive_and_installs_nothing_on_a_mismatch() {
     );
     assert!(stdout.contains("is not on PATH"), "{stdout}");
     assert!(stdout.contains("jtac init"), "{stdout}");
+    let (code, stdout, stderr) = install(lab.path(), &to);
+    assert_eq!(
+        code, 0,
+        "an upgrade over the installed file: {stdout}{stderr}"
+    );
+    assert!(
+        !to.join(".jtac.new").exists(),
+        "the staging file is moved into place"
+    );
     std::fs::remove_file(to.join("jtac")).unwrap();
 
     let sums = lab.path().join("SHA256SUMS");
@@ -103,5 +118,10 @@ fn the_installer_verifies_the_archive_and_installs_nothing_on_a_mismatch() {
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("lists no archive for"), "{stderr}");
     assert!(!to.join("jtac").exists());
-    let _ = archive;
+    std::fs::write(&sums, good).unwrap();
+    std::fs::remove_file(lab.path().join(&archive)).unwrap();
+    let (code, _, stderr) = install(lab.path(), &to);
+    assert_eq!(code, 2, "a source that has no archive: {stderr}");
+    assert!(stderr.contains("could not fetch"), "{stderr}");
+    assert!(!to.join("jtac").exists());
 }

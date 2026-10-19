@@ -67,7 +67,12 @@ fn changes_pair_renames_read_both_blobs_and_mark_binaries() {
     assert_eq!(merge_base(repo.path(), &base, &tip).unwrap(), base);
     assert!(changes(repo.path(), &tip, &tip).unwrap().is_empty());
     let policy = jtac_policy::parse("version = 1\n").unwrap();
-    let report = report(&Integrity::default(), &policy.matchers().unwrap(), &got);
+    let report = report(
+        &Integrity::default(),
+        &policy.matchers().unwrap(),
+        &got,
+        false,
+    );
     assert_eq!(report.added_lines, 2);
     assert!(report.findings.is_empty(), "{:?}", report.findings);
 }

@@ -38,6 +38,7 @@ impl Lab {
         let io =
             |e: std::io::Error| Refusal::bench_setup("create the lab directory", &e.to_string());
         std::fs::create_dir_all(home.join("xdg")).map_err(io)?;
+        std::fs::create_dir_all(dir.join("tmp")).map_err(io)?;
         std::fs::write(
             home.join("gitconfig"),
             "[user]\n\tname = bench\n\temail = bench@example.com\n",
@@ -61,7 +62,8 @@ impl Lab {
         self.exe.to_string_lossy().replace('\\', "/")
     }
 
-    /// The environment a child gets: PATH, a home inside the lab, git told to read no real
+    /// The environment a child gets: PATH, a home and a temp directory inside the lab (the
+    /// signer's scratch files land there, not in the system temp), git told to read no real
     /// config, and the Windows variables without which OpenSSH does not start.
     fn env(&self) -> Vec<(String, String)> {
         let inherit = |name: &str| {
@@ -69,9 +71,13 @@ impl Lab {
         };
         let home = self.home.to_string_lossy().into_owned();
         let xdg = self.home.join("xdg").to_string_lossy().into_owned();
+        let tmp = self.dir.join("tmp").to_string_lossy().into_owned();
         [
             ("HOME", home.clone()),
             ("USERPROFILE", home),
+            ("TMPDIR", tmp.clone()),
+            ("TEMP", tmp.clone()),
+            ("TMP", tmp),
             (
                 "GIT_CONFIG_GLOBAL",
                 self.home.join("gitconfig").to_string_lossy().into_owned(),
@@ -89,8 +95,6 @@ impl Lab {
                 "SYSTEMROOT",
                 "SYSTEMDRIVE",
                 "PROGRAMDATA",
-                "TEMP",
-                "TMP",
                 "PATHEXT",
                 "COMSPEC",
             ]
@@ -197,8 +201,13 @@ impl Repo<'_> {
 
     /// Git in the clone, whatever it exits: the attack's own push.
     pub fn try_git(&self, args: &[&str]) -> Result<Output, Refusal> {
+        self.try_git_in(&self.path.clone(), args)
+    }
+
+    /// Git in `cwd`, whatever it exits.
+    pub fn try_git_in(&self, cwd: &Path, args: &[&str]) -> Result<Output, Refusal> {
         self.lab
-            .command("git", args, &self.path, None)
+            .command("git", args, cwd, None)
             .map_err(|e| Refusal::bench_tool("git", &e))
     }
 

@@ -7,7 +7,10 @@ use serde_json::Value;
 #[test]
 fn every_control_holds_and_each_row_quotes_the_gate() {
     let cwd = Repo::empty();
-    let out = cwd.command(env!("CARGO_BIN_EXE_jtac"), &["bench"]);
+    let tmp = cwd.path().join("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let tmp = tmp.to_string_lossy().into_owned();
+    let out = cwd.command_with(env!("CARGO_BIN_EXE_jtac"), &["bench"], &[("TMPDIR", &tmp)]);
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
@@ -22,12 +25,17 @@ fn every_control_holds_and_each_row_quotes_the_gate() {
         "names tree",
         "JT-TEST-001",
         "JT-SUP-001",
-        "spellings named; jtac: `git push --no-verify` skips the pre-push hook",
-        "error",
+        "silent by design; jtac: `git push --no-verify` skips the pre-push hook",
+        "check `self` error",
         "rewinds a protected branch",
     ] {
         assert!(stdout.contains(want), "{want}: {stdout}");
     }
+    assert_eq!(
+        std::fs::read_dir(&tmp).unwrap().count(),
+        0,
+        "the lab and every child's temp file are gone with the run"
+    );
     let out = cwd.command(env!("CARGO_BIN_EXE_jtac"), &["bench", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
