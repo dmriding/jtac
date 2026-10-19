@@ -92,6 +92,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # install.sh verifies the archive it fetches against this file (DESIGN.md decision 39).
+      - name: checksums
+        run: |
+          set -eu
+          (cd dist && sha256sum -- * > ../SHA256SUMS)
+          cat SHA256SUMS
       - name: release notes from the changelog section
         run: |
           set -eu
@@ -105,4 +111,4 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "jtac $GITHUB_REF_NAME" --notes-file notes.md dist/*
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "jtac $GITHUB_REF_NAME" --notes-file notes.md dist/* SHA256SUMS
