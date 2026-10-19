@@ -26,8 +26,8 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
-- (0.1.0, M14) The commit that adds `.jtac/policy.toml` where no first-parent ancestor held
-  one had nothing in force under `.jtac/`, so `JT-PROT-001` there is minor and says so; adopting jtac no longer needs a
+- (0.1.0, M14) The commit that adds `.jtac/policy.toml` where no parent's history held one
+  had nothing in force under `.jtac/`, so `JT-PROT-001` there is minor and says so; adopting jtac no longer needs a
   waiver (DESIGN.md decision 38). `jtac policy` and `jtac scope` move to v0.2 (7.2). The
   release workflow publishes `SHA256SUMS` over the archives. Open question 5 is closed:
   Windows runs the test suite, the hooks are unverified there, the install script is `sh`.

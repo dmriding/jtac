@@ -18,7 +18,7 @@ use jtac_policy::{INTEGRITY_CHECK_ID, facts};
 
 use crate::policy::Loaded;
 use crate::refuse::Refusal;
-use crate::repo::{self, Base, Head};
+use crate::repo::{self, Base, Head, RepoError};
 
 /// Everything one verdict was computed from.
 pub struct Judged {
@@ -46,22 +46,28 @@ pub struct Judged {
     pub verdict: Verdict,
 }
 
-/// Decision 38's fact: no first-parent ancestor of `head` ever held `.jtac/policy.toml`, read
-/// from history and not from the diff's base, which `--base` lets the pusher choose
+/// Decision 38's fact: no parent of `head`, and nothing behind any of them, ever held
+/// `.jtac/policy.toml`. Read from history, never from the diff's base, which `--base` lets
+/// the pusher choose; every parent, since a merge whose first parent never held a policy
+/// would otherwise weaken the one its second parent holds
 /// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`). A root commit
 /// has no parent and no diff to judge.
 fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
-    let parent = format!("{}^", head.commit.hex());
-    let args = [
-        "log",
-        "-1",
-        "--first-parent",
-        "--format=%H",
-        &parent,
-        "--",
-        jtac_policy::POLICY_PATH,
-    ];
-    let touched = repo::probe(repo, &args, 128).map_err(|e| Refusal::repository(&e))?;
+    let git = |e: RepoError| Refusal::repository(&e);
+    let parents = repo::probe(
+        repo,
+        &["rev-parse", &format!("{}^@", head.commit.hex())],
+        128,
+    )
+    .map_err(git)?
+    .unwrap_or_default();
+    if parents.is_empty() {
+        return Ok(false);
+    }
+    let mut args = vec!["log", "-1", "--full-history", "--format=%H"];
+    args.extend(parents.lines());
+    args.extend(["--", jtac_policy::POLICY_PATH]);
+    let touched = repo::probe(repo, &args, 128).map_err(git)?;
     Ok(touched.is_some_and(|t| t.is_empty()))
 }
 

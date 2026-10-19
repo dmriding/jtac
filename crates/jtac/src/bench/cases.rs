@@ -129,6 +129,9 @@ fn clean(lab: &Lab) -> Result<(String, bool), Refusal> {
     repo.write("src/lib.rs", "fn a() {}\nfn b() {}\n")?;
     let tip = repo.commit("tip")?;
     let (code, stdout, _) = check(&repo)?;
+    if code != 0 {
+        return Ok((line(&stdout, None), false));
+    }
     let (ok, stderr) = push(&repo)?;
     let landed = repo.git_in(&repo.bare.clone(), &["rev-parse", "main"], None)? == tip;
     let root = repo.git(&["rev-parse", &root_ref(&tip)])?;

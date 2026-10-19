@@ -9,8 +9,8 @@ to="${HOME:-}/.local/bin"
 version=latest
 while [ $# -gt 0 ]; do
   case "$1" in
-    --to) to="$2"; shift 2 ;;
-    --version) version="$2"; shift 2 ;;
+    --to) [ $# -ge 2 ] || { echo "install.sh: --to needs a directory; usage: sh install.sh [--to DIR] [--version vX.Y.Z]" >&2; exit 2; }; to="$2"; shift 2 ;;
+    --version) [ $# -ge 2 ] || { echo "install.sh: --version needs a tag; usage: sh install.sh [--to DIR] [--version vX.Y.Z]" >&2; exit 2; }; version="$2"; shift 2 ;;
     -h|--help) echo "usage: sh install.sh [--to DIR] [--version vX.Y.Z]"; exit 0 ;;
     *) echo "install.sh: unknown argument $1; usage: sh install.sh [--to DIR] [--version vX.Y.Z]" >&2; exit 2 ;;
   esac
@@ -82,10 +82,13 @@ if [ "$got" != "$want" ]; then
 fi
 
 tar xzf "$tmp/$archive" -C "$tmp"
-mkdir -p "$to"
-cp "$tmp/${archive%.tar.gz}/jtac" "$to/.jtac.new"
-chmod 755 "$to/.jtac.new"
-mv -f "$to/.jtac.new" "$to/jtac"
+if ! { mkdir -p "$to" && cp "$tmp/${archive%.tar.gz}/jtac" "$to/.jtac.new" && chmod 755 "$to/.jtac.new" && mv -f "$to/.jtac.new" "$to/jtac"; }; then
+  rm -f "$to/.jtac.new"
+  echo "install.sh: could not write $to/jtac; nothing installed." >&2
+  echo "The archive verified; only the destination refused the write." >&2
+  echo "Pick a directory you can write with --to DIR, then run the installer again." >&2
+  exit 2
+fi
 echo "installed $("$to/jtac" --version) at $to/jtac, verified against SHA256SUMS"
 case ":$PATH:" in
   *":$to:"*) ;;

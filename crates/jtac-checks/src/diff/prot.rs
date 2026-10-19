@@ -12,7 +12,7 @@ use super::view::View;
 /// A finding per protected path touched, by either name of a rename. The commit that adds the
 /// policy had nothing in force under `.jtac/`, so a finding there is minor (decision 38;
 /// `adopting_the_policy_makes_its_own_directory_minor_and_nothing_else`). `adopting` is the
-/// gatherer's word that no ancestor held one: the diff's base alone is the pusher's to pick.
+/// gatherer's word that no parent's history held one: the diff's base is the pusher's to pick.
 pub(crate) fn check(views: &[View], matchers: &Matchers, adopting: bool) -> Vec<Finding> {
     let adopting = adopting
         && views.iter().any(|v| {

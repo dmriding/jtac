@@ -3,6 +3,7 @@
 //! archive installs nothing. Unix only: the script is `sh`.
 #![cfg(unix)]
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -124,4 +125,14 @@ fn the_installer_verifies_the_archive_and_installs_nothing_on_a_mismatch() {
     assert_eq!(code, 2, "a source that has no archive: {stderr}");
     assert!(stderr.contains("could not fetch"), "{stderr}");
     assert!(!to.join("jtac").exists());
+    release(lab.path(), target);
+    let sealed = lab.path().join("sealed");
+    std::fs::create_dir(&sealed).unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (code, _, stderr) = install(lab.path(), &sealed.join("bin"));
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !sealed.join("bin").exists() {
+        assert_eq!(code, 2, "a destination that refuses the write: {stderr}");
+        assert!(stderr.contains("could not write"), "{stderr}");
+    }
 }

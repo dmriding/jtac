@@ -715,10 +715,24 @@ fn adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major() {
         ".jtac/policy.toml",
         format!("{}# edited\n", policy("")).as_bytes(),
     );
-    repo.commit("edit");
+    let edit = repo.commit("edit");
+    let orphan = repo.git(&["commit-tree", &format!("{before}^{{tree}}"), "-m", "orphan"]);
+    let tree = repo.git(&["rev-parse", "HEAD^{tree}"]);
+    let merge = repo.git(&[
+        "commit-tree",
+        &tree,
+        "-p",
+        &orphan,
+        "-p",
+        &edit,
+        "-m",
+        "merge",
+    ]);
+    repo.git(&["reset", "-q", "--hard", &merge]);
     for args in [
         &["check", "--preview"][..],
         &["check", "--preview", "--base", &before][..],
+        &["check", "--preview", "--base", &orphan][..],
     ] {
         let ran = jtac(&repo, args);
         assert_eq!(ran.code, 1, "{args:?}: {}{}", ran.stdout, ran.stderr);
