@@ -46,10 +46,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace --all-features --locked
 
-  # Private repository, Windows bills double: this job skips pull requests. Going public: drop the
-  # `if` first, then require `test-windows`; a job skipped by `if` reports success to a ruleset.
+  # Required by the main ruleset. An `if` on this job would skip it and still report success.
   test-windows:
-    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
