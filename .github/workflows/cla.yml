@@ -54,12 +54,14 @@ jobs:
         run: |
           set -eu
           git fetch -q --no-tags origin "refs/pull/${PR}/head"
+          commits=$(git rev-list "${PR_BASE}..${PR_HEAD}")
           missing=
-          for c in $(git rev-list "${PR_BASE}..${PR_HEAD}"); do
+          for c in $commits; do
             if git show -s --format=%B "$c" | grep -Eq '^Signed-off-by: .+ <.+@.+>'; then continue; fi
             # An unsigned merge passes only as the clean merge of its two parents: nothing of its own (#74).
             set -- $(git show -s --format=%P "$c")
-            if [ $# -eq 2 ] && [ "$(git merge-tree --write-tree "$1" "$2" 2>/dev/null || true)" = "$(git show -s --format=%T "$c")" ]; then continue; fi
+            if [ $# -eq 2 ] && clean=$(git merge-tree --write-tree "$1" "$2" 2>/dev/null) \
+               && [ "$clean" = "$(git show -s --format=%T "$c")" ]; then continue; fi
             missing="$missing $c"
           done
           if [ -n "$missing" ]; then
