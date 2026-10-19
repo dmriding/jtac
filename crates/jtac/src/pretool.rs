@@ -150,10 +150,10 @@ fn rank(d: &Decision) -> u8 {
 type Target = (Option<String>, String);
 
 /// One [`Target`] per refspec; `None` when the targets cannot be told: every ref, a
-/// wildcard, a word the shell built, or a bare push from a detached HEAD. No refspec is HEAD
-/// to the branch it merges with, as `status` judges a bare `git push`, or only the tags under
-/// `--tags`. A bare name is the remote's ref of that name when this clone knows one, else it
-/// takes the source's namespace, in git's order (`v1` from a tag is `refs/tags/v1`).
+/// wildcard, a word the shell built, a bare push from a detached HEAD, or a bare name whose
+/// place on the remote this clone cannot tell. No refspec is HEAD to the branch it merges
+/// with, as `status` judges a bare `git push`, or only the tags under `--tags`. A name with
+/// no colon is the source's own ref; a spelled bare name is resolved by [`known`].
 fn targets(
     repo: &Path,
     push: &Push,
@@ -172,15 +172,19 @@ fn targets(
     let mut out = Vec::new();
     for (i, dst) in push.destinations.iter().enumerate() {
         let src = push.sources.get(i).filter(|s| !s.is_empty()).cloned();
+        let spelled = push.spelled.get(i).copied().unwrap_or(true);
+        let named = match &src {
+            Some(rev) => full_name(repo, rev)?,
+            None => None,
+        };
         let full = if dst.starts_with("refs/") {
             dst.clone()
-        } else if let Some(tag) = dst.strip_prefix("tag ") {
-            format!("refs/tags/{tag}")
+        } else if !spelled {
+            match named {
+                Some(full) => full,
+                None => return Ok(None),
+            }
         } else {
-            let named = match &src {
-                Some(rev) => full_name(repo, rev)?,
-                None => None,
-            };
             match (dst.as_str(), named) {
                 ("HEAD" | "@", Some(full)) => full,
                 ("HEAD" | "@", None) => return Ok(None),
@@ -191,12 +195,9 @@ fn targets(
                 {
                     format!("refs/{d}")
                 }
-                (d, named) => match known(repo, fetch, remote, d)? {
+                (d, named) => match known(repo, fetch, remote, d, named.as_deref())? {
                     Some(full) => full,
-                    None if named.is_some_and(|f| f.starts_with("refs/tags/")) => {
-                        format!("refs/tags/{d}")
-                    }
-                    None => format!("refs/heads/{d}"),
+                    None => return Ok(None),
                 },
             }
         };
@@ -205,9 +206,17 @@ fn targets(
     Ok(Some(out))
 }
 
-/// The remote's ref a bare `name` matches, as this clone last saw it: its branch through the
-/// remote-tracking ref, else its tag, which a fetch brings along. Git asks the remote.
-fn known(repo: &Path, fetch: &str, remote: &str, name: &str) -> Result<Option<String>, String> {
+/// Where a spelled bare `name` lands, as git resolves it against the remote's refs with what
+/// this clone holds: the remote's branch when its remote-tracking ref exists; else the tag
+/// namespace when the source is a tag; else `None` when a local tag of that name leaves the
+/// remote's unknown (git asks the remote, this clone cannot); else a new branch.
+fn known(
+    repo: &Path,
+    fetch: &str,
+    remote: &str,
+    name: &str,
+    source: Option<&str>,
+) -> Result<Option<String>, String> {
     let seen = |r: &str| -> Result<bool, String> {
         let args = ["rev-parse", "--verify", "--quiet", "--end-of-options", r];
         let out = repo::probe(repo, &args, 1).map_err(|e| e.to_string())?;
@@ -220,7 +229,10 @@ fn known(repo: &Path, fetch: &str, remote: &str, name: &str) -> Result<Option<St
         return Ok(Some(branch));
     }
     let tag = format!("refs/tags/{name}");
-    Ok(seen(&tag)?.then_some(tag))
+    if source.is_some_and(|f| f.starts_with("refs/tags/")) {
+        return Ok(Some(tag));
+    }
+    Ok((!seen(&tag)?).then_some(branch))
 }
 
 /// The remote-tracking ref `remote` keeps for `dst`, through its fetch refspecs; the
@@ -251,30 +263,39 @@ fn full_name(repo: &Path, rev: &str) -> Result<Option<String>, String> {
     Ok(out.filter(|f| f.starts_with("refs/")))
 }
 
-/// `given` as a remote's name: itself when configured, else the remote whose URL it spells
-/// once `insteadOf` and a trailing slash are allowed for, so a push by URL still finds the
-/// old tip; else itself, which no fetch refspec maps.
+/// `given` as a remote's name: itself when configured; else the remote whose `url` or
+/// `pushurl` spells it, raw or through `insteadOf`, a trailing slash allowed for, a fetched
+/// one first when two share it, so a push by URL still finds the old tip; else itself,
+/// which no fetch refspec maps. Every word reaches git after `--end-of-options`.
 fn named(repo: &Path, given: &str) -> Result<String, String> {
-    let key = format!("remote.{given}.url");
-    if repo::config(repo, &key)
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
+    let get = |args: &[&str]| -> Result<String, String> {
+        let out = repo::probe(repo, args, 1).map_err(|e| e.to_string())?;
+        Ok(out.unwrap_or_default())
+    };
+    if !get(&["config", "--get-all", &format!("remote.{given}.url")])?.is_empty() {
         return Ok(given.to_owned());
     }
-    let expand = |r: &str| -> Result<String, String> {
-        let out =
-            repo::probe(repo, &["ls-remote", "--get-url", r], 1).map_err(|e| e.to_string())?;
-        Ok(out.unwrap_or_default().trim_end_matches('/').to_owned())
-    };
-    let want = expand(given)?;
-    let listed = repo::probe(repo, &["remote"], 1).map_err(|e| e.to_string())?;
-    for name in listed.unwrap_or_default().lines() {
-        if expand(name)? == want {
+    let trim = |u: &str| u.trim_end_matches('/').to_owned();
+    let expand =
+        |r: &str| get(&["ls-remote", "--get-url", "--end-of-options", r]).map(|u| trim(&u));
+    let wants = [trim(given), expand(given)?];
+    let mut unfetched = None;
+    for name in get(&["remote"])?.lines() {
+        let mut urls = vec![expand(name)?];
+        for key in ["url", "pushurl"] {
+            let listed = get(&["config", "--get-all", &format!("remote.{name}.{key}")])?;
+            urls.extend(listed.lines().map(trim));
+        }
+        if !urls.iter().any(|u| wants.contains(u)) {
+            continue;
+        }
+        let refs = format!("refs/remotes/{name}/");
+        if !get(&["for-each-ref", "--count=1", &refs])?.is_empty() {
             return Ok(name.to_owned());
         }
+        unfetched.get_or_insert_with(|| name.to_owned());
     }
-    Ok(given.to_owned())
+    Ok(unfetched.unwrap_or_else(|| given.to_owned()))
 }
 
 /// The remote a bare `git push` goes to.

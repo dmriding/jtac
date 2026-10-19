@@ -525,6 +525,7 @@ fn push(args: &[Word], bypass: Option<Bypass>, dir: Dir, raw: &str) -> Push {
         remote: None,
         sources: Vec::new(),
         destinations: Vec::new(),
+        spelled: Vec::new(),
         force: Force::No,
         delete: false,
         all_refs: false,
@@ -649,19 +650,23 @@ fn refspecs(p: &mut Push, positional: &[&str], delete_flag: bool) {
                 p.delete = true;
                 p.sources.push(String::new());
                 p.destinations.push(dst.to_string());
+                p.spelled.push(true);
             }
             Some((src, dst)) => {
                 p.sources.push(src.to_string());
                 p.destinations.push(dst.to_string());
+                p.spelled.push(true);
             }
             None => {
                 p.sources.push(spec.to_string());
                 p.destinations.push(spec.to_string());
+                p.spelled.push(false);
             }
         }
     }
     if delete_flag {
         p.sources.clear();
+        p.spelled = vec![true; p.destinations.len()];
     }
     if p.destinations.iter().any(|d| d.contains('*')) {
         p.all_refs = true;

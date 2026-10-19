@@ -397,7 +397,11 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
         &["claude-code"],
         &bash(None, "git push --force origin wip:v1"),
     );
-    assert_eq!(note(&ran), None, "a branch to the tag v1: {}", ran.stdout);
+    let n = note(&ran).unwrap_or_default();
+    assert!(
+        n.contains("could not be judged"),
+        "a branch onto a tag's name: the remote's tags are not held here: {n}"
+    );
     repo.git(&["branch", "-f", "main", &base]);
     let ran = pre_tool(
         &repo,
@@ -417,6 +421,35 @@ fn a_bare_destination_is_the_remote_ref_of_that_name_and_a_fence_outranks_a_miss
         "git push --force origin @".to_owned(),
         format!("git push -f {url}/ main"),
         "git push -f example-app main".to_owned(),
+    ] {
+        let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
+        let n = note(&ran).unwrap_or_default();
+        assert!(n.contains("rewinds a protected branch"), "{script}: {n}");
+    }
+    repo.git(&["push", "-q", "origin", "main:rel2"]);
+    repo.git(&["tag", "rel2", "wip"]);
+    let ran = pre_tool(&repo, &["claude-code"], &bash(None, "git push origin rel2"));
+    assert_eq!(note(&ran), None, "no colon: the local tag: {}", ran.stdout);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push origin rel2:rel2"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(n.contains("no root"), "spelled: the remote's branch: {n}");
+    repo.git(&["tag", "local-only", "wip"]);
+    let ran = pre_tool(
+        &repo,
+        &["claude-code"],
+        &bash(None, "git push origin wip:local-only"),
+    );
+    let n = note(&ran).unwrap_or_default();
+    assert!(n.contains("could not be judged"), "a tag only here: {n}");
+    repo.git(&["remote", "add", "never-fetched", &url]);
+    repo.git(&["config", "remote.origin.pushurl", "pushalias:origin.git"]);
+    for script in [
+        format!("git push --force {url} HEAD:main"),
+        "git push --force pushalias:origin.git HEAD:main".to_owned(),
     ] {
         let ran = pre_tool(&repo, &["claude-code"], &bash(None, &script));
         let n = note(&ran).unwrap_or_default();

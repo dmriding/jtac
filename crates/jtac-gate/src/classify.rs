@@ -116,6 +116,9 @@ pub struct Push {
     pub sources: Vec<String>,
     /// Remote sides of the refspecs, `tag X` spelled out.
     pub destinations: Vec<String>,
+    /// Per destination, whether a colon spelled it: a bare `main` is the source's own ref,
+    /// which git never asks the remote about; `src:main` and `--delete main` it does.
+    pub spelled: Vec<bool>,
     /// How hard it lands.
     pub force: Force,
     /// `--delete`, `-d`, or a `:dst` refspec.

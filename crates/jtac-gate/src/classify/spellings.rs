@@ -10,8 +10,12 @@ fn show(actions: &[Action]) -> String {
         lines.push(match a {
             Action::Push(p) => {
                 let mut s = format!("push {}", p.remote.as_deref().unwrap_or("?"));
-                for (src, dst) in p.sources.iter().zip(&p.destinations) {
-                    s.push_str(&format!(" {src}>{dst}"));
+                let specs = p.sources.iter().zip(&p.destinations).zip(&p.spelled);
+                for ((src, dst), spelled) in specs {
+                    match spelled {
+                        true => s.push_str(&format!(" {src}>{dst}")),
+                        false => s.push_str(&format!(" {src}")),
+                    }
                 }
                 // A `:dst` keeps its slot, so a deletion between two updates reads in order
                 // (`git push origin :old main` is `>old main>main`).
@@ -65,7 +69,7 @@ const BYPASSES: &[(&str, &str)] = &[
     ("git push --no-verify", "push ? bypass=NoVerify"),
     (
         "git push origin main --no-verify",
-        "push origin main>main bypass=NoVerify",
+        "push origin main bypass=NoVerify",
     ),
     ("git commit -n -m x", "bypass CommitShortN"),
     ("git commit -nm x", "bypass CommitShortN"),
@@ -78,7 +82,7 @@ const BYPASSES: &[(&str, &str)] = &[
     ("git am --no-verify < p", "bypass NoVerify"),
     (
         "git -c core.hooksPath=/dev/null push origin main",
-        "push origin main>main bypass=ConfigFlag",
+        "push origin main bypass=ConfigFlag",
     ),
     ("git -c CORE.HooksPath= push", "push ? bypass=ConfigFlag"),
     ("git -c core.hooksPath=x status", "bypass ConfigFlag"),
@@ -123,13 +127,13 @@ const BYPASSES: &[(&str, &str)] = &[
     ("git config core.hooksPath", ""),
     (
         "git push --no-veri origin main",
-        "push origin main>main bypass=NoVerify",
+        "push origin main bypass=NoVerify",
     ),
     ("git commit --no-verif -m x", "bypass NoVerify"),
     ("git merge --no-v topic", "bypass NoVerify"),
     (
         "git --config-env core.hooksPath=HP push origin main",
-        "push origin main>main bypass=ConfigEnvFlag",
+        "push origin main bypass=ConfigEnvFlag",
     ),
     ("git -c alias.p=push p origin main", "unreadable Alias"),
     (
@@ -164,15 +168,15 @@ const BYPASSES: &[(&str, &str)] = &[
     ),
     (
         "GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=\"$D\" git push origin main",
-        "push origin main>main bypass=ConfigEnvVar",
+        "push origin main bypass=ConfigEnvVar",
     ),
     (
         "f() { local -x GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/dev/null'\"; git push origin main; }; f",
-        "bypass ConfigParameters ; push origin main>main",
+        "bypass ConfigParameters ; push origin main",
     ),
     (
         "read -r GIT_CONFIG_PARAMETERS <<< x; export GIT_CONFIG_PARAMETERS; git push origin main",
-        "unreadable Variable ; push origin main>main",
+        "unreadable Variable ; push origin main",
     ),
     (
         "printf -v GIT_CONFIG_PARAMETERS %s x; builtin export GIT_CONFIG_PARAMETERS; git push",
@@ -189,11 +193,11 @@ const BYPASSES: &[(&str, &str)] = &[
     ("git config -f \"$F\" user.name x", ""),
     (
         "git push -o -- --no-verify origin main",
-        "push origin main>main bypass=NoVerify",
+        "push origin main bypass=NoVerify",
     ),
     (
         "git push --no-verify --verify origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "git config --comment --get core.hooksPath /tmp/x",
@@ -205,7 +209,7 @@ const BYPASSES: &[(&str, &str)] = &[
     ),
     (
         "command -p export GIT_CONFIG_PARAMETERS=\"'core.hookspath=/tmp/x'\"; git push origin main",
-        "bypass ConfigParameters ; push origin main>main",
+        "bypass ConfigParameters ; push origin main",
     ),
     ("command -- export GIT_DIR=/x; git push", "cd ? ; push ? @?"),
     (
@@ -275,67 +279,58 @@ const BYPASSES: &[(&str, &str)] = &[
     ("alias g='git push'", "unreadable Alias"),
     ("alias g=git", "unreadable Alias"),
     ("git push -n", "push ? dry"),
-    (
-        "git push --dry-run origin main",
-        "push origin main>main dry",
-    ),
-    ("git push -o ci.skip origin main", "push origin main>main"),
-    ("git push -on origin main", "push origin main>main"),
-    (
-        "git push origin -- --no-verify",
-        "push origin --no-verify>--no-verify",
-    ),
+    ("git push --dry-run origin main", "push origin main dry"),
+    ("git push -o ci.skip origin main", "push origin main"),
+    ("git push -on origin main", "push origin main"),
+    ("git push origin -- --no-verify", "push origin --no-verify"),
     ("git push # --no-verify", "push ?"),
     ("git commit -m '--no-verify'", ""),
 ];
 
 /// Force forms.
 const FORCE: &[(&str, &str)] = &[
-    ("git push -f origin main", "push origin main>main force"),
-    (
-        "git push --force origin main",
-        "push origin main>main force",
-    ),
+    ("git push -f origin main", "push origin main force"),
+    ("git push --force origin main", "push origin main force"),
     (
         "git push --force-with-lease origin main",
-        "push origin main>main lease",
+        "push origin main lease",
     ),
     (
         "git push --force-with-lease=main:abc origin main",
-        "push origin main>main lease",
+        "push origin main lease",
     ),
     (
         "git push --force-with-lease --force origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    ("git push origin +main", "push origin main>main force"),
-    ("git push -fu origin main", "push origin main>main force"),
+    ("git push origin +main", "push origin main force"),
+    ("git push -fu origin main", "push origin main force"),
     ("git push --mirror origin", "push origin force all"),
     ("git push --mirr origin", "push origin force all"),
     ("git push --m origin", "push origin force all"),
     ("git push --de origin main", "push origin >main delete"),
     ("git push --b origin", "push origin all"),
     ("git push --al origin", "push origin all"),
-    ("git push --forc origin main", "push origin main>main"),
+    ("git push --forc origin main", "push origin main"),
     (
         "git push --force-if-includes origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "git push --no-force-with-lease origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "git push --force --no-force-with-lease origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "git push --force-with-lease --no-force origin main",
-        "push origin main>main lease",
+        "push origin main lease",
     ),
     (
         "git push --force --force-with-lease --no-force origin main",
-        "push origin main>main lease",
+        "push origin main lease",
     ),
     ("git push --mirror --no-force origin", "push origin all"),
     (
@@ -344,54 +339,36 @@ const FORCE: &[(&str, &str)] = &[
     ),
     (
         "git push --mirror --no-mirror origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "git push -f --mirror --no-mirror origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "git push --mirror --force-with-lease --no-mirror origin main",
-        "push origin main>main lease",
+        "push origin main lease",
     ),
-    (
-        "git push -fofoo=bar origin main",
-        "push origin main>main force",
-    ),
-    ("git push -o=ci.skip origin main", "push origin main>main"),
-    (
-        "git push -n --no-dry-run origin main",
-        "push origin main>main",
-    ),
-    ("git push -n --no-dry origin main", "push origin main>main"),
-    (
-        "git push -f --no-force origin main",
-        "push origin main>main",
-    ),
+    ("git push -fofoo=bar origin main", "push origin main force"),
+    ("git push -o=ci.skip origin main", "push origin main"),
+    ("git push -n --no-dry-run origin main", "push origin main"),
+    ("git push -n --no-dry origin main", "push origin main"),
+    ("git push -f --no-force origin main", "push origin main"),
     ("git push --mirror --no-mirror origin", "push origin"),
-    (
-        "git push -d --no-delete origin main",
-        "push origin main>main",
-    ),
-    (
-        "git push --force-w origin main",
-        "push origin main>main lease",
-    ),
+    ("git push -d --no-delete origin main", "push origin main"),
+    ("git push --force-w origin main", "push origin main lease"),
     (
         "git push -4f origin HEAD~1:main",
         "push origin HEAD~1>main force",
     ),
     ("git push --del origin old", "push origin >old delete"),
-    ("git push --dry origin main", "push origin main>main dry"),
+    ("git push --dry origin main", "push origin main dry"),
     ("git push --all origin", "push origin all"),
     ("git push origin --tags", "push origin tags"),
-    (
-        "git push --tags --no-tags origin main",
-        "push origin main>main",
-    ),
+    ("git push --tags --no-tags origin main", "push origin main"),
     (
         "git push origin 'refs/heads/*'",
-        "push origin refs/heads/*>refs/heads/* all",
+        "push origin refs/heads/* all",
     ),
 ];
 
@@ -400,14 +377,9 @@ const REFSPECS: &[(&str, &str)] = &[
     ("git push -d origin old", "push origin >old delete"),
     ("git push --delete origin a b", "push origin >a >b delete"),
     ("git push origin :old", "push origin >old delete"),
-    (
-        "git push origin main :old",
-        "push origin main>main >old delete",
-    ),
-    (
-        "git push origin :old main",
-        "push origin >old main>main delete",
-    ),
+    ("git push origin main:main", "push origin main>main"),
+    ("git push origin main :old", "push origin main >old delete"),
+    ("git push origin :old main", "push origin >old main delete"),
     ("git push -fd origin old", "push origin >old force delete"),
     (
         "git push origin main:refs/heads/x",
@@ -415,21 +387,15 @@ const REFSPECS: &[(&str, &str)] = &[
     ),
     (
         "git push origin HEAD:main topic",
-        "push origin HEAD>main topic>topic",
+        "push origin HEAD>main topic",
     ),
-    (
-        "git push origin tag v1",
-        "push origin refs/tags/v1>refs/tags/v1",
-    ),
+    ("git push origin tag v1", "push origin refs/tags/v1"),
     ("git push --repo=origin", "push origin"),
     ("git push --repo origin main", "push main"),
-    (
-        "git push origin \"$BRANCH\"",
-        "push origin $BRANCH>$BRANCH opaque",
-    ),
+    ("git push origin \"$BRANCH\"", "push origin $BRANCH opaque"),
     (
         "git push origin $(git branch --show-current)",
-        "push origin $(git branch --show-current)>$(git branch --show-current) opaque",
+        "push origin $(git branch --show-current) opaque",
     ),
 ];
 
@@ -453,63 +419,51 @@ const WRAPPERS: &[(&str, &str)] = &[
     ("git commit $'\\x2dn' -m x", "bypass CommitShortN"),
     (
         "git push $'\\x2d\\x66' origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
     ("A=1 B=2 git push", "push ?"),
-    (
-        "sudo -u git -H git push origin main",
-        "push origin main>main",
-    ),
-    ("env -u git git push origin main", "push origin main>main"),
+    ("sudo -u git -H git push origin main", "push origin main"),
+    ("env -u git git push origin main", "push origin main"),
     ("flock /tmp/lock git push", "push ?"),
     (
         "flock /tmp/lock -c 'git push --force origin main'",
-        "push origin main>main force",
+        "push origin main force",
     ),
     ("flock -w 5 /tmp/lock git push", "push ?"),
     (
         "flock /tmp/lock --command 'git push --force origin main'",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "flock -s /tmp/lock git push origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "env --default-signal git push origin main",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "env --ignore-signal=INT git push --force origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    (
-        "env --unse git git push origin main",
-        "push origin main>main",
-    ),
+    ("env --unse git git push origin main", "push origin main"),
     (
         "env --chd=/elsewhere git push origin main",
-        "push origin main>main @/elsewhere",
+        "push origin main @/elsewhere",
     ),
     ("env --c /elsewhere git push", "push ? @/elsewhere"),
-    (
-        "sudo --us git git push origin main",
-        "push origin main>main",
-    ),
+    ("sudo --us git git push origin main", "push origin main"),
     ("sudo --ch /x git push", "push ? @?"),
     (
         "busybox env git push --force origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    (
-        "busybox timeout 5 git push origin main",
-        "push origin main>main",
-    ),
+    ("busybox timeout 5 git push origin main", "push origin main"),
     ("busybox $APPLET git push", "unreadable Variable"),
     ("café", ""),
     ("éabc", ""),
-    ("/opt/café/git push origin main", "push origin main>main"),
-    ("Git-Push origin main", "push origin main>main"),
+    ("/opt/café/git push origin main", "push origin main"),
+    ("Git-Push origin main", "push origin main"),
     (
         "taskset 1 /usr/lib/git-core/git-push origin main",
         "unreadable Runner(taskset)",
@@ -526,9 +480,9 @@ const WRAPPERS: &[(&str, &str)] = &[
     ),
     (
         "/usr/lib/git-core/git-push --force origin main",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    ("git-push origin main", "push origin main>main"),
+    ("git-push origin main", "push origin main"),
     (
         "env \"$GIT\" push --force origin main",
         "unreadable Variable",
@@ -612,11 +566,11 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("false || eval 'cd /x'; git push", "cd ? ; push ? @?"),
     (
         "export GIT_DIR=/other/.git; git push --force origin main",
-        "cd ? ; push origin main>main force @?",
+        "cd ? ; push origin main force @?",
     ),
     (
         "GIT_DIR=/other; git push origin main",
-        "cd ? ; push origin main>main @?",
+        "cd ? ; push origin main @?",
     ),
     ("pushd +1; git push", "cd ? ; push ? @?"),
     ("CDPATH=/x cd foo; git push", "cd ? ; push ? @?"),
@@ -627,7 +581,7 @@ const DIRECTORIES: &[(&str, &str)] = &[
 const INDIRECTION: &[(&str, &str)] = &[
     (
         "bash -lc 'git push -f origin main'",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "sh -c 'cd ../x && git push'; git push",
@@ -637,7 +591,7 @@ const INDIRECTION: &[(&str, &str)] = &[
     ("bash -c \"git push $X\"", "unreadable ShellString"),
     ("bash -c \"$SCRIPT\"", "unreadable ShellString"),
     ("busybox sh -c 'git push'", "push ?"),
-    ("eval git push origin main", "push origin main>main"),
+    ("eval git push origin main", "push origin main"),
     ("eval 'cd ../x'; git push", "cd ../x ; push ? @../x"),
     ("eval \"$CMD\"", "unreadable Eval"),
     ("trap 'git push' EXIT", "push ? @?"),
@@ -650,7 +604,7 @@ const INDIRECTION: &[(&str, &str)] = &[
     ("bash script.sh", ""),
     (
         "bash <<< 'git push --force origin main'",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "echo 'git push --force origin main' | bash",
@@ -678,32 +632,29 @@ const INDIRECTION: &[(&str, &str)] = &[
     ),
     (
         "[[ -n $(git push --force origin main) ]]",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    ("(( $(git push origin main) ))", "push origin main>main"),
+    ("(( $(git push origin main) ))", "push origin main"),
     (
         "exit $(git push --force origin main)",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "echo \"${X:-$(git push --force origin main)}\"",
-        "push origin main>main force",
+        "push origin main force",
     ),
     (
         "a=($(git push --force origin main))",
-        "push origin main>main force",
+        "push origin main force",
     ),
-    (
-        "echo $(( $(git push origin main) ))",
-        "push origin main>main",
-    ),
+    ("echo $(( $(git push origin main) ))", "push origin main"),
     (
         "case x in $(git push origin main)) ;; esac",
-        "push origin main>main",
+        "push origin main",
     ),
     (
         "for ((i=$(git push -f o m); i<1; i++)); do :; done",
-        "push o m>m force",
+        "push o m force",
     ),
     ("echo `echo \\`git push\\``", "unreadable Syntax"),
     ("git commit -m \"fix \\`x\\`\"", ""),
@@ -761,11 +712,11 @@ const DATA: &[(&str, &str)] = &[
     ("git push\0 --no-verify", "push ?"),
     (
         "for b in a b; do git push origin $b; done",
-        "push origin $b>$b opaque",
+        "push origin $b opaque",
     ),
     (
         "while read b; do git push origin \"$b\"; done < list",
-        "push origin $b>$b opaque",
+        "push origin $b opaque",
     ),
     ("case x in *) git push;; esac", "push ?"),
     ("f() { git push; }; f", "push ?"),
@@ -1021,7 +972,7 @@ fn every_row_of_the_spellings_table_classifies_as_written() {
 fn shells_nest_three_deep_and_the_fourth_is_unreadable() {
     let nest = |script: &str| format!("bash -c '{}'", script.replace('\'', "'\\''"));
     let three = nest(&nest(&nest("git push origin main")));
-    assert_eq!(show(&classify(&three)), "push origin main>main");
+    assert_eq!(show(&classify(&three)), "push origin main");
     assert_eq!(show(&classify(&nest(&three))), "unreadable Nesting");
 }
 
@@ -1121,14 +1072,14 @@ fn balanced_text_reads_and_only_arithmetic_bodies_are_capped() {
         .join(" && ");
     assert_eq!(
         show(&classify(&format!("[[ {files} ]] && git push origin main"))),
-        "push origin main>main"
+        "push origin main"
     );
     let items = (0..120)
         .map(|n| format!("  {{\"id\": {n}, \"tags\": [\"a\", \"b\"]}}"))
         .collect::<Vec<_>>()
         .join(",\n");
     let json = format!("cat > data.json <<'EOF'\n[\n{items}\n]\nEOF\ngit push origin main");
-    assert_eq!(show(&classify(&json)), "push origin main>main");
+    assert_eq!(show(&classify(&json)), "push origin main");
     let code = "x = compute(a, b)\n".repeat(80);
     let py = format!("python3 - <<'EOF'\nprint((a + b) * c)\n{code}EOF\ngit push");
     assert_eq!(show(&classify(&py)), "push ?");
