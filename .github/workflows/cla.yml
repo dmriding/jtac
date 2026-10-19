@@ -42,14 +42,16 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request_target'
     steps:
-      - name: every commit carries a Signed-off-by trailer
+      # Merge commits are exempt: the "Update branch" button writes one with no trailer (#74).
+      - name: every non-merge commit carries a Signed-off-by trailer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -eu
           missing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
-            --jq '.[] | select(.commit.message | test("(^|\n)Signed-off-by: .+ <.+@.+>") | not) | .sha')
+            --jq '.[] | select((.parents | length) < 2)
+                  | select(.commit.message | test("(^|\n)Signed-off-by: .+ <.+@.+>") | not) | .sha')
           if [ -n "$missing" ]; then
             echo "Commits without a Signed-off-by trailer (CLA.md section 10):"
             echo "$missing"
