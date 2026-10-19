@@ -34,6 +34,12 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.0.20, M10b) `jtac-gate` shell command classifier: a script's pushes (remote, refspecs,
+  force form, deletions, the directory each runs in), hook bypasses in every spelling of
+  `--no-verify` and `core.hooksPath`, directory changes, and what it cannot read, with the
+  reason. The grammar comes from `shuck-parser` behind one adapter module; a parse that is
+  not clean is unreadable (DESIGN.md 11.4, decision 36). Every spelling is a row of one table
+  test. Nothing calls it yet; M13 wires `jtac hook pre-tool`.
 - (0.0.19) This repository is gated by jtac: `.jtac/policy.toml` runs the fmt, clippy, test,
   doc and loc-cap bars with CI's flags and protects `scripts/**`, `.cargo/**`, the rustfmt and
   clippy config in every directory and the legacy `rust-toolchain` file beside the defaults;

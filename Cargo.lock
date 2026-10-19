@@ -49,6 +49,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -97,6 +106,20 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "compact_str"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "rustversion",
+ "ryu",
+ "static_assertions",
+]
 
 [[package]]
 name = "const-oid"
@@ -309,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "jtac"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "clap",
  "jiff",
@@ -328,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-checks"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "jtac-core",
  "jtac-policy",
@@ -342,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-core"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "hex",
  "jiff",
@@ -355,14 +378,16 @@ dependencies = [
 
 [[package]]
 name = "jtac-gate"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "jtac-core",
+ "shuck-ast",
+ "shuck-parser",
 ]
 
 [[package]]
 name = "jtac-policy"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "globset",
  "jtac-core",
@@ -373,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-sign"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "jtac-core",
  "libc",
@@ -383,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-store"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "jtac-checks",
  "jtac-core",
@@ -396,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "jtac-testkit"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "tempfile",
 ]
@@ -536,6 +561,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "ryu-js"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,6 +653,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "shuck-ast"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17df9daf7695b7943883c857a260b2a1d3a64d253b7180a8e68154dd46ff56d1"
+dependencies = [
+ "compact_str",
+]
+
+[[package]]
+name = "shuck-parser"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0117e771260a0be5de26833a11e5a639d6dc25fe1b58a572997a68ad9cb88e6"
+dependencies = [
+ "memchr",
+ "shuck-ast",
+ "smallvec",
+]
+
+[[package]]
 name = "similar"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -623,6 +680,18 @@ checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
 dependencies = [
  "bstr",
 ]
+
+[[package]]
+name = "smallvec"
+version = "1.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "syn"
