@@ -6,6 +6,8 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-19
+
 ### Fixed
 
 - (0.1.1) `jtac hook pre-tool` gives up at its one-second cap with no note on a machine where
