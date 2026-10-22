@@ -88,8 +88,8 @@ Consequences:
 | --- | --- | --- |
 | A careless or overeager agent | Produce plausible wrong code, weaken tests, add suppressions, edit CI config | Local gate blocks with an explained reason and a fix |
 | An agent steered by injected content | Try to bypass the gate, self-approve, or flip a lever | No agent-facing tool reaches a lever. Bypass leaves the commit provably uncovered |
-| A developer in a hurry | Skip the hooks with `--no-verify`, or uninstall jtac | Cannot be prevented locally. The commit is recorded as absent, and CI treats it as unverified |
-| A developer forging evidence | Sign a root for checks that did not pass | A local root is a claim. From v0.2, CI re-runs checks and compares. Mismatch is a finding |
+| A developer in a hurry | Skip the hooks with `--no-verify`, or uninstall jtac | Cannot be prevented locally. The commit is recorded as absent; from v0.2, CI judges the tree itself and records the absence |
+| A developer forging evidence | Sign a root for checks that did not pass | A local root is a claim. From v0.2, CI re-runs the gate and compares state, counts and policy hash. A disagreement fails the check |
 | Someone with push access | Delete or overwrite evidence refs | Evidence is signed and bound to a commit, so it cannot be altered. Deletion yields absent. From v0.4 the collector keeps the durable copy |
 | A compromised policy approver | Ship a weakened policy | Releases need multiple signatures, cannot roll back, and are visible as a diff |
 
@@ -648,17 +648,24 @@ Not in v0.1: any model call, CI verification, review rounds, tiers beyond record
 
 ## 15. v0.2: CI gate
 
-The CI gate closes the gap stated in section 6: it is a different identity on a different machine.
+The CI gate closes the gap stated in section 6: it is a different identity on a different machine. v0.2.0 is the independence slice alone, M15 to M17; the rest of this section follows as v0.2.x, one milestone per branch, each opened with a design round.
 
-- **Form.** The same `jtac` binary run in CI, shipped first as a GitHub Action, with the forge behind an adapter so GitLab and others follow.
-- **Verification.** For a pull request it fetches the roots, verifies signatures and chain, and re-runs the required checks. Where its results differ from the local root, that is a finding against the root, not just a failed build.
-- **Reuse.** With policy permitting, checks whose cache key matches a trusted prior CI run are reused. Local results are a hint for ordering and never a substitute.
-- **Identity.** The CI gate signs with its own key, held by the CI system and never present on a developer machine. It reports a required status check. It never posts an approval.
-- **Merge roots.** At merge it issues a root for the merge commit, signed by the CI identity, linking to the roots of the commits merged.
-- **Tiering.** Policy classifies each change by blast radius. Low tier merges on the CI verdict. High tier requires a named human with ownership of the area.
-- **Policy changes.** A change to `.jtac/` is always high tier and cannot be cleared by the run that contains it.
-- **Attribution.** Agent adapters record line-level attribution in the open Agent Trace format where the agent provides it. `jtac who` reads it.
-- **Org policy.** Policy can come from a signed release of a policy repository (section 18.3).
+- **Form.** The same `jtac` binary, knowing no forge: `jtac ci` takes `--base <rev>` and `--signers <file>`, reads its identity from git config as every command does, and answers with exit codes, 0 pass, 1 fail, 2 could not answer. A forge adapter is a workflow file that supplies those from its event and turns the exit code into a status check. GitHub's ships first, a composite action in this repository that installs the release binary through `install.sh`; GitLab and others are a second file. No forge API call enters the binary.
+- **What is judged.** The pull request head commit, the tree the local root names, in a full clone with `refs/jtac/*` fetched from the head repository, which for a fork is the fork. Trust is the base branch's `.jtac/signers`, never the head's (section 11.9). Policy is the head's, except that a change under `.jtac/**` is judged under the base branch's policy, so no run clears the policy it brings; the head's policy takes effect after merge. `jtac init --ci` prints the CODEOWNERS line for `.jtac/`, so the human a policy change needs is the forge's requirement, not a check that fails.
+- **Verification.** `jtac ci` verifies the head's root (it parses, names the tip and its tree, its signature holds, its signer is trusted at its `ts`), re-runs the gate on the same tree under the CI identity, and compares what a root carries: state, counts, and policy hash. Nodes never leave the machine that wrote them, so there is no node-by-node comparison; a local `covered` with no major against a CI run that finds one is the finding, named with both sides. A local root that is invalid or disagrees fails the check whatever CI's own verdict. A missing local root is reported in the output and in `audit`; `[ci] require_local_root = true` makes it fail. The default is `false`: CI's own run is the gate, absence is recorded (section 11.5), and a fork's contributor has no root to offer.
+- **Identity.** An SSH key held in a CI secret, written to a file by the workflow and named through `jtac.signingkey`, with `user.email` as the CI principal; its public key is a line in `.jtac/signers` like any developer's, reviewed like any other change. A CI root proves that the forge's runner, holding the CI key, judged this tree with this gate and policy. Anyone who can change the workflow can misuse the key, which is why `.github/**` is protected and such a change is a major finding; an environment-scoped secret with required reviewers narrows it further. Keyless signing bound to the workflow identity, when it comes, is a new signature namespace with its own reader, never an edit to this one. The same key signs `SHA256SUMS` in the release workflow, closing the deferral in decision 39. The gate reports a required status check and never posts an approval.
+- **Merge roots.** On a push to the default branch, `jtac check` under the CI identity writes the root for the merge commit and pushes its ref, with `parents` naming the head roots it reached; a squash or rebase merge gets its own root the same way. No root is written for a pull request head: the ref layout holds one root per tip and a standing root is kept (decision 33), so the local root stays the head's evidence and the CI-signed root on the default branch is the auditor's. The run's store is uploaded as a workflow artifact named by the root id, so `replay` is possible for the artifact's retention; the durable copy is the collector's (section 17). A fork's run has no secret, writes no root, and still judges.
+- **Shallow clones.** The action fetches full history (issue 28); narrowing the shallow refusal to the commits the walk reaches is its own change.
+- **After v0.2.0.** The release gate (section 16.3) as v0.2.1. Then tiering: policy classifies each change by blast radius, low tier merges on the CI verdict, high tier requires a named human with ownership of the area, and a `.jtac/` change is always high tier. Then reuse of checks whose cache key matches a trusted prior CI run, local results a hint for ordering and never a substitute; attribution in the open Agent Trace format where the agent provides it, read by `jtac who`; org policy from a signed release of a policy repository (section 18.3); `jtac policy` and `jtac scope`.
+
+### 15.1 v0.2 build plan
+
+| # | Milestone | Done when |
+| --- | --- | --- |
+| M15 | `jtac ci`: verify the head's root with trust from base, re-run, compare; the `[ci]` policy table; the comparison a pure function in `jtac-core` | On a scripted repository a false local root fails with the three parts and both sides' counts; a missing root is reported and passes, and fails under `require_local_root` |
+| M16 | The merge root from CI: `check` under the CI identity, the root push outside the hook, the store as an artifact | `jtac audit main` in a second clone reports the merge commit covered by the CI principal |
+| M17 | The GitHub action, `jtac init --ci github`, the docs, and this repository on it | A stranger adds the action and one secret; within ten minutes a pull request that removes a test fails the required check with the three parts, and one pushed with `--no-verify` passes with its absence named. Tag `v0.2.0` |
+| M18 | `jtac release <tag>` (section 16.3), designed first | A tag whose range holds an absent commit is refused naming it; an attested tag verifies in any clone. Tag `v0.2.1` |
 
 ## 16. v0.3: review round, review packet, release gate
 
@@ -683,6 +690,8 @@ For a high-tier change, the verifier builds a packet for the human reviewer and 
 The packet is written by the verifier, never by the author agent. The author's description appears labeled as an untested claim. The reviewer records one signed `disposition` per residual item, so the record shows what was looked at.
 
 ### 16.3 Release gate and export
+
+`jtac release` is pulled forward to M18, v0.2.1 (decision 44); `jtac export` stays here.
 
 - `jtac release <tag>` attests a release only if every commit in it has a complete evidence chain, and names the commits that do not.
 - `jtac export` produces the evidence for a range in a form an auditor can read and independently verify, organized by control.
@@ -863,6 +872,11 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 37. **The agent tool-call hook advises on its agent's own advisory field and never decides; a bypass is told what lands and named no command; the hook caps itself at one second, `JTAC_PRETOOL_CAP_MS` sets another, and fails open; its install is opt-in per clone.** An advisory that could block would be a second gate with a weaker reach than the git hook; a bypass can be the operator's fence, and a command that undoes it would be a guess; the agent waits on every call, so an unbounded classifier is the agent's latency; and the settings file is the agent's own, named with an absolute path, so it is a per-clone write the owner asks for, not a merge into a tracked file.
 38. **The commit that adds `.jtac/policy.toml` where no parent's history ever held one is judged under it, and a `.jtac/**` change on that commit is a minor finding, not a major one.** Nothing was in force to protect; the first root still records the finding, and a later change under `.jtac/` is major as before. The fact is gathered from the history behind every parent: the diff's base is the pusher's to choose with `--base`, and a merge whose first parent never held a policy would otherwise weaken the one its second parent holds. Adopting by merging a side branch that already holds the policy is therefore major, and takes a waiver. Without this the adoption commit aborts on the policy it introduces, and the first five minutes need a waiver.
 39. **The install script verifies the archive against the `SHA256SUMS` the release workflow publishes, installs under `~/.local/bin` or `--to`, and never edits PATH; attesting the build to the workflow identity waits for v0.2's CI identity (open question 7). The README publishes bench's control count and the gate's measured overhead on this repository, and states catch rate and false block rate as unmeasured, with the method. `jtac policy` and `jtac scope` move to v0.2.** A provenance tool whose installer downloads an unverified binary contradicts itself; a rate from one developer's repositories is the number section 23 warns against; v0.1 ships what exists.
+40. **The CI gate is the same binary knowing no forge: `jtac ci --base --signers`, identity from git config, exit codes; the forge adapter is a workflow file, GitHub's a composite action in this repository.** A forge client in the binary would be a second trust root and a second thing to verify offline; one workflow file per forge is the whole adapter.
+41. **CI signs with an SSH key held in a CI secret, under a CI principal in `.jtac/signers`; keyless signing, when it comes, is a new namespace with its own reader.** No new signing code, the trust file already says who may sign, and verification stays offline; a CI root proves the runner holding the key judged the tree, and that limit is written in section 15. Open question 7 closed.
+42. **CI judges the pull request head in a full clone, trust from base, a `.jtac/**` change under base's policy; it compares state, counts and policy hash; an invalid or disagreeing local root fails the check; a missing one is recorded and passes unless `require_local_root`.** The head is the tree the local root names; nodes never travel, so counts are the comparison that exists; a default that fails every fork pull request stops adoption, and absence recorded is the honest state (section 11.5).
+43. **CI writes a root only for the merge commit on the default branch; a head keeps its local root; the CI run's store is a workflow artifact.** One root per tip is the ref layout; the auditor reads the default branch; the durable copy is the collector's.
+44. **v0.2.0 is M15 to M17; the release gate is M18 as v0.2.1; tiering, reuse, attribution and org policy follow as v0.2.x.** The independence slice is what makes absence cost something, and a release gate is thin once `verify --require-coverage` exists.
 
 ## 22. Open questions
 
@@ -872,7 +886,7 @@ These were chosen to make the design buildable. Each should be confirmed or chan
 4. **Test-integrity precision.** Decided in M5: `JT-TEST-003` ships as major in every language, scoped to a test present on both sides by name. Its false block rate is one of the launch numbers (section 14).
 5. **Windows.** Decided in M14: the test suite runs on Windows in CI, the hooks are unverified there, the install script is `sh`, and a Windows user takes the zip from the release page. The README says so.
 6. **Where the launch numbers come from.** Catch rate and false block rate need outside testers, not one developer's machines.
-7. **CI identity in v0.2.** A long-lived key in CI secrets, or keyless signing bound to the workflow identity.
+7. **CI identity in v0.2.** Decided (decision 41): an SSH key in a CI secret under a CI principal in `.jtac/signers`; keyless signing as a later namespace.
 8. **Collector storage in v0.4.** A relational database, an object store with a signed index, or a transparency log.
 9. **Whether the certification an adopting org targets accepts a low tier with no human approver.** Confirm with an auditor before tiering is presented as satisfying a control.
 
