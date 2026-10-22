@@ -24,8 +24,8 @@ Linux x86_64 and macOS arm64, from the latest release, verified against the
 curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 ```
 
-It puts `jtac` in `~/.local/bin` (`--to DIR` for another place, `--version
-vX.Y.Z` for a pinned one) and never edits PATH. It is 97 lines of `sh`, worth
+It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
+`--version vX.Y.Z` for a pinned one) and never edits PATH. It is 97 lines of `sh`, worth
 reading first. Windows takes the zip from the release page: the test suite runs
 there, the hooks are unverified. From source, with Rust 1.98 or later:
 
@@ -79,9 +79,9 @@ ABORT: 2 reasons block
      rust-test pass 80ms  cargo test --workspace
 ```
 
-Every refusal has three parts: what happened, why the rule exists, and the exact
-command to run next. It says whether it is a fence (no path to yes from inside a
-session) or a negotiation (run this). Exit 0 is pass, 1 is block, 2 is a
+Every block and refusal has three parts: what happened, why the rule exists, and
+what to do next. A refusal says whether it is a fence (no path to yes from inside
+a session) or a negotiation (run this). Exit 0 is pass, 1 is block, 2 is a
 refusal: the gate could not answer.
 
 ## What it does
@@ -102,9 +102,9 @@ refusal: the gate could not answer.
   (`declared_off`, a signed waiver), or not there (`absent`). Bypass is
   recorded, not prevented: `git push --no-verify` lands with no root, and
   `jtac verify` shows it.
-- Judges the change, not the author. Waivers are signed, carry a reason, expire
-  within 30 days, and a waiver pulled under an agent session is flagged by every
-  reader.
+- Judges the change, not the author. Waivers are signed, carry a reason, cover
+  one commit or one rule for at most 30 days, and a waiver pulled under an agent
+  session is flagged by every reader.
 
 | Command | Does |
 | --- | --- |
