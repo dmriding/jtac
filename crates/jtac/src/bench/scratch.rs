@@ -246,7 +246,7 @@ impl Refusal {
             "bench attacks the gate through its real path, which runs git and signs with \
              ssh-keygen; a proof that skipped a step would prove nothing.",
             format!(
-                "Install {tool} (git 2.28 or later, OpenSSH 8.9 or later) so it is on PATH, then \
+                "Install {tool} (git 2.31 or later, OpenSSH 8.9 or later) so it is on PATH, then \
                  run `jtac bench` again."
             ),
         )
