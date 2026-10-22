@@ -17,10 +17,13 @@ Nothing is "released" because it merged.
 1. On `main`, the version in the workspace manifest is already the one to
    release, bumped by the pull requests since the last tag.
 2. In `CHANGELOG.md`, move the `[Unreleased]` entries under a new
-   `## [X.Y.Z] - YYYY-MM-DD` heading, in a pull request titled
-   `release: vX.Y.Z`. That pull request is the one exception to the bump
-   rule: it changes no version, because the tag must equal the manifest.
-   Merge it.
+   `## [X.Y.Z] - YYYY-MM-DD` heading, on a branch named `rel/vX.Y.Z`, in a
+   pull request titled `release: vX.Y.Z`. Not `release/vX.Y.Z`: the default
+   policy fences `release/*` as a long-lived release line, which this
+   repository does not keep, and the pre-push hook refuses the force-push
+   that a rebase onto `main` after review needs. That pull request is the
+   one exception to the bump rule: it changes no version, because the tag
+   must equal the manifest. Merge it.
 3. Tag the merge commit and push the tag:
 
    ```

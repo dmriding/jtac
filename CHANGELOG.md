@@ -8,6 +8,8 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.1.6) `docs/RELEASING.md` names the release branch `rel/vX.Y.Z`, outside the default
+  `release/*` fence (#81).
 - (0.1.5) The README is written for a reader who has never seen jtac: the install, the quick
   start, a real block with its three parts, and how a clone checks someone else's evidence,
   every command and line of output taken from the v0.1.2 release binary.
