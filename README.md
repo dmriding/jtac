@@ -27,7 +27,8 @@ curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
 `--version vX.Y.Z` for a pinned one) and never edits PATH. It is 97 lines of `sh`, worth
 reading first. Windows takes the zip from the release page: the test suite runs
-there, the hooks are unverified. From source, with Rust 1.98 or later:
+there, the hooks are unverified. From source, the tip of `main`, with Rust 1.98
+or later:
 
 ```sh
 cargo install --locked --git https://github.com/dmriding/jtac jtac
@@ -59,7 +60,8 @@ passes, and `jtac why` repeats the last verdict.
 
 ## What a block looks like
 
-A commit that adds a lint suppression and a token-shaped string:
+A commit that adds a lint suppression and a token-shaped string, with the
+tree, policy and tier lines trimmed:
 
 ```
 ABORT: 2 reasons block
@@ -102,9 +104,9 @@ refusal: the gate could not answer.
   (`declared_off`, a signed waiver), or not there (`absent`). Bypass is
   recorded, not prevented: `git push --no-verify` lands with no root, and
   `jtac verify` shows it.
-- Judges the change, not the author. Waivers are signed, carry a reason, cover
-  one commit or one rule for at most 30 days, and a waiver pulled under an agent
-  session is flagged by every reader.
+- Judges the change, not the author. A waiver is signed, carries a reason, and
+  covers one commit, or one rule under one path for at most 30 days. A waiver
+  pulled under an agent session is flagged by every reader.
 
 | Command | Does |
 | --- | --- |
