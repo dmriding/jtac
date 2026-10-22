@@ -33,7 +33,7 @@ there, the hooks are unverified. From source, with Rust 1.98 or later:
 cargo install --locked --git https://github.com/dmriding/jtac jtac
 ```
 
-Everything needs git 2.28 or later and OpenSSH 8.9 or later for `ssh-keygen`.
+Everything needs git 2.31 or later and OpenSSH 8.9 or later for `ssh-keygen`.
 
 ## Quick start
 
