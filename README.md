@@ -175,8 +175,8 @@ repository's language and the agent that wrote the code.
   tool-call hook for Claude Code, `jtac bench`, the install script. `jtac
   policy` and `jtac scope` follow in v0.2.
 - **v0.2, CI gate.** The same binary in a GitHub Action: verifies the roots,
-  re-runs the gate on the same tree under its own key, fails the check when a
-  local root lied, signs a root for the merge commit. Then the release gate on
+  re-runs the gate on the same tree, fails the check when a local root lied,
+  signs a root for the merge commit under its own key. Then the release gate on
   tags, and tiering by blast radius.
 - **v0.3, review round and packet.** Model reviewers against recorded
   evidence; a human sees only what could not be proven.
