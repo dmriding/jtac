@@ -9,7 +9,7 @@ request moves them under a dated heading and bumps nothing.
 ### Changed
 
 - (0.1.7) `DESIGN.md` section 15 is the v0.2 plan: milestones M15 to M18 with done-whens,
-  decisions 40 to 44, open question 7 closed; the README roadmap follows it.
+  decisions 40 to 46, open question 7 closed; the README roadmap follows it.
 - (0.1.6) `docs/RELEASING.md` names the release branch `rel/vX.Y.Z`, outside the default
   `release/*` fence (#81).
 - (0.1.5) The README is written for a reader who has never seen jtac: the install, the quick
