@@ -17,12 +17,6 @@ request moves them under a dated heading and bumps nothing.
   old tip's, name for that namespace; a clone holding neither refuses naming `git fetch`
   and `git remote set-head`, or a named remote for a push that named a URL.
 
-### Changed
-
-- (0.2.2) `replay` judges a root's signature in the namespace its shape picks, as `verify`
-  and `audit` do (issue 88, item 1); the M15 reader's rule that every root with `from` is an
-  unknown signer's is gone with the namespace that replaces it.
-
 - (0.2.1) `jtac ci --base <rev> [--signers <file>] [--require-local-root]` (`DESIGN.md`
   section 15, M15b): one verdict on HEAD from its merge base with the base branch, under the
   base's policy when the diff touches `.jtac/**` or HEAD carries no readable policy, with
@@ -47,6 +41,10 @@ request moves them under a dated heading and bumps nothing.
   minor bump `docs/RELEASING.md` names for an evidence format change.
 
 ### Changed
+
+- (0.2.2) `replay` judges a root's signature in the namespace its shape picks, as `verify`
+  and `audit` do (issue 88, item 1); the M15 reader's rule that every root with `from` is an
+  unknown signer's is gone with the namespace that replaces it.
 
 - (0.2.1) `DESIGN.md` section 15 and decision 40: `--signers` is an override; trust defaults
   to the base rev's `.jtac/signers`, and no file there is the adoption fact. Section 15 also

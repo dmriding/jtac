@@ -20,15 +20,22 @@ use crate::trust::Signers;
 /// Where the CI namespace's signers are read, when a root with `from` is met and not before:
 /// `refs/remotes/<remote>/HEAD` for a named remote, and the branch's old tip when held.
 pub struct CiSite<'a> {
+    /// The repository.
     pub repo: &'a Path,
+    /// `sha1` or `sha256`.
     pub format: &'a str,
-    /// `None` for a push that named a URL, which has no tracking ref.
+    /// The remote's name; `None` for a push that named a URL, which has no tracking ref.
     pub remote: Option<&'a str>,
+    /// The remote's URL when known, for the next command.
+    pub url: Option<&'a str>,
+    /// The branch's old tip, when this clone holds it.
     pub old: Option<GitOid>,
 }
 
 impl CiSite<'_> {
-    fn signers(&self) -> Result<Vec<Signers>, Refusal> {
+    /// The signers read, and whether the default branch tip's were among them: without those
+    /// an unknown signer is a retry through a named remote, not a developer's stale root.
+    fn signers(&self) -> Result<(Vec<Signers>, bool), Refusal> {
         let mut out = Vec::new();
         if let Some(remote) = self.remote {
             let shown = format!("{remote}/HEAD");
@@ -45,7 +52,8 @@ impl CiSite<'_> {
             let shown = format!("the old tip {}", &old.hex()[..12]);
             out.push(Signers::at(self.repo, &at, &shown)?);
         }
-        Ok(out)
+        let default_read = out.len() > usize::from(self.old.is_some());
+        Ok((out, default_read))
     }
 }
 
@@ -164,9 +172,10 @@ fn counted(
             }
         });
     };
-    let signers = ci.signers()?;
-    if signers.is_empty() {
-        return Err(Refusal::ci_root(ci, &tip.commit.hex()));
+    let own = *commit == tip.commit;
+    let (signers, default_read) = ci.signers()?;
+    if signers.is_empty() && own {
+        return Err(Refusal::ci_root(ci, &tip.commit.hex(), false));
     }
     for s in &signers {
         match verify(s.as_sign())? {
@@ -178,52 +187,69 @@ fn counted(
             }
         }
     }
+    if own && !default_read {
+        return Err(Refusal::ci_root(ci, &tip.commit.hex(), true));
+    }
     let read: Vec<String> = signers.iter().map(Signers::describe).collect();
-    not(format!(
-        "it has `from`, a CI root, and its signer is not named for namespace {} by {}",
-        ns.as_str(),
-        read.join(" or ")
-    ));
+    not(match read.is_empty() {
+        true => format!(
+            "it has `from`, a CI root, and this clone holds no tip to read namespace {}'s \
+             signers from",
+            ns.as_str()
+        ),
+        false => format!(
+            "it has `from`, a CI root, and its signer is not named for namespace {} by {}",
+            ns.as_str(),
+            read.join(" or ")
+        ),
+    });
     Ok(None)
 }
 
 impl Refusal {
-    /// A root with `from` at the tip, and no tree to read the CI namespace's signers from.
-    pub fn ci_root(ci: &CiSite, tip: &str) -> Self {
+    /// A root with `from` at the tip that the default branch tip's signers could not judge:
+    /// this clone holds no such tip, or the old tip alone, whose signers do not name the key.
+    pub fn ci_root(ci: &CiSite, tip: &str, old_only: bool) -> Self {
         let remote = ci.remote.map(|r| quoted(r, "<remote>"));
+        let url = ci
+            .url
+            .map_or_else(|| "<url>".to_owned(), |u| quoted(u, "<url>"));
         let how = match &remote {
             Some(remote) => format!(
                 "Run `git fetch {remote}`, then `git remote set-head {remote} --auto`, then \
                  push again. Do not add `--no-verify`: the root would land unjudged, and a \
                  reader trusts it only under a signers line for the CI namespace."
             ),
-            None => "Push through a named remote, so this clone can hold its default branch: \
-                     `git remote add <name> <url>`, `git fetch <name>`, `git remote set-head \
-                     <name> --auto`, then `git push <name> <branch>`. A push that names a URL \
-                     has no tracking ref to read."
-                .to_owned(),
+            None => format!(
+                "Push through a named remote, so this clone can hold its default branch: `git \
+                 remote add <name> {url}`, `git fetch <name>`, `git remote set-head <name> \
+                 --auto`, then `git push <name> <branch>`. A push that names a URL has no \
+                 tracking ref to read."
+            ),
+        };
+        let held = match old_only {
+            true => "the old tip alone, whose signers do not name the root's signer",
+            false => "neither",
         };
         Self {
             kind: "negotiation",
             what: format!(
                 "{tip}'s root has `from`: a CI root, whose signer must be named for namespace \
                  {} by the `.jtac/signers` of {}'s default branch tip or of the branch's old \
-                 tip, and this clone holds neither.",
+                 tip, and this clone holds {held}.",
                 Namespace::CiRoot.as_str(),
                 remote.as_deref().unwrap_or("the remote")
             ),
             why: "A root with `from` declares a pull request's commits as its waiver scope, \
                   wider than its own commit, so only a key the repository names for CI may sign \
                   one; the hook reads whom it names from the remote's own tips, never from the \
-                  pushed tip, which could carry its own key."
+                  pushed tip, which could carry its own key, and clears a root only when the \
+                  default branch tip says it is a developer's."
                 .to_owned(),
             how,
         }
     }
-}
 
-impl Refusal {
-    /// ssh-keygen could not run to check a stored waiver's signature before a verdict.
     pub fn lever_verifier(err: &SignError) -> Self {
         Self {
             kind: "negotiation",

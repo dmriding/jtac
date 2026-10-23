@@ -1,7 +1,8 @@
 //! The allowed-signers lines a CI root may be trusted under (DESIGN.md section 15, Identity):
 //! those whose `namespaces` option names the namespace in so many words. ssh-keygen reads a
 //! line with no option as every namespace, so jtac reads the option itself before ssh-keygen
-//! sees the file; a developer's line, which names none, is not in what it sees.
+//! sees the file; a developer's line, which names none, is not in what it sees. A line is
+//! read as ssh-keygen reads it, so no spelling means one thing here and another there.
 
 /// `trust` reduced to the lines whose `namespaces` option names `ns`, bytes unchanged.
 pub fn confine(trust: &[u8], ns: &str) -> Vec<u8> {
@@ -15,46 +16,69 @@ pub fn confine(trust: &[u8], ns: &str) -> Vec<u8> {
     out
 }
 
-/// One line is `principals [options] key-type key [comment]`; options are one token in which a
-/// double-quoted value may hold spaces and commas, and a key type starts the key.
+/// ssh-keygen's field separators; no other whitespace counts.
+const SPACE: [char; 4] = [' ', '\t', '\r', '\n'];
+
+/// One line is `principals [options] key-type key [comment]`. The principals field ends at
+/// the first separator or at a double quote, which runs to its match and ends the field; the
+/// options token ends at a space or tab outside quotes, `\"` the one escape; a `namespaces`
+/// value is double-quoted and comma separated, given once. A line ssh-keygen would reject
+/// is not kept (`only_a_line_whose_namespaces_option_names_the_namespace_survives`).
 fn names(line: &str, ns: &str) -> bool {
-    let line = line.trim_start();
+    let line = line.trim_start_matches([' ', '\t']);
     if line.is_empty() || line.starts_with('#') {
         return false;
     }
-    let Some((_, rest)) = line.split_once(char::is_whitespace) else {
+    let Some(options) = past_principals(line).and_then(options_token) else {
         return false;
     };
-    let options = token(rest.trim_start());
     if is_key_type(options) {
         return false;
     }
-    split_outside_quotes(options, ',')
-        .filter_map(|opt| opt.split_once('='))
-        .filter(|(name, _)| name.eq_ignore_ascii_case("namespaces"))
-        .any(|(_, value)| {
-            value
-                .trim_matches('"')
-                .split(',')
-                .any(|named| named.trim() == ns)
-        })
+    let mut found = None;
+    for opt in split_outside_quotes(options, ',') {
+        let Some((name, value)) = opt.split_once('=') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("namespaces") {
+            continue;
+        }
+        if found.is_some() {
+            return false;
+        }
+        found = Some(value);
+    }
+    let Some((list, _)) = found.and_then(|v| v.strip_prefix('"')?.split_once('"')) else {
+        return false;
+    };
+    list.split(',').any(|named| named == ns)
 }
 
-/// The first whitespace-delimited token of `s`, whitespace inside double quotes kept; a
-/// backslash escapes the next character inside quotes.
-fn token(s: &str) -> &str {
+/// What follows the principals field; `None` for a line with nothing after it or an unmatched
+/// quote, which ssh-keygen rejects.
+fn past_principals(line: &str) -> Option<&str> {
+    let end = line.find(|c| SPACE.contains(&c) || c == '"')?;
+    let rest = match line[end..].strip_prefix('"') {
+        Some(quoted) => &quoted[quoted.find('"')? + 1..],
+        None => &line[end..],
+    };
+    Some(rest.trim_start_matches(SPACE))
+}
+
+/// The options token, `None` when a quote is left open.
+fn options_token(rest: &str) -> Option<&str> {
     let mut quoted = false;
-    let mut escaped = false;
-    for (i, c) in s.char_indices() {
+    let mut skip = false;
+    for (i, c) in rest.char_indices() {
         match c {
-            _ if escaped => escaped = false,
-            '\\' if quoted => escaped = true,
+            _ if skip => skip = false,
+            '\\' if rest[i + 1..].starts_with('"') => skip = true,
             '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => return &s[..i],
+            ' ' | '\t' if !quoted => return Some(&rest[..i]),
             _ => {}
         }
     }
-    s
+    (!quoted).then_some(rest)
 }
 
 fn split_outside_quotes(s: &str, sep: char) -> impl Iterator<Item = &str> {
@@ -79,9 +103,11 @@ mod tests {
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample comment";
 
+    /// Rows after the blank one are the spellings the red team found that ssh-keygen reads as
+    /// a principals field with no option, or rejects: none may survive.
     #[test]
     fn only_a_line_whose_namespaces_option_names_the_namespace_survives() {
-        let rows: [(&str, bool); 12] = [
+        let rows: [(&str, bool); 22] = [
             (
                 "ci@example.com namespaces=\"jtac-ci-root-v1,jtac-release-v1\" ",
                 true,
@@ -91,8 +117,10 @@ mod tests {
                 true,
             ),
             ("ci@example.com namespaces=\"jtac-ci-root-v1\" ", true),
-            ("ci@example.com namespaces=jtac-ci-root-v1 ", true),
+            ("ci@example.com\tnamespaces=\"jtac-ci-root-v1\"\t", true),
+            ("  ci@example.com namespaces=\"jtac-ci-root-v1\" ", true),
             ("ci@example.com NAMESPACES=\"jtac-ci-root-v1\" ", true),
+            ("\"ci@example.com\" namespaces=\"jtac-ci-root-v1\" ", true),
             (
                 "ci@example.com valid-after=\"20260101\",namespaces=\"jtac-ci-root-v1\",valid-before=\"20270101\" ",
                 true,
@@ -107,15 +135,41 @@ mod tests {
                 false,
             ),
             ("dev@example.com namespaces=\"jtac-ci-root-v1x\" ", false),
+            ("dev@example.com namespaces=\"*\" ", false),
             ("dev@example.com valid-before=\"20270101\" ", false),
             ("# namespaces=\"jtac-ci-root-v1\" ", false),
+            ("", false),
+            ("\"dev@example.com, namespaces=jtac-ci-root-v1,x\" ", false),
+            (
+                "dev@example.com,\u{0c}namespaces=\"jtac-ci-root-v1\" ",
+                false,
+            ),
+            (
+                "dev@example.com,\u{0b}namespaces=\"jtac-ci-root-v1\" ",
+                false,
+            ),
+            (
+                "dev@example.com,\u{a0}namespaces=\"jtac-ci-root-v1\" ",
+                false,
+            ),
+            (
+                "dev@example.com,x\"y namespaces=\"jtac-ci-root-v1\" ",
+                false,
+            ),
+            ("dev@example.com namespaces=jtac-ci-root-v1 ", false),
         ];
         for (prefix, want) in rows {
             let line = format!("{prefix}{KEY}");
-            assert_eq!(names(&line, "jtac-ci-root-v1"), want, "{line}");
+            assert_eq!(names(&line, "jtac-ci-root-v1"), want, "{line:?}");
         }
-        assert!(!names("", "jtac-ci-root-v1"));
+        let twice =
+            format!("dev@example.com namespaces=\"jtac-ci-root-v1\",namespaces=\"x\" {KEY}");
+        assert!(!names(&twice, "jtac-ci-root-v1"));
         assert!(!names("lonely", "jtac-ci-root-v1"));
+        assert!(!names(
+            "\"unmatched namespaces=\"jtac-ci-root-v1\"",
+            "jtac-ci-root-v1"
+        ));
     }
 
     #[test]
@@ -133,9 +187,13 @@ mod tests {
 
     #[test]
     fn a_quoted_value_keeps_its_spaces_and_commas_in_one_option_token() {
-        assert_eq!(token("a=\"b c\",d=e rest"), "a=\"b c\",d=e");
-        assert_eq!(token("a=\"b\\\" c\" rest"), "a=\"b\\\" c\"");
-        assert_eq!(token("plain"), "plain");
+        assert_eq!(options_token("a=\"b c\",d=e rest"), Some("a=\"b c\",d=e"));
+        assert_eq!(options_token("a=\"b\\\" c\" rest"), Some("a=\"b\\\" c\""));
+        assert_eq!(options_token("plain"), Some("plain"));
+        assert_eq!(options_token("a=\"open"), None);
+        assert_eq!(past_principals("a,\"b c\"  rest"), Some("rest"));
+        assert_eq!(past_principals("a\u{0b}b rest"), Some("rest"));
+        assert_eq!(past_principals("alone"), None);
         let parts: Vec<&str> = split_outside_quotes("a=\"x,y\",b=z", ',').collect();
         assert_eq!(parts, ["a=\"x,y\"", "b=z"]);
     }

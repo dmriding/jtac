@@ -846,13 +846,14 @@ fn status_judges_the_branch_head_merges_with_not_the_local_name() {
     assert_eq!(v["refused"], "rewind", "{v}");
 }
 
-/// Origin's `main` at `base` names the dev key plain and the CI key for the CI namespace;
-/// `covered` has the dev's root; `merge`, HEAD, sits on `covered` with a tree of its own and
-/// no root yet.
+/// Origin's `main` at `base` names the dev key plain and the CI key for the CI namespace,
+/// `plain` below it the dev key alone; `covered` has the dev's root; `merge`, HEAD, sits on
+/// `covered` with a tree of its own and no root yet.
 struct CiFix {
     repo: Repo,
     dev: PathBuf,
     ci: PathBuf,
+    plain: String,
     base: String,
     covered: String,
     merge: String,
@@ -866,15 +867,18 @@ fn ci_fixture() -> CiFix {
     with_policy(&repo, "");
     let dev = keyed(&repo);
     let ci = new_key(&repo, "ci", "ci@example.com");
+    let dev_line = signers_line(&dev, "dev@example.com", "");
+    repo.write(".jtac/signers", dev_line.as_bytes());
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let plain = repo.commit("plain");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
     let signers = format!(
-        "{}{}",
-        signers_line(&dev, "dev@example.com", ""),
+        "{dev_line}{}",
         signers_line(&ci, "ci@example.com", CI_OPTION)
     );
     repo.write(".jtac/signers", signers.as_bytes());
-    repo.write("src/lib.rs", b"fn a() {}\n");
     let base = repo.commit("base");
-    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    repo.git(&["push", "-q", "origin", "main"]);
     repo.git(&["remote", "set-head", "origin", "--auto"]);
     repo.write("a.txt", b"a\n");
     let covered = repo.commit("covered");
@@ -887,6 +891,7 @@ fn ci_fixture() -> CiFix {
         repo,
         dev,
         ci,
+        plain,
         base,
         covered,
         merge,
@@ -915,20 +920,22 @@ impl CiFix {
     /// `merge`'s root with `from` naming `covered`, signed by `key` as `email` in the CI
     /// namespace.
     fn root_from(&self, key: &Path, email: &str) {
+        self.root_from_at(&self.merge, key, email);
+    }
+
+    fn root_from_at(&self, commit: &str, key: &Path, email: &str) {
         let json = self.repo.git(&[
             "cat-file",
             "-p",
             &format!("{}:root.json", root_ref(&self.covered)),
         ]);
         let mut root: Root = serde_json::from_str(&json).unwrap();
-        root.commit = g(&self.merge);
-        root.tree = g(&self
-            .repo
-            .git(&["rev-parse", &format!("{}^{{tree}}", self.merge)]));
+        root.commit = g(commit);
+        root.tree = g(&self.repo.git(&["rev-parse", &format!("{commit}^{{tree}}")]));
         root.signer.principal = email.to_owned();
         root.signer.fingerprint = fingerprint(key);
         root.base = Some(g(&self.base));
-        root.covers = Covers::List(vec![g(&self.merge)]);
+        root.covers = Covers::List(vec![g(commit)]);
         root.parents = vec![];
         root.from = Some(FromHead {
             head: g(&self.covered),
@@ -937,7 +944,7 @@ impl CiFix {
         });
         let canonical = String::from_utf8(root.canonical_bytes().unwrap()).unwrap();
         self.repo
-            .put_root(key, "jtac-ci-root-v1", &self.merge, &canonical, None);
+            .put_root(key, "jtac-ci-root-v1", commit, &canonical, None);
     }
 
     fn line(&self, remote_ref: &str, old: &str) -> String {
@@ -970,7 +977,9 @@ fn a_from_root_passes_the_hook_only_under_a_signer_the_remote_names_for_the_ci_n
     assert_eq!(ran.code, 2, "{}", ran.stderr);
     assert!(
         ran.stderr.contains("this clone holds neither")
-            && ran.stderr.contains("git remote add <name> <url>"),
+            && ran
+                .stderr
+                .contains("git remote add <name> https://example.com/example-app.git"),
         "{}",
         ran.stderr
     );
@@ -982,6 +991,23 @@ fn a_from_root_passes_the_hook_only_under_a_signer_the_remote_names_for_the_ci_n
         &[],
     );
     assert_eq!(ran.code, 0, "{}", ran.stderr);
+    let predates = f.line("refs/heads/main", &f.plain);
+    let ran = hook_to(
+        &f.repo,
+        "https://example.com/example-app.git",
+        predates.as_bytes(),
+        &[],
+    );
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("the old tip alone")
+            && ran
+                .stderr
+                .contains("git remote add <name> https://example.com/example-app.git")
+            && !ran.stderr.contains("update-ref -d"),
+        "{}",
+        ran.stderr
+    );
     f.repo
         .git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
     let ran = hook(&f.repo, &new_branch, &[]);
@@ -1019,6 +1045,11 @@ fn status_asks_the_hook_s_question_of_a_from_root_at_head() {
     let (ran, v) = status(&f.repo);
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     assert_eq!(v["pass"], true, "{v}");
+    f.repo.git(&["switch", "-q", "-c", "noup"]);
+    let (ran, v) = status(&f.repo);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(v["pass"], true, "{v}");
+    assert_eq!(v["upstream"], Value::Null, "{v}");
     f.repo.git(&["update-ref", "-d", &root_ref(&f.merge)]);
     f.root_from(&f.dev, "dev@example.com");
     let (ran, v) = status(&f.repo);
@@ -1031,4 +1062,52 @@ fn status_asks_the_hook_s_question_of_a_from_root_at_head() {
             .contains("not named for namespace jtac-ci-root-v1")),
         "{v}"
     );
+}
+
+/// DESIGN.md section 15: a root with `from` travels by CI's hand or as the root that counted
+/// for the pushed tip; behind the tip, or at a tip another commit's tree covered, it stays.
+#[test]
+fn a_from_root_the_hook_did_not_count_is_not_sent_ahead_of_the_push() {
+    let f = ci_fixture();
+    let zero = "0".repeat(40);
+    f.root_from(&f.dev, "dev@example.com");
+    f.repo.write("c.txt", b"c\n");
+    let child = f.repo.commit("child");
+    let ran = jtac(&f.repo, &["check"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let line = format!("refs/heads/feature {child} refs/heads/feature {zero}\n");
+    let ran = hook(&f.repo, &line, &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(
+        ran.stderr
+            .contains(&format!("{}'s root has `from` and was not sent", f.merge))
+            && ran.stderr.contains("sent 2 root(s) to origin"),
+        "{}",
+        ran.stderr
+    );
+    let held = |commit: &str| f.repo.git(&["ls-remote", "origin", &root_ref(commit)]);
+    assert_eq!(held(&f.merge), "", "the dev-key from root reached origin");
+    assert!(!held(&child).is_empty());
+    f.repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "--no-gpg-sign",
+        "-m",
+        "twin",
+    ]);
+    let twin = f.repo.git(&["rev-parse", "HEAD"]);
+    f.root_from_at(&twin, &f.dev, "dev@example.com");
+    let line = format!("refs/heads/feature {twin} refs/heads/feature {child}\n");
+    let ran = hook(&f.repo, &line, &[]);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("judged the same tree")
+            && ran
+                .stderr
+                .contains(&format!("{twin}'s root has `from` and was not sent")),
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(held(&twin), "", "the uncounted from root reached origin");
 }

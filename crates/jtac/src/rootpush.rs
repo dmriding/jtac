@@ -1,7 +1,9 @@
 //! The roots that travel ahead of a push (DESIGN.md sections 9.6, 11.3): every commit in a
 //! pushed range with a root in this clone, plus the tree match that covered a tip, sent in a
-//! `git push` of their own with the hook's guard set. A root push that fails warns and never
-//! refuses: the code push proceeds (decision 8).
+//! `git push` of their own with the hook's guard set. A root with `from` travels only as the
+//! root that counted for a tip, since the hook judged no other and CI pushes its own
+//! (section 15). A root push that fails warns and never refuses: the code push proceeds
+//! (decision 8).
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -31,15 +33,16 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
     if ranges.is_empty() {
         return String::new();
     }
-    let commits = match commits(repo, store, remote, format, ranges) {
-        Ok(commits) => commits,
+    let (commits, mut out) = match commits(repo, store, remote, format, ranges) {
+        Ok(found) => found,
         Err(why) => return warning(remote, &[], &why),
     };
     let pushed = match store.push(remote, &commits, &[(GUARD, "1")]) {
         Ok(pushed) => pushed,
         Err(e) => {
             let names: Vec<String> = commits.iter().map(ref_name).collect();
-            return warning(remote, &names, &e.to_string());
+            out.push_str(&warning(remote, &names, &e.to_string()));
+            return out;
         }
     };
     let rejected: Vec<String> = pushed
@@ -50,26 +53,28 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
         })
         .collect();
     if !rejected.is_empty() {
-        return warning(remote, &rejected, "the remote refused them");
+        out.push_str(&warning(remote, &rejected, "the remote refused them"));
+        return out;
     }
     let sent = pushed
         .iter()
         .filter(|p| p.outcome == PushOutcome::Sent)
         .count();
-    match sent {
-        0 => String::new(),
-        n => format!("jtac: sent {n} root(s) to {remote}\n"),
+    if sent > 0 {
+        let _ = writeln!(out, "jtac: sent {sent} root(s) to {remote}");
     }
+    out
 }
 
-/// Commits in each range that have a root here, then the commit whose root covered its tip.
+/// Commits in each range that have a root here, then the commit whose root covered its tip,
+/// with a note for each root with `from` left behind.
 fn commits(
     repo: &Path,
     store: &Store,
     remote: &str,
     format: &str,
     ranges: &[Range],
-) -> Result<Vec<GitOid>, String> {
+) -> Result<(Vec<GitOid>, String), String> {
     let rooted: BTreeSet<GitOid> = store
         .roots()
         .map_err(|e| e.to_string())?
@@ -79,6 +84,7 @@ fn commits(
         .collect();
     let not_remote = format!("--remotes={remote}");
     let mut out = Vec::new();
+    let mut notes = String::new();
     for r in ranges {
         let tip = r.tip.hex();
         let old = r.old.map(|o| format!("^{}", o.hex()));
@@ -92,13 +98,32 @@ fn commits(
         let listed = git(repo, &args).map_err(|e| e.to_string())?;
         for hex in String::from_utf8_lossy(&listed).lines() {
             let commit = oid(format, hex).map_err(|e| e.to_string())?;
-            if rooted.contains(&commit) {
-                out.push(commit);
+            if !rooted.contains(&commit) || commit == r.counted {
+                continue;
+            }
+            match store.root(&commit) {
+                Ok(Some(s)) if s.root.from.is_none() => out.push(commit),
+                Ok(Some(_)) => {
+                    let _ = writeln!(
+                        notes,
+                        "jtac: note: {}'s root has `from` and was not sent: a CI root travels \
+                         by CI's hand, or as the root that counted for the pushed tip",
+                        commit.hex()
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = writeln!(
+                        notes,
+                        "jtac: note: {}'s root was not sent: {e}",
+                        commit.hex()
+                    );
+                }
             }
         }
         out.push(r.counted);
     }
-    Ok(out)
+    Ok((out, notes))
 }
 
 /// Loud, in three parts, and never a refusal.

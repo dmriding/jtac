@@ -144,7 +144,8 @@ fn judge(here: &Path, push: &Push) -> Result<Option<Decision>, String> {
                 .and_then(|r| repo::peel(&repo, &format, &r).ok())
                 .map(|h| h.commit);
             let r = update::Ref {
-                remote: Some(&remote),
+                remote: by_name.then_some(remote.as_str()),
+                url: None,
                 remote_ref: &dst,
                 old,
             };
@@ -438,19 +439,7 @@ fn expand(rules: &[(String, String, bool)], url: &str, push: bool) -> String {
 /// The remote a bare `git push` goes to.
 fn remote(repo: &Path) -> Result<String, String> {
     let branch = short_branch(repo)?;
-    for key in [
-        branch.as_ref().map(|b| format!("branch.{b}.pushRemote")),
-        Some("remote.pushDefault".to_owned()),
-        branch.as_ref().map(|b| format!("branch.{b}.remote")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(name) = repo::config(repo, &key).map_err(|e| e.to_string())? {
-            return Ok(name);
-        }
-    }
-    Ok("origin".to_owned())
+    repo::push_remote(repo, branch.as_deref()).map_err(|e| e.to_string())
 }
 
 /// The ref HEAD's branch merges with, else the branch itself; `None` detached.

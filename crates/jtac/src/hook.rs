@@ -32,7 +32,7 @@ pub fn pre_push(
         Ok(text) => text,
         Err(why) => return (Refusal::hook_stdin(why).text(), 2),
     };
-    match judge(cwd, remote, (remote != url).then_some(remote), stdin) {
+    match judge(cwd, remote, (remote != url).then_some(remote), url, stdin) {
         Ok(out) => out,
         Err(r) => (r.text(), 2),
     }
@@ -120,6 +120,7 @@ fn judge(
     cwd: &Path,
     remote: &str,
     named: Option<&str>,
+    url: &str,
     stdin: &str,
 ) -> Result<(String, u8), Refusal> {
     let lines = lines(stdin)?;
@@ -146,6 +147,7 @@ fn judge(
         repo,
         format,
         named,
+        url,
     };
     let mut out = String::new();
     let mut refused = false;
@@ -192,6 +194,7 @@ struct Ctx<'a> {
     store: Store,
     tool: Tool,
     named: Option<&'a str>,
+    url: &'a str,
 }
 
 impl Ctx<'_> {
@@ -218,6 +221,7 @@ impl Ctx<'_> {
             .map_err(|e| at_ref(Refusal::repository(&e)))?;
         let r = update::Ref {
             remote: self.named,
+            url: Some(self.url),
             remote_ref: line.remote_ref,
             old,
         };
@@ -637,6 +641,7 @@ mod tests {
             repo: Path::new("/w"),
             format: "sha1",
             remote: Some("origin"),
+            url: Some("https://example.com/example-app.git"),
             old: None,
         };
         let by_url = coverage::CiSite {
@@ -660,8 +665,8 @@ mod tests {
             (Refusal::push(&Refuse::Rewind, &at), "fence"),
             (Refusal::push(&Refuse::Delete, &at), "fence"),
             (Refusal::push(&Refuse::Absent, &stale), "negotiation"),
-            (Refusal::ci_root(&named, &tip), "negotiation"),
-            (Refusal::ci_root(&by_url, &tip), "negotiation"),
+            (Refusal::ci_root(&named, &tip, false), "negotiation"),
+            (Refusal::ci_root(&by_url, &tip, true), "negotiation"),
         ];
         for (r, kind) in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");
@@ -681,12 +686,17 @@ mod tests {
         );
         let fence = Refusal::push(&Refuse::Rewind, &at);
         assert!(fence.how.contains("--force") && fence.how.contains("[fences]"));
-        let ci = Refusal::ci_root(&named, &tip);
+        let ci = Refusal::ci_root(&named, &tip, false);
         assert!(
             ci.how.contains("git remote set-head origin --auto"),
             "{ci:?}"
         );
-        let ci = Refusal::ci_root(&by_url, &tip);
-        assert!(ci.how.contains("git remote add <name> <url>"), "{ci:?}");
+        let ci = Refusal::ci_root(&by_url, &tip, true);
+        assert!(
+            ci.how
+                .contains("git remote add <name> https://example.com/example-app.git"),
+            "{ci:?}"
+        );
+        assert!(ci.what.contains("the old tip alone"), "{ci:?}");
     }
 }

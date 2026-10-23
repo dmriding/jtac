@@ -29,6 +29,8 @@ pub struct Gathered {
 pub struct Ref<'a> {
     /// The remote's name; `None` when the push named a URL, which has no tracking ref.
     pub remote: Option<&'a str>,
+    /// The remote's URL when the caller has it, for the next command.
+    pub url: Option<&'a str>,
     /// The ref on the remote, full name.
     pub remote_ref: &'a str,
     /// The remote's oid, when it has the ref.
@@ -63,6 +65,7 @@ pub fn gather(
         repo,
         format,
         remote: r.remote,
+        url: r.url,
         old: r.old.filter(|_| held),
     };
     let covered = match tip {

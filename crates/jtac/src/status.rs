@@ -98,16 +98,12 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
         .map_err(|e| Refusal::repository(&e))?
         .flatten();
     let remote_ref = merge.as_deref().unwrap_or(&branch);
-    let remote = branch
-        .strip_prefix("refs/heads/")
-        .map(|short| repo::config(&repo, &format!("branch.{short}.remote")))
-        .transpose()
-        .map_err(|e| Refusal::repository(&e))?
-        .flatten()
-        .filter(|r| r != ".");
+    let remote = repo::push_remote(&repo, branch.strip_prefix("refs/heads/"))
+        .map_err(|e| Refusal::repository(&e))?;
     let tool = coverage::verifier(&repo)?;
     let r = update::Ref {
-        remote: remote.as_deref(),
+        remote: Some(&remote),
+        url: None,
         remote_ref,
         old,
     };
