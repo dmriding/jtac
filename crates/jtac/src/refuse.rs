@@ -101,6 +101,66 @@ impl Refusal {
         )
     }
 
+    /// `--from` names HEAD itself: the forge made no commit of its own (a fast-forward).
+    pub fn from_self(from: &str, base: &str) -> Self {
+        let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
+        Self::new(
+            format!(
+                "`--from {from}` is HEAD itself: the forge made no commit for this merge, and a \
+                 root with `from` stands for a head other than its tip."
+            ),
+            "A merge root records what the pull request's head had beside CI's verdict of what \
+             the merge added; a tip that is the head keeps its developer root (decision 33) and \
+             gets no CI root, so a fast-forwarding forge has developer evidence and CI's verdict, \
+             never a merge root.",
+            format!(
+                "Run `jtac ci --base {base}` on the tip instead; it writes nothing. Do not write \
+                 a root over the head's own."
+            ),
+        )
+    }
+
+    /// `--base` is not behind HEAD: a rewind, or an unrelated line.
+    pub fn from_base(base: &str, head: &str) -> Self {
+        let base = quoted(base, "<old tip>");
+        Self::new(
+            format!("`--base {base}` is not a proper ancestor of HEAD ({head})."),
+            "The merge root's rules diff from the branch's old tip to the tip, what the push \
+             added; a base that is not behind the tip is a rewind or another line, which a \
+             merge root must not sign over.",
+            "Pass the old tip the forge reported for this push: `jtac check --from <head> \
+             --base <old tip>`; a rewind gets no CI root, and `jtac ci --base <old tip>` still \
+             judges it.",
+        )
+    }
+
+    /// `--from` and `--base` share no history.
+    pub fn from_unrelated(from: &str, base: &str) -> Self {
+        let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
+        Self::new(
+            format!("`--from {from}` and `--base {base}` share no history."),
+            "The head's chain is walked down to its merge base with the old tip for the waivers \
+             it offers, and the pull request's commits are that range; with no merge base there \
+             is no pull request here.",
+            format!(
+                "Check that `--from` is the pull request's head and `--base` the branch's old \
+                 tip: `git merge-base {from} {base}` must name a commit."
+            ),
+        )
+    }
+
+    /// The head's tree could not be checked out for its checks.
+    pub fn worktree(err: &str) -> Self {
+        Self::new(
+            format!("the head's tree could not be checked out for its checks: {err}."),
+            "The head's checks run again on its own tree, since the pull request job's result \
+             is not durable and a root may arrive after it ran; without them there is nothing \
+             to compare the head's root with.",
+            "Run `git worktree prune`, make sure the store under `.git/jtac/` is writable, then \
+             run `jtac check --from <head> --base <old tip>` again.",
+        )
+    }
+
     /// `jtac check` is running inside a policy check.
     pub fn nested() -> Self {
         Self::new(
@@ -596,6 +656,10 @@ mod tests {
             Refusal::no_root("abc"),
             Refusal::not_local("abc", "its nodes are not in this clone's store"),
             Refusal::policy_differs("abc", "sha256:0"),
+            Refusal::from_self("HEAD\nnegotiation: forged", "main"),
+            Refusal::from_base("main", "abc"),
+            Refusal::from_unrelated("abc", "def\nnegotiation: forged"),
+            Refusal::worktree("fatal: nope"),
         ];
         for r in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");

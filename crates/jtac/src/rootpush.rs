@@ -37,7 +37,15 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
         Ok(found) => found,
         Err(why) => return warning(remote, &[], &why),
     };
-    let pushed = match store.push(remote, &commits, &[(GUARD, "1")]) {
+    out.push_str(&send(store, remote, &commits));
+    out
+}
+
+/// Push the root refs of `commits` to `remote` under the hook's guard; the merge job's own
+/// route (DESIGN.md section 15). Returns what to print on stderr.
+pub fn send(store: &Store, remote: &str, commits: &[GitOid]) -> String {
+    let mut out = String::new();
+    let pushed = match store.push(remote, commits, &[(GUARD, "1")]) {
         Ok(pushed) => pushed,
         Err(e) => {
             let names: Vec<String> = commits.iter().map(ref_name).collect();
@@ -85,7 +93,7 @@ fn commits(
     let not_remote = format!("--remotes={remote}");
     let counted: BTreeSet<GitOid> = ranges.iter().map(|r| r.counted).collect();
     let mut out = Vec::new();
-    let mut notes = String::new();
+    let mut notes = BTreeSet::new();
     for r in ranges {
         let tip = r.tip.hex();
         let old = r.old.map(|o| format!("^{}", o.hex()));
@@ -105,26 +113,24 @@ fn commits(
             match store.root(&commit) {
                 Ok(Some(s)) if s.root.from.is_none() => out.push(commit),
                 Ok(Some(_)) => {
-                    let _ = writeln!(
-                        notes,
+                    notes.insert(format!(
                         "jtac: note: {}'s root has `from` and was not sent: a CI root travels \
-                         by CI's hand, or as the root that counted for the pushed tip",
+                         by CI's hand, or as the root that counted for the pushed tip\n",
                         commit.hex()
-                    );
+                    ));
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    let _ = writeln!(
-                        notes,
-                        "jtac: note: {}'s root was not sent: {e}",
+                    notes.insert(format!(
+                        "jtac: note: {}'s root was not sent: {e}\n",
                         commit.hex()
-                    );
+                    ));
                 }
             }
         }
         out.push(r.counted);
     }
-    Ok((out, notes))
+    Ok((out, notes.into_iter().collect()))
 }
 
 /// Loud, in three parts, and never a refusal.

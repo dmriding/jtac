@@ -226,7 +226,23 @@ pub fn render(o: &CiOut) -> String {
     {
         let _ = writeln!(s, "{line}");
     }
-    for u in &o.withheld_waivers {
+    s.push_str(&withheld_lines(&o.withheld_waivers));
+    if let Some(h) = &o.head_root {
+        s.push_str(&head_lines(h));
+    }
+    let first = o.verdict.reasons.len();
+    for (i, r) in o.reasons.iter().enumerate() {
+        let _ = writeln!(s, "  {}. {}", first + i + 1, r.what);
+        let _ = writeln!(s, "     why  {}", r.why);
+        let _ = writeln!(s, "     fix  {}", r.how);
+    }
+    s
+}
+
+/// Each withheld waiver with what it would have covered; `check --from` prints them too.
+pub fn withheld_lines(withheld: &[Withheld]) -> String {
+    let mut s = String::new();
+    for u in withheld {
         let _ = writeln!(
             s,
             "  waiver  not applied ({}): {} {}",
@@ -238,29 +254,27 @@ pub fn render(o: &CiOut) -> String {
             let _ = writeln!(s, "          would cover {c}");
         }
     }
-    if let Some(h) = &o.head_root {
-        let signer = h.signer.as_ref().map_or(String::new(), |s| {
-            format!(" by {} ({})", plain(&s.principal), h.trust)
-        });
-        let _ = writeln!(
-            s,
-            "  head    root {}{signer}: {}{}",
-            h.root.map_or("unreadable".to_owned(), |r| r.to_string()),
-            compared(h.compared),
-            h.why
-                .as_ref()
-                .map_or(String::new(), |w| format!(", {}", plain(w)))
-        );
-        if let (Some(r), Some(run)) = (&h.recorded, &h.run) {
-            let _ = writeln!(s, "          recorded {}", side(Some(r)));
-            let _ = writeln!(s, "          run      {}", side(Some(run)));
-        }
-    }
-    let first = o.verdict.reasons.len();
-    for (i, r) in o.reasons.iter().enumerate() {
-        let _ = writeln!(s, "  {}. {}", first + i + 1, r.what);
-        let _ = writeln!(s, "     why  {}", r.why);
-        let _ = writeln!(s, "     fix  {}", r.how);
+    s
+}
+
+/// The head's root with both sides of the comparison; `check --from` prints it too.
+pub fn head_lines(h: &HeadRoot) -> String {
+    let mut s = String::new();
+    let signer = h.signer.as_ref().map_or(String::new(), |s| {
+        format!(" by {} ({})", plain(&s.principal), h.trust)
+    });
+    let _ = writeln!(
+        s,
+        "  head    root {}{signer}: {}{}",
+        h.root.map_or("unreadable".to_owned(), |r| r.to_string()),
+        compared(h.compared),
+        h.why
+            .as_ref()
+            .map_or(String::new(), |w| format!(", {}", plain(w)))
+    );
+    if let (Some(r), Some(run)) = (&h.recorded, &h.run) {
+        let _ = writeln!(s, "          recorded {}", side(Some(r)));
+        let _ = writeln!(s, "          run      {}", side(Some(run)));
     }
     s
 }

@@ -111,6 +111,20 @@ pub struct CheckArgs {
     /// the upstream, or the default branch
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
+    /// The merge job: HEAD is the commit the forge made for the pull request whose head is
+    /// REV; the root records what the head had, is signed in the CI namespace, and `--base`
+    /// is the branch's old tip
+    #[arg(
+        long,
+        value_name = "REV",
+        requires = "base",
+        conflicts_with = "preview"
+    )]
+    pub from: Option<String>,
+    /// Push the merge root, and the head's root when it agreed, to REMOTE through the hook's
+    /// guard; a push that fails warns
+    #[arg(long, value_name = "REMOTE", requires = "from")]
+    pub push: Option<String>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -236,8 +250,30 @@ mod tests {
             Some(Command::Check(CheckArgs {
                 preview: true,
                 base: Some("main".into()),
+                from: None,
+                push: None,
                 json: true,
             }))
+        );
+        let cli = Cli::try_parse_from([
+            "jtac", "check", "--from", "abc", "--base", "def", "--push", "origin",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Check(CheckArgs {
+                preview: false,
+                base: Some("def".into()),
+                from: Some("abc".into()),
+                push: Some("origin".into()),
+                json: false,
+            }))
+        );
+        assert!(Cli::try_parse_from(["jtac", "check", "--from", "abc"]).is_err());
+        assert!(Cli::try_parse_from(["jtac", "check", "--push", "origin", "--base", "x"]).is_err());
+        assert!(
+            Cli::try_parse_from(["jtac", "check", "--from", "a", "--base", "b", "--preview"])
+                .is_err()
         );
         let cli = Cli::try_parse_from(["jtac", "status", "--json"]).unwrap();
         assert_eq!(cli.command, Some(Command::Status(JsonArg { json: true })));

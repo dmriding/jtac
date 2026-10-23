@@ -3,8 +3,8 @@
 //! recomputes with.
 
 use jtac_core::{
-    CanonicalError, GateRef, GitOid, MerkleError, Node, PolicyRef, PolicySource, Root, RootVersion,
-    Sha256Digest, Signer, counts, merkle_root,
+    CanonicalError, FromHead, GateRef, GitOid, MerkleError, Node, PolicyRef, PolicySource, Root,
+    RootVersion, Sha256Digest, Signer, counts, merkle_root,
 };
 
 use crate::chain::Chain;
@@ -26,13 +26,14 @@ pub enum BuildError {
 
 /// The root and its leaves, the node ids in `nodes` order, the applied waivers as `levers`.
 /// A base at HEAD is a parentless tip judged against itself (DESIGN.md section 10.3), so the
-/// root names none.
+/// root names none. `from` is the merge job's head (section 15), `None` for a local root.
 pub fn build(
     j: &Judged,
     chain: Chain,
     policy_version: u32,
     gate: GateRef,
     signer: Signer,
+    from: Option<FromHead>,
 ) -> Result<(Root, Vec<Sha256Digest>), BuildError> {
     let leaves: Vec<Sha256Digest> = j.nodes.iter().map(Node::id).collect::<Result<_, _>>()?;
     let evidence = merkle_root(&leaves)?;
@@ -47,7 +48,7 @@ pub fn build(
         covers: chain.covers,
         parents: chain.parents,
         base,
-        from: None,
+        from,
         policy: PolicyRef {
             hash: j.facts.policy,
             version: policy_version,

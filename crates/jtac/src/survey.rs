@@ -9,6 +9,7 @@ use jtac_gate::{CommitFact, Row, Trust, Via};
 use jtac_store::Store;
 use serde::Serialize;
 
+use crate::headof::{self, HeadOut};
 use crate::ledger::{self, Ledger};
 use crate::output::WaiverOut;
 use crate::range;
@@ -26,6 +27,8 @@ pub struct Survey {
     pub ledger: Ledger,
     /// One per commit, in `commits` order.
     pub rows: Vec<Row>,
+    /// One per root, in `ledger.roots` order: what a valid root with `from` says of its head.
+    pub heads: Vec<Option<HeadOut>>,
 }
 
 /// Gather for `command`. An empty `range` is `HEAD`.
@@ -59,11 +62,23 @@ pub fn survey(
         })
         .collect();
     let rows = jtac_gate::rows(&facts, &ledger.roots);
+    let mut heads = Vec::new();
+    for (fact, stored) in ledger.roots.iter().zip(&ledger.stored) {
+        let from = stored
+            .as_ref()
+            .filter(|_| fact.invalid.is_none())
+            .and_then(|s| s.root.from.as_ref());
+        heads.push(match from {
+            Some(from) => Some(headof::head_of(&store, &tool, &signers, command, from)?),
+            None => None,
+        });
+    }
     Ok(Survey {
         range,
         signers,
         ledger,
         rows,
+        heads,
     })
 }
 
@@ -90,6 +105,9 @@ pub struct RowOut {
     pub gate_version: Option<String>,
     /// Why the commit's own root did not count, when it has one that did not.
     pub invalid: Option<String>,
+    /// For a merge root of the commit's own: its head (DESIGN.md section 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<HeadOut>,
 }
 
 /// One waiver a valid root in the range applies, as shown.
@@ -158,6 +176,10 @@ impl Survey {
                     policy_version: fact.map(|f| f.policy_version),
                     gate_version: fact.map(|f| f.gate_version.clone()),
                     invalid: r.invalid.clone(),
+                    head: match (&r.via, r.root) {
+                        (Some(Via::Own), Some(i)) => self.heads[i].clone(),
+                        _ => None,
+                    },
                 }
             })
             .collect()

@@ -4,9 +4,9 @@
 //! It signs nothing and writes no root; the exit code is the answer. Evidence nodes go to the
 //! store so an uploaded store replays.
 
-mod head;
-mod levers;
-mod out;
+pub(crate) mod head;
+pub(crate) mod levers;
+pub(crate) mod out;
 
 use std::path::Path;
 
@@ -16,7 +16,9 @@ use jtac_core::Ts;
 use jtac_store::Store;
 
 use crate::cli::CiArgs;
+use crate::policy::Loaded;
 use crate::refuse::Refusal;
+use crate::repo::Head;
 use crate::trust::Signers;
 use crate::{Printed, coverage, judge, output, policy, repo, write};
 
@@ -48,30 +50,9 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         None => base_trust,
     };
     let mut notes = Vec::new();
-    let head_policy = policy::load_if_present(&repo, &head);
-    let base_policy = match (
-        &head_policy,
-        touches_jtac(&repo, &base.commit, &head.commit.hex())?,
-    ) {
-        (Ok(Some(_)), false) => None,
-        _ => policy::load_if_present(&repo, &base_tip)?,
-    };
-    let head_policy = match (head_policy, &base_policy) {
-        (Ok(p), _) => p,
-        (Err(e), Some(_)) => {
-            notes.push(format!(
-                "HEAD's policy does not read ({}); the base branch's judges",
-                e.what
-            ));
-            None
-        }
-        (Err(e), None) => return Err(e),
-    };
-    let (loaded, policy_from) = match (&base_policy, &head_policy) {
-        (Some(l), _) => (l, "base"),
-        (None, Some(l)) => (l, "head"),
-        (None, None) => return Err(Refusal::no_policy()),
-    };
+    let policies = policies(&repo, &head, &base_tip, &base.commit, &mut notes)?;
+    let (loaded, policy_from) = policies.judging();
+    let head_policy = policies.head.as_ref();
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let tool = coverage::verifier(&repo)?;
     let chain = levers::gather(&repo, &store, &tool, &signers, &format, &head, &base.commit)?;
@@ -95,10 +76,12 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
     write::evidence(&store, &bytes, &j, &mut cache)?;
     let site = head::Site {
         repo: &repo,
+        cwd: &repo,
         format: &format,
         head,
-        head_policy: head_policy.as_ref(),
+        head_policy,
         ci: &j,
+        cache: &cache,
     };
     let head_root = head::compare_head(&site, &chain.ledger)?;
     notes.extend(chain.notes);
@@ -126,6 +109,61 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         out::render(&o)
     };
     Ok(Printed::verdict(text, o.pass))
+}
+
+/// The policies a CI run reads (DESIGN.md section 15): the base branch's judges when the
+/// diff touches `.jtac/**`, or when HEAD carries no readable policy and the base holds one;
+/// else HEAD's. Both none is a refusal, since the gate could not answer.
+pub struct Policies {
+    /// HEAD's own, `None` when HEAD carries none or it does not read beside a base policy.
+    pub head: Option<Loaded>,
+    /// The base branch's, read only when it judges.
+    pub base: Option<Loaded>,
+}
+
+impl Policies {
+    /// The policy the verdict runs under and where it came from, `head` or `base`.
+    pub fn judging(&self) -> (&Loaded, &'static str) {
+        match (&self.base, &self.head) {
+            (Some(l), _) => (l, "base"),
+            (None, Some(l)) => (l, "head"),
+            (None, None) => unreachable!("`policies` refused both none"),
+        }
+    }
+}
+
+/// Read both sides for a run whose diff is `diff_base..head` and whose base branch tip is
+/// `base_tip`; a HEAD policy that does not read is a note when the base's judges.
+pub fn policies(
+    repo: &Path,
+    head: &Head,
+    base_tip: &Head,
+    diff_base: &str,
+    notes: &mut Vec<String>,
+) -> Result<Policies, Refusal> {
+    let head_policy = policy::load_if_present(repo, head);
+    let base = match (
+        &head_policy,
+        touches_jtac(repo, diff_base, &head.commit.hex())?,
+    ) {
+        (Ok(Some(_)), false) => None,
+        _ => policy::load_if_present(repo, base_tip)?,
+    };
+    let head = match (head_policy, &base) {
+        (Ok(p), _) => p,
+        (Err(e), Some(_)) => {
+            notes.push(format!(
+                "HEAD's policy does not read ({}); the base branch's judges",
+                e.what
+            ));
+            None
+        }
+        (Err(e), None) => return Err(e),
+    };
+    if base.is_none() && head.is_none() {
+        return Err(Refusal::no_policy());
+    }
+    Ok(Policies { head, base })
 }
 
 /// Decision 45's CI fact: a base tree with no signers file had nothing in force, whatever

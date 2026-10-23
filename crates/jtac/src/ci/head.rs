@@ -2,15 +2,16 @@
 //! Verification). The ledger judged it as a document; here the gate version and the hash of
 //! the policy it should have judged under say whether a run is owed, and the run is `replay`'s
 //! shape with fresh rules: the root's own base and levers, its `ts` as `now`, CI's check nodes
-//! where the policy is CI's and that policy's checks run where it is not.
+//! where the policy and the tree are CI's, and the checks run on the head's tree where
+//! either is not, through the cache, so a merge whose tree is the head's hits.
 
 use std::path::Path;
 
 use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, report};
-use jtac_checks::{CAPTURE_CAP, Context, run, specs};
+use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run_cached, specs};
 use jtac_core::{
-    Body, Compared, Counts, FindingBody, FromHead, GitOid, Node, Root, RootVersion, Run,
+    Body, Compared, Counts, Facts, FindingBody, FromHead, GitOid, Node, Root, RootVersion, Run,
     Sha256Digest, Signer, State, compare, counts, gate,
 };
 use jtac_gate::Trust;
@@ -29,6 +30,9 @@ use crate::{ci, range};
 pub struct Site<'a> {
     /// The repository.
     pub repo: &'a Path,
+    /// Where the head's tree is checked out: the repository for `jtac ci`, a detached
+    /// worktree for a merge job whose tip's tree is not the head's.
+    pub cwd: &'a Path,
     /// `sha1` or `sha256`.
     pub format: &'a str,
     /// HEAD.
@@ -36,8 +40,10 @@ pub struct Site<'a> {
     /// HEAD's policy, the one a root without `from` should have judged under; `None` when HEAD
     /// carries no policy file.
     pub head_policy: Option<&'a Loaded>,
-    /// CI's own run, whose check nodes judged the same tree.
+    /// CI's own run, whose check nodes judged the tip's tree.
     pub ci: &'a Judged,
+    /// The store's cache: a check already run on the head's tree under its policy is a hit.
+    pub cache: &'a dyn Cache,
 }
 
 /// What `jtac ci` says about HEAD's root.
@@ -162,7 +168,31 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
             declared.as_ref().map_or(Adoption::None, |d| d.1)
         }
     };
-    let read = changes(site.repo, &base, &site.head.commit.hex()).map_err(|e| e.to_string());
+    let side = side_of(site, root, policy, &facts, &base, adoption)?;
+    out.compared = compare(
+        root,
+        &Run {
+            gate_version,
+            policy: facts.policy,
+            state: side.state,
+            counts: side.counts.clone(),
+        },
+    );
+    out.run = Some(side);
+    Ok(Some(out))
+}
+
+/// This gate's run of the root's diff from `base`: the rules on it, the checks on the head's
+/// tree, the root's levers as it applied them, its `ts` as `now`.
+fn side_of(
+    site: &Site,
+    root: &Root,
+    policy: &Loaded,
+    facts: &Facts,
+    base: &str,
+    adoption: Adoption,
+) -> Result<Side, Refusal> {
+    let read = changes(site.repo, base, &site.head.commit.hex()).map_err(|e| e.to_string());
     let node = |body: Body| Node {
         tree: root.tree,
         policy: facts.policy,
@@ -189,36 +219,30 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
             message: f.message.clone(),
         })));
     }
-    if facts.policy == site.ci.facts.policy {
+    if facts.policy == site.ci.facts.policy && root.tree == site.ci.head.tree {
         let policy_check =
             |n: &&Node| matches!(&n.body, Body::Check(c) if c.id != INTEGRITY_CHECK_ID);
         nodes.extend(site.ci.nodes.iter().filter(policy_check).cloned());
     } else {
         let ctx = Context {
-            cwd: site.repo.to_path_buf(),
+            cwd: site.cwd.to_path_buf(),
             capture_cap: CAPTURE_CAP,
         };
         for spec in specs(&policy.policy) {
-            nodes.push(node(Body::Check(run(&spec, &ctx).body)));
+            let checked = run_cached(&spec, &ctx, site.cache, root.tree, facts.policy, root.ts)
+                .map_err(Refusal::store)?;
+            nodes.push(match checked {
+                Checked::Hit(n) => n,
+                Checked::Ran { node: n, .. } => n,
+            });
         }
     }
     nodes.extend(root.levers.iter().map(|l| l.node.clone()));
-    let verdict = gate(&facts, &nodes, root.ts);
-    let side = Side {
+    let verdict = gate(facts, &nodes, root.ts);
+    Ok(Side {
         state: verdict.state,
         counts: counts(&nodes),
-    };
-    out.compared = compare(
-        root,
-        &Run {
-            gate_version,
-            policy: facts.policy,
-            state: side.state,
-            counts: side.counts.clone(),
-        },
-    );
-    out.run = Some(side);
-    Ok(Some(out))
+    })
 }
 
 /// What a `from` root's declared `base` says, as the merge job read it then (DESIGN.md
