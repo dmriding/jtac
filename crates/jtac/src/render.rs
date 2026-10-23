@@ -94,7 +94,8 @@ pub fn text(o: &Output) -> String {
     s
 }
 
-fn summary(o: &Output) -> String {
+/// The banner's clause: checks passed, what blocks or was overridden, advisory count.
+pub fn summary(o: &Output) -> String {
     let total = o.checks.len();
     let passed = o
         .checks

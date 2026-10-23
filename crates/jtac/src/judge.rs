@@ -8,11 +8,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use jtac_checks::diff::git::changes;
-use jtac_checks::diff::{Report, report};
+use jtac_checks::diff::{Adoption, Report, report};
 use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
-    Body, Capture, CheckBody, Facts, FindingBody, Node, Outcome, Sha256Digest, SignedLever, Ts,
-    Verdict, gate,
+    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, Sha256Digest, SignedLever,
+    Ts, Verdict, gate,
 };
 use jtac_policy::{INTEGRITY_CHECK_ID, facts};
 
@@ -46,6 +46,20 @@ pub struct Judged {
     pub verdict: Verdict,
 }
 
+/// What the verdict is offered beside the evidence (DESIGN.md sections 11.6 and 15): the
+/// waivers whose signatures hold, the commits a commit waiver may name beside HEAD, and
+/// whether anything was in force to protect. The local gate offers every stored waiver, HEAD
+/// alone, and decision 38's history test; CI offers the chain's trusted waivers, the pull
+/// request's commits, and the base branch's trust.
+pub struct Offered {
+    /// Waivers the verdict may apply.
+    pub waivers: Vec<SignedLever>,
+    /// Beside HEAD, the commits a commit waiver may name.
+    pub waivable: Vec<GitOid>,
+    /// The adoption fact for `JT-PROT-001`.
+    pub adoption: Adoption,
+}
+
 /// Decision 38's fact: no parent of `head`, and nothing behind any of them, ever held
 /// `.jtac/policy.toml`. Read from history, never from the diff's base, which `--base` lets
 /// the pusher choose; every parent, since a merge whose first parent never held a policy
@@ -53,7 +67,7 @@ pub struct Judged {
 /// reads `log.follow` and `log.showRoot` from the pusher's own config and either hides the hit
 /// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`). A root commit
 /// has no parent and no diff to judge.
-fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
+pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
     let git = |e: RepoError| Refusal::repository(&e);
     let parents = repo::probe(
         repo,
@@ -63,17 +77,21 @@ fn adopting(repo: &Path, head: &Head) -> Result<bool, Refusal> {
     .map_err(git)?
     .unwrap_or_default();
     if parents.is_empty() {
-        return Ok(false);
+        return Ok(Adoption::None);
     }
     let mut args = vec!["rev-list", "-1", "--full-history"];
     args.extend(parents.lines());
     args.extend(["--", jtac_policy::POLICY_PATH]);
     let touched = repo::probe(repo, &args, 128).map_err(git)?;
-    Ok(touched.is_some_and(|t| t.is_empty()))
+    Ok(if touched.is_some_and(|t| t.is_empty()) {
+        Adoption::Policy
+    } else {
+        Adoption::None
+    })
 }
 
-/// Run the rules and the checks on `head` and decide. Every stored waiver is offered; the
-/// verdict keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
+/// Run the rules and the checks on `head` and decide. Every offered waiver is given to the
+/// verdict; it keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -81,9 +99,10 @@ pub fn judge(
     base: Base,
     now: Ts,
     cache: Option<&dyn Cache>,
-    waivers: &[SignedLever],
+    offered: &Offered,
 ) -> Result<Judged, Refusal> {
-    let facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
+    let mut facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
+    facts.waivable = offered.waivable.clone();
     let node = |body: Body| Node {
         tree: head.tree,
         policy: facts.policy,
@@ -92,11 +111,14 @@ pub fn judge(
     };
     let started = Instant::now();
     let read = changes(repo, &base.commit, &head.commit.hex()).map_err(|e| e.to_string());
-    let adopting = adopting(repo, &head)?;
-    let report = read
-        .as_ref()
-        .ok()
-        .map(|c| report(&loaded.policy.integrity, &loaded.matchers, c, adopting));
+    let report = read.as_ref().ok().map(|c| {
+        report(
+            &loaded.policy.integrity,
+            &loaded.matchers,
+            c,
+            offered.adoption,
+        )
+    });
     let integrity_error = read.err();
     let integrity = node(Body::Check(integrity_body(
         integrity_error.as_deref(),
@@ -139,13 +161,13 @@ pub fn judge(
         }
     }
     let evidence = nodes.len();
-    nodes.extend(waivers.iter().map(|w| w.node.clone()));
+    nodes.extend(offered.waivers.iter().map(|w| w.node.clone()));
     let verdict = gate(&facts, &nodes, now);
     let levers: Vec<SignedLever> = verdict
         .applied
         .iter()
         .filter_map(|&i| i.checked_sub(evidence))
-        .map(|i| waivers[i].clone())
+        .map(|i| offered.waivers[i].clone())
         .collect();
     nodes.truncate(evidence);
     nodes.extend(levers.iter().map(|l| l.node.clone()));
@@ -165,7 +187,7 @@ pub fn judge(
 
 /// The reserved check (DESIGN.md section 9.2): empty argv, jtac's version, `pass` when the
 /// rules ran, `error` with the reason as its stderr when they could not.
-fn integrity_body(error: Option<&str>, millis: u128) -> CheckBody {
+pub fn integrity_body(error: Option<&str>, millis: u128) -> CheckBody {
     let capture = |bytes: &[u8]| Capture {
         sha: Sha256Digest::of(bytes),
         bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),

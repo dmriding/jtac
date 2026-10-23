@@ -23,5 +23,6 @@ mod view;
 
 pub use change::{Blob, Change, Edit};
 pub use lang::Lang;
+pub use prot::Adoption;
 pub use report::{Finding, Report, report};
 pub use rule::Rule;

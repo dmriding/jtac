@@ -2,7 +2,7 @@
 //! No real git config is read.
 
 use jtac_checks::diff::git::{GitError, changes, merge_base};
-use jtac_checks::diff::{Blob, Change, report};
+use jtac_checks::diff::{Adoption, Blob, Change, report};
 use jtac_policy::Integrity;
 use jtac_testkit::Repo;
 
@@ -71,7 +71,7 @@ fn changes_pair_renames_read_both_blobs_and_mark_binaries() {
         &Integrity::default(),
         &policy.matchers().unwrap(),
         &got,
-        false,
+        Adoption::None,
     );
     assert_eq!(report.added_lines, 2);
     assert!(report.findings.is_empty(), "{:?}", report.findings);

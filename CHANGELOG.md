@@ -8,6 +8,20 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.2.1) `jtac ci --base <rev> [--signers <file>] [--require-local-root]` (`DESIGN.md`
+  section 15, M15b): one verdict on HEAD from its merge base with the base branch, under the
+  base's policy when the diff touches `.jtac/**` or HEAD carries no readable policy, with
+  trust from the base rev's tree, the
+  chain's waivers offered when base trusts the lever's signer and the root carrying it and,
+  for a commit waiver on an earlier commit, every commit after it is covered by a trusted root,
+  the withheld ones named with why and what they would have covered, the pull request's
+  commits as the commit-waiver scope, and every protected-path finding minor when the base
+  holds no signers file (decision 45). HEAD's root is verified as
+  a document and compared with this gate's run of its own diff: invalid, lied, or disagreed
+  fails with both sides' counts; missing or unverifiable is reported and passes unless
+  `--require-local-root`. Signs nothing, writes no root and no `state.json`; evidence nodes go
+  to the store.
+
 - (0.2.0) Root version 2 (`DESIGN.md` section 15, M15a): `check` writes `base`, the commit
   the rules diffed from, absent on a parentless tip, and the reader refuses a root whose base
   is not an ancestor of its tip, whose `covers` reaches at or below it, or whose version 1
@@ -19,6 +33,10 @@ request moves them under a dated heading and bumps nothing.
 
 ### Changed
 
+- (0.2.1) `DESIGN.md` section 15 and decision 40: `--signers` is an override; trust defaults
+  to the base rev's `.jtac/signers`, and no file there is the adoption fact. Section 15 also
+  states that a lever is offered only from a root base trusts and that a commit waiver carries
+  forward only across commits a trusted root covers (red team, M15b round 1).
 - (0.2.0) `DESIGN.md` section 10.3 states that `--base` overrides the nearest covered
   ancestor and that the root records it (#84).
 - (0.1.7) `DESIGN.md` section 15 is the v0.2 plan: milestones M15 to M18 with done-whens,

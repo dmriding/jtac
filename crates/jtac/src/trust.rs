@@ -1,6 +1,6 @@
-//! Whom verification trusts (DESIGN.md sections 11.8 and 11.9): `.jtac/signers` in HEAD's
-//! tree, read through git so neither a work-tree edit nor a link under `.jtac` (issue 25)
-//! can change a verdict, or the file `--signers` names.
+//! Whom verification trusts (DESIGN.md sections 11.8, 11.9 and 15): `.jtac/signers` in a
+//! commit's tree, HEAD's or the base branch's in CI, read through git so neither a work-tree
+//! edit nor a link under `.jtac` (issue 25) can change a verdict, or the file `--signers` names.
 
 use std::path::{Path, PathBuf};
 
@@ -14,10 +14,18 @@ use crate::repo::{Head, RepoError, blob_at};
 pub enum Signers {
     /// `--signers`.
     File(PathBuf),
-    /// `.jtac/signers` at HEAD.
-    Head(Vec<u8>),
-    /// HEAD has no `.jtac/signers`.
-    None,
+    /// `.jtac/signers` in the tree of the rev `shown` names.
+    Tree {
+        /// `HEAD`, or the `--base` rev as given.
+        shown: String,
+        /// The file.
+        bytes: Vec<u8>,
+    },
+    /// That tree has no `.jtac/signers`.
+    None {
+        /// The rev as given.
+        shown: String,
+    },
 }
 
 /// The trust file at `HEAD`.
@@ -26,15 +34,21 @@ pub const TRUST_PATH: &str = ".jtac/signers";
 impl Signers {
     /// `--signers` when given, else HEAD's file.
     pub fn gather(repo: &Path, head: &Head, signers: Option<&Path>) -> Result<Self, Refusal> {
-        if let Some(path) = signers {
-            return Ok(Self::File(path.to_path_buf()));
+        match signers {
+            Some(path) => Ok(Self::File(path.to_path_buf())),
+            None => Self::at(repo, head, "HEAD"),
         }
-        match blob_at(repo, head, TRUST_PATH) {
+    }
+
+    /// The file in `commit`'s tree, `shown` being how the command named it.
+    pub fn at(repo: &Path, commit: &Head, shown: &str) -> Result<Self, Refusal> {
+        let shown = shown.to_owned();
+        match blob_at(repo, commit, TRUST_PATH) {
             Ok(Some((_, bytes))) if bytes.len() as u64 > TRUST_CAP => {
                 Err(Refusal::trust("larger than the trust file cap"))
             }
-            Ok(Some((_, bytes))) => Ok(Self::Head(bytes)),
-            Ok(None) => Ok(Self::None),
+            Ok(Some((_, bytes))) => Ok(Self::Tree { shown, bytes }),
+            Ok(None) => Ok(Self::None { shown }),
             Err(RepoError::NotAFile { .. }) => Err(Refusal::trust("not a regular file")),
             Err(e) => Err(Refusal::repository(&e)),
         }
@@ -44,8 +58,8 @@ impl Signers {
     pub fn as_sign(&self) -> jtac_sign::Trust<'_> {
         match self {
             Self::File(path) => jtac_sign::Trust::File(path),
-            Self::Head(bytes) => jtac_sign::Trust::Bytes(bytes),
-            Self::None => jtac_sign::Trust::None,
+            Self::Tree { bytes, .. } => jtac_sign::Trust::Bytes(bytes),
+            Self::None { .. } => jtac_sign::Trust::None,
         }
     }
 
@@ -68,8 +82,10 @@ impl Signers {
     pub fn describe(&self) -> String {
         match self {
             Self::File(path) => path.to_string_lossy().into_owned(),
-            Self::Head(_) => format!("HEAD:{TRUST_PATH}"),
-            Self::None => format!("none (HEAD has no {TRUST_PATH}; every signer is unknown)"),
+            Self::Tree { shown, .. } => format!("{shown}:{TRUST_PATH}"),
+            Self::None { shown } => {
+                format!("none ({shown} has no {TRUST_PATH}; every signer is unknown)")
+            }
         }
     }
 }
@@ -93,7 +109,11 @@ mod tests {
         );
         let temp = signers.refusal("replay", &io("/workspace/tmp"));
         assert!(temp.how.contains("ssh-keygen"), "{temp:?}");
-        let head = Signers::Head(Vec::new()).refusal("verify", &io("/workspace/s"));
+        let head = Signers::Tree {
+            shown: "HEAD".into(),
+            bytes: Vec::new(),
+        }
+        .refusal("verify", &io("/workspace/s"));
         assert!(head.how.contains("ssh-keygen"), "{head:?}");
     }
 }

@@ -9,17 +9,37 @@ use super::report::Finding;
 use super::rule::Rule;
 use super::view::View;
 
-/// A finding per protected path touched, by either name of a rename. The commit that adds the
-/// policy had nothing in force under `.jtac/`, so a finding there is minor (decision 38;
-/// `adopting_the_policy_makes_its_own_directory_minor_and_nothing_else`). `adopting` is the
-/// gatherer's word that no parent's history held one: the diff's base is the pusher's to pick.
-pub(crate) fn check(views: &[View], matchers: &Matchers, adopting: bool) -> Vec<Finding> {
-    let adopting = adopting
-        && views.iter().any(|v| {
-            v.path() == jtac_policy::POLICY_PATH
-                && v.change.old.is_none()
-                && v.change.from.is_none()
-        });
+/// Whether anything was in force to protect (decisions 38 and 45): the gatherer's fact, read
+/// from history or from the base branch, never from the diff, whose base the pusher picks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Adoption {
+    /// An ancestor held the policy, or the base branch names signers.
+    None,
+    /// No parent's history held a policy (decision 38): `.jtac/**` is minor when the change
+    /// adds the policy file.
+    Policy,
+    /// The base branch holds no `.jtac/signers` (decision 45, CI): every protected path is
+    /// minor, since with no trust no waiver could have cleared anything.
+    Trust,
+}
+
+/// A finding per protected path touched, by either name of a rename
+/// (`adopting_the_policy_makes_its_own_directory_minor_and_nothing_else`).
+pub(crate) fn check(views: &[View], matchers: &Matchers, adoption: Adoption) -> Vec<Finding> {
+    let adds_policy = views.iter().any(|v| {
+        v.path() == jtac_policy::POLICY_PATH && v.change.old.is_none() && v.change.from.is_none()
+    });
+    let minor = match adoption {
+        Adoption::Trust => Some((
+            "",
+            "; the base holds no signers file, so nothing was in force to protect",
+        )),
+        Adoption::Policy if adds_policy => Some((
+            ".jtac/",
+            "; the base holds no policy, so this change brings it into force",
+        )),
+        _ => None,
+    };
     views
         .iter()
         .flat_map(|v| {
@@ -28,13 +48,9 @@ pub(crate) fn check(views: &[View], matchers: &Matchers, adopting: bool) -> Vec<
                 .flatten()
                 .filter(|p| matchers.protected.is_match(p))
                 .map(move |p| {
-                    let (severity, tail) = if adopting && p.starts_with(".jtac/") {
-                        (
-                            Severity::Minor,
-                            "; the base holds no policy, so this change brings it into force",
-                        )
-                    } else {
-                        (Severity::Major, "")
+                    let (severity, tail) = match minor {
+                        Some((under, tail)) if p.starts_with(under) => (Severity::Minor, tail),
+                        _ => (Severity::Major, ""),
                     };
                     Finding::new(
                         Rule::Prot001,
@@ -89,7 +105,7 @@ mod tests {
             change("src/auth/mod.rs", Some(".github/workflows/ci.yml")),
         ];
         let views: Vec<View> = changes.iter().map(View::of).collect();
-        let got: Vec<(String, String)> = check(&views, &matchers, true)
+        let got: Vec<(String, String)> = check(&views, &matchers, Adoption::Policy)
             .into_iter()
             .map(|f| (f.path, f.message))
             .collect();
@@ -127,17 +143,17 @@ mod tests {
             old: Some(Blob::Text("version = 1\n".into())),
             new: Some(Blob::Text("version = 1\n# edited\n".into())),
         };
-        type Row = (&'static str, bool, Vec<Change>, Vec<(Severity, bool)>);
-        let rows: [Row; 4] = [
+        type Row = (&'static str, Adoption, Vec<Change>, Vec<(Severity, bool)>);
+        let rows: [Row; 5] = [
             (
                 "an ancestor held the policy: a base the pusher chose does not adopt",
-                false,
+                Adoption::None,
                 vec![change(".jtac/policy.toml", None)],
                 vec![(Severity::Major, false)],
             ),
             (
                 "the adoption commit: .jtac/ minor, CI major",
-                true,
+                Adoption::Policy,
                 vec![
                     change(".jtac/policy.toml", None),
                     change(".jtac/signers", None),
@@ -151,22 +167,28 @@ mod tests {
             ),
             (
                 "an edit to the policy is not adoption",
-                true,
+                Adoption::Policy,
                 vec![edited.clone(), change(".jtac/signers", None)],
                 vec![(Severity::Major, false), (Severity::Major, false)],
             ),
             (
                 "a policy renamed into place is not adoption",
-                true,
+                Adoption::Policy,
                 vec![change(".jtac/policy.toml", Some("policy.toml"))],
                 vec![(Severity::Major, false)],
+            ),
+            (
+                "the base holds no signers file: every protected path minor, an edit too",
+                Adoption::Trust,
+                vec![edited, change(".github/workflows/ci.yml", None)],
+                vec![(Severity::Minor, true), (Severity::Minor, true)],
             ),
         ];
         for (claim, fact, changes, want) in rows {
             let views: Vec<View> = changes.iter().map(View::of).collect();
             let got: Vec<(Severity, bool)> = check(&views, &matchers, fact)
                 .into_iter()
-                .map(|f| (f.severity, f.message.contains("brings it into force")))
+                .map(|f| (f.severity, f.message.contains("; the base holds no ")))
                 .collect();
             assert_eq!(got, want, "{claim}");
         }
