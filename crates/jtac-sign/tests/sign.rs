@@ -223,6 +223,43 @@ fn a_key_retired_in_the_trust_file_is_judged_at_the_root_ts_in_utc() {
     }
 }
 
+/// A root with `from` is trusted under a line whose `namespaces` option names the CI
+/// namespace, whatever ssh-keygen would make of a line with no option (DESIGN.md section 15).
+#[test]
+fn a_ci_root_is_trusted_only_under_a_line_that_names_its_namespace() {
+    let k = Keys::new();
+    let id = k.id(KeyRef::File(k.path("key")));
+    let sig = sign(&id, Namespace::CiRoot, MSG).unwrap();
+    let rows = [
+        ("namespaces=\"jtac-ci-root-v1,jtac-release-v1\"", "trusted"),
+        ("namespaces=\"jtac-ci-root-v1\"", "trusted"),
+        ("", "unknown"),
+        ("namespaces=\"jtac-root-v1,jtac-lever-v1\"", "unknown"),
+        (
+            "valid-before=\"20260101\",namespaces=\"jtac-ci-root-v1\"",
+            "unknown",
+        ),
+    ];
+    for (options, want) in rows {
+        let trust = k.trust(&[("dev@example.com", "key", options)]);
+        let got = check(&id, Some(&trust), Namespace::CiRoot, MSG, &sig);
+        assert_eq!(kind(&got), want, "{options}: {got:?}");
+        if want == "unknown" {
+            assert!(
+                unknown(&got).contains("names jtac-ci-root-v1"),
+                "{options}: {got:?}"
+            );
+        }
+    }
+    let trust = k.trust(&[("dev@example.com", "key", "")]);
+    let got = check(&id, Some(&trust), Namespace::Root, MSG, &sig);
+    assert!(invalid(&got).contains("namespace"), "{got:?}");
+    let ordinary = sign(&id, Namespace::Root, MSG).unwrap();
+    let trust = k.trust(&[("dev@example.com", "key", "namespaces=\"jtac-ci-root-v1\"")]);
+    let got = check(&id, Some(&trust), Namespace::CiRoot, MSG, &ordinary);
+    assert!(invalid(&got).contains("namespace"), "{got:?}");
+}
+
 #[test]
 fn a_signer_whose_fingerprint_is_not_the_signing_key_is_invalid() {
     let k = Keys::new();

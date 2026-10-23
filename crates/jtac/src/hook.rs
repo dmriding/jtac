@@ -17,11 +17,12 @@ use crate::{coverage, repo, rootpush, update};
 
 /// What the hook wrote to stderr and how it exited: 0 lets the push proceed, 1 refuses it,
 /// 2 could not answer, which also refuses. Stdin that could not be read is 2: an unread
-/// line is an unjudged ref (`non_utf8_stdin_refuses_rather_than_passes`).
+/// line is an unjudged ref (`non_utf8_stdin_refuses_rather_than_passes`). A push that named
+/// a URL has it as `remote` too: git passes it twice.
 pub fn pre_push(
     cwd: &Path,
     remote: &str,
-    _url: &str,
+    url: &str,
     stdin: &Result<String, String>,
 ) -> (String, u8) {
     if std::env::var_os(GUARD).is_some_and(|v| v == "1") {
@@ -31,7 +32,7 @@ pub fn pre_push(
         Ok(text) => text,
         Err(why) => return (Refusal::hook_stdin(why).text(), 2),
     };
-    match judge(cwd, remote, stdin) {
+    match judge(cwd, remote, (remote != url).then_some(remote), stdin) {
         Ok(out) => out,
         Err(r) => (r.text(), 2),
     }
@@ -115,7 +116,12 @@ struct At<'a> {
 
 /// The mirror check comes before the empty-stdin pass: a mirror whose only work is deletion
 /// writes no line at all (`a_mirror_push_is_refused_because_git_hides_its_deletions`).
-fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal> {
+fn judge(
+    cwd: &Path,
+    remote: &str,
+    named: Option<&str>,
+    stdin: &str,
+) -> Result<(String, u8), Refusal> {
     let lines = lines(stdin)?;
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
     let key = format!("remote.{remote}.mirror");
@@ -139,6 +145,7 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
         tool: coverage::verifier(&repo)?,
         repo,
         format,
+        named,
     };
     let mut out = String::new();
     let mut refused = false;
@@ -178,15 +185,16 @@ fn judge(cwd: &Path, remote: &str, stdin: &str) -> Result<(String, u8), Refusal>
     Ok((out, 0))
 }
 
-/// What every line is judged with.
-struct Ctx {
+/// What every line is judged with; `named` is the remote's name, `None` for a URL.
+struct Ctx<'a> {
     repo: PathBuf,
     format: String,
     store: Store,
     tool: Tool,
+    named: Option<&'a str>,
 }
 
-impl Ctx {
+impl Ctx<'_> {
     /// One line's decision, with the tip's own root ref when it exists and did not count.
     /// Notes go to `out`; a ref that passed on a root adds its range.
     fn decide(
@@ -208,14 +216,18 @@ impl Ctx {
             .map(|l| repo::peel(&self.repo, &self.format, &l.hex()))
             .transpose()
             .map_err(|e| at_ref(Refusal::repository(&e)))?;
+        let r = update::Ref {
+            remote: self.named,
+            remote_ref: line.remote_ref,
+            old,
+        };
         let g = update::gather(
             &self.repo,
             &self.store,
             &self.tool,
             &self.format,
             tip.as_ref(),
-            line.remote_ref,
-            old.as_ref(),
+            &r,
         )
         .map_err(at_ref)?;
         for note in &g.tip.notes {
@@ -621,6 +633,16 @@ mod tests {
             tip: at.tip,
             old: at.old,
         };
+        let named = coverage::CiSite {
+            repo: Path::new("/w"),
+            format: "sha1",
+            remote: Some("origin"),
+            old: None,
+        };
+        let by_url = coverage::CiSite {
+            remote: None,
+            ..named
+        };
         let spawn = jtac_sign::SignError::Spawn {
             argv: vec!["ssh-keygen".into()],
             source: std::io::Error::other("nope"),
@@ -638,6 +660,8 @@ mod tests {
             (Refusal::push(&Refuse::Rewind, &at), "fence"),
             (Refusal::push(&Refuse::Delete, &at), "fence"),
             (Refusal::push(&Refuse::Absent, &stale), "negotiation"),
+            (Refusal::ci_root(&named, &tip), "negotiation"),
+            (Refusal::ci_root(&by_url, &tip), "negotiation"),
         ];
         for (r, kind) in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");
@@ -657,5 +681,12 @@ mod tests {
         );
         let fence = Refusal::push(&Refuse::Rewind, &at);
         assert!(fence.how.contains("--force") && fence.how.contains("[fences]"));
+        let ci = Refusal::ci_root(&named, &tip);
+        assert!(
+            ci.how.contains("git remote set-head origin --auto"),
+            "{ci:?}"
+        );
+        let ci = Refusal::ci_root(&by_url, &tip);
+        assert!(ci.how.contains("git remote add <name> <url>"), "{ci:?}");
     }
 }

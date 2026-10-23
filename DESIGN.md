@@ -302,7 +302,7 @@ Known answer (test `root_id_known_answer`). A `declared_off` root over the empty
 ```
 
 has id `sha256:01e449f228a88b336568a36424831f2c866c94d24b0916312442da7d89b67091`. Its lever node has id `sha256:936b6c55423cccc86fb7a22c9f90de3a359073f814ffd9be80ac9f316b9a7922`, and `evidence` is the one-leaf Merkle root over it.
-- The root is signed as a detached SSHSIG signature, namespace `jtac-root-v1`, over its canonical bytes. Root version 2 (section 15) adds `base` and `from`, both absent from the bytes when unset, so a version 1 root's id is unchanged.
+- The root is signed as a detached SSHSIG signature, namespace `jtac-root-v1`, or `jtac-ci-root-v1` for a root with `from` (section 11.8), over its canonical bytes. Root version 2 (section 15) adds `base` and `from`, both absent from the bytes when unset, so a version 1 root's id is unchanged.
 
 Known answer (test `root_v2_id_known_answer`). A `covered` version 2 root over the empty tree, no checks and no waivers, whose rules diffed from `sha1:0000000000000000000000000000000000000000`, canonical:
 
@@ -551,7 +551,7 @@ Target: a working gate on any repository in under five minutes, with no account 
 ### 11.8 Signing
 
 - Signatures use SSHSIG via `ssh-keygen -Y sign` and `-Y verify`, the same mechanism git uses for SSH-signed commits. No new key format and no new trust store.
-- Namespaces: `jtac-root-v1` for roots, `jtac-lever-v1` for lever nodes. A signature made in one namespace does not verify in another.
+- Namespaces: `jtac-root-v1` for roots, `jtac-ci-root-v1` for a root with `from` (section 15), `jtac-lever-v1` for lever nodes. A signature made in one namespace does not verify in another, and a root's shape picks its namespace, so a reader tries one.
 - A waiver's signature travels in the root's `levers[].sig`, so a remote verifier checks the waiver's signer as well as the root's.
 - The key is the one git config names, in order: `jtac.signingkey`, then `user.signingkey` when `gpg.format` is `ssh`, else a refusal that names `jtac init`. Both are spelled as git spells an SSH `user.signingkey`: a key file, or a public key line for a key in the agent, after `key::` or bare from `ssh-`. The principal is `user.email`, the identity git itself verifies SSH commits with. `ssh-keygen` is `gpg.ssh.program` when set, else the name on PATH. No new knob.
 - The fingerprint a root or lever names is what `ssh-keygen -l` prints for the key before signing: it reads a public key, the public half inside a private key file, or the plain key behind a certificate, and never asks for a passphrase. ssh-keygen re-reads every signature it makes and every one it verifies, and the key it prints on a good signature must be the one the document names. Nothing else computes a fingerprint, since ssh-keygen re-encodes a key before hashing it.

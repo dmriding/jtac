@@ -107,7 +107,7 @@ pub fn show(a: &ShowArgs, cwd: &Path) -> Result<Printed, Refusal> {
             commit: tip.commit,
             tree: tip.tree,
         };
-        let cover = coverage::tip(&store, &tool, &head)?;
+        let cover = coverage::tip(&store, &tool, &head, None)?;
         notes.extend(cover.notes);
         if let Some((by, _)) = cover.counted
             && by != tip.commit

@@ -3,7 +3,7 @@
 //! ones named with why, HEAD's root verified and compared, and each failure in three parts.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use jtac_core::{Covers, FromHead, GitOid, Root, State};
 use jtac_testkit::Repo;
@@ -108,47 +108,19 @@ fn read_root(repo: &Repo, commit: &str) -> Root {
     serde_json::from_str(&root_json(repo, commit)).unwrap()
 }
 
-fn git_stdin(repo: &Repo, args: &[&str], stdin: &[u8]) -> String {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(repo.path())
-        .env_clear()
-        .envs(repo.env())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::io::Write::write_all(child.stdin.as_mut().unwrap(), stdin).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "git {args:?}");
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
-/// Replace `commit`'s root ref with `root`, canonical and freshly signed by `key`.
+/// Replace `commit`'s root ref with `root`, canonical and freshly signed by `key` in the
+/// namespace its shape picks.
 fn put(repo: &Repo, key: &Path, commit: &str, root: &Root) {
     let json = String::from_utf8(root.canonical_bytes().unwrap()).unwrap();
-    let json_path = repo.write(".git/forged/root.json", json.as_bytes());
-    let sig_path = json_path.with_extension("json.sig");
-    let _ = std::fs::remove_file(&sig_path);
-    let out = Command::new("ssh-keygen")
-        .args(["-Y", "sign", "-n", "jtac-root-v1", "-P", "", "-f"])
-        .arg(key)
-        .arg(&json_path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let sig = std::fs::read_to_string(sig_path).unwrap();
-    let sig_path = repo.write(".git/forged/root.sig", sig.as_bytes());
-    let j = repo.git(&["hash-object", "-w", "--", json_path.to_str().unwrap()]);
-    let s = repo.git(&["hash-object", "-w", "--", sig_path.to_str().unwrap()]);
-    let listing = format!("100644 blob {j}\troot.json\n100644 blob {s}\troot.sig\n");
-    let tree = git_stdin(repo, &["mktree"], listing.as_bytes());
-    let forged = repo.git(&["commit-tree", &tree, "-m", "forged"]);
-    repo.git(&["update-ref", &root_ref(commit), &forged]);
+    repo.put_root(key, namespace(&json), commit, &json, None);
+}
+
+fn namespace(json: &str) -> &'static str {
+    let v: Value = serde_json::from_str(json).unwrap();
+    match v.get("from") {
+        Some(_) => "jtac-ci-root-v1",
+        None => "jtac-root-v1",
+    }
 }
 
 fn g(hex: &str) -> GitOid {
@@ -160,6 +132,8 @@ fn g(hex: &str) -> GitOid {
 enum Trusts {
     Dev,
     Other,
+    /// The dev key plain and the other key for the CI namespace alone.
+    DevAndCi,
     NoFile,
 }
 
@@ -186,6 +160,19 @@ fn pr(trusts: Trusts) -> Pr {
         Trusts::Other => repo.write(
             ".jtac/signers",
             signers_line(&other, "other@example.com").as_bytes(),
+        ),
+        Trusts::DevAndCi => repo.write(
+            ".jtac/signers",
+            format!(
+                "{}{}",
+                signers_line(&dev, "dev@example.com"),
+                signers_line(&other, "other@example.com").replacen(
+                    ' ',
+                    " namespaces=\"jtac-ci-root-v1,jtac-release-v1\" ",
+                    1
+                )
+            )
+            .as_bytes(),
         ),
         Trusts::NoFile => PathBuf::new(),
     };
@@ -1039,8 +1026,62 @@ fn a_from_root_is_compared_under_its_declared_base_policy_after_the_base_branch_
     assert_eq!(v["head_root"]["trust"], "unknown");
     assert_eq!(
         v["withheld_waivers"][0]["why"], "the root carrying it is signed by a key not in signers",
-        "a from root reads as an unknown signer until M16, so its lever is withheld"
+        "a from root on a key no signers line names for the CI namespace is an unknown \
+         signer's, so its lever is withheld"
     );
+}
+
+/// The same recast root signed by the CI key, whose line names the CI namespace: base trusts
+/// it, so the dev's rule waiver it carries is offered and the policy change clears.
+#[test]
+fn a_from_root_signed_by_the_key_base_names_for_the_ci_namespace_is_trusted_and_offers_its_lever() {
+    let p = pr(Trusts::DevAndCi);
+    let p0 = read_root(&p.repo, &p.main).policy.hash;
+    let policy = std::fs::read_to_string(p.repo.path().join(".jtac/policy.toml")).unwrap();
+    let tip = p.add(
+        ".jtac/policy.toml",
+        &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
+    );
+    ok(
+        &p.repo,
+        &[
+            "waive",
+            "--rule",
+            "JT-PROT-001",
+            "--path",
+            ".jtac/",
+            "--expires",
+            "7d",
+            "--reason",
+            "reviewed",
+        ],
+    );
+    ok(&p.repo, &["check"]);
+    let mut from = read_root(&p.repo, &tip);
+    from.policy.hash = p0;
+    from.from = Some(FromHead {
+        head: g(&p.main),
+        root: None,
+        compared: None,
+    });
+    from.signer.principal = "other@example.com".to_owned();
+    from.signer.fingerprint = fingerprint(&p.other);
+    put(&p.repo, &p.other, &tip, &from);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
+    assert_eq!(v["head_root"]["trust"], "trusted", "{v}");
+    assert_eq!(v["head_root"]["signer"]["principal"], "other@example.com");
+    assert_eq!(v["withheld_waivers"], serde_json::json!([]), "{v}");
+    assert_eq!(
+        v["verdict"]["waivers"].as_array().map(Vec::len),
+        Some(1),
+        "{v}"
+    );
+    let (code, v) = json(&p.repo, &["verify", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unknown_signers"], 0, "{v}");
 }
 
 #[test]

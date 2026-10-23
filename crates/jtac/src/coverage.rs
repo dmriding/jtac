@@ -1,17 +1,53 @@
 //! What a pushed tip has (DESIGN.md sections 9.5, 11.3): its own root, else a root for the
 //! same tree. A root counts when it names the tip's tree and its signature holds; who signed
-//! is `verify`'s question. A root that exists and does not count is a note, never a pass.
-//! `pre-push` and `status` both read it here, so the two never disagree.
+//! is `verify`'s question, except for a root with `from`, whose waiver scope is wider than its
+//! commit: it counts only under a signer the remote's default branch tip or the branch's old
+//! tip names for the CI namespace. A root that exists and does not count is a note, never a
+//! pass. `pre-push` and `status` both read it here, so the two never disagree.
 
 use std::path::Path;
 
+use jtac_checks::git::quoted;
 use jtac_core::{GitOid, Root, Sha256Digest};
 use jtac_gate::Coverage;
 use jtac_sign::{Namespace, SignError, Tool, Trust, Verified};
 use jtac_store::Store;
 
 use crate::refuse::Refusal;
-use crate::repo::{Head, config};
+use crate::repo::{Head, config, peel, probe};
+use crate::trust::Signers;
+
+/// Where the CI namespace's signers are read, when a root with `from` is met and not before:
+/// `refs/remotes/<remote>/HEAD` for a named remote, and the branch's old tip when held.
+pub struct CiSite<'a> {
+    pub repo: &'a Path,
+    pub format: &'a str,
+    /// `None` for a push that named a URL, which has no tracking ref.
+    pub remote: Option<&'a str>,
+    pub old: Option<GitOid>,
+}
+
+impl CiSite<'_> {
+    fn signers(&self) -> Result<Vec<Signers>, Refusal> {
+        let mut out = Vec::new();
+        if let Some(remote) = self.remote {
+            let shown = format!("{remote}/HEAD");
+            let rev = format!("refs/remotes/{shown}^{{commit}}");
+            let args = ["rev-parse", "--verify", "--quiet", "--end-of-options", &rev];
+            if let Some(hex) = probe(self.repo, &args, 1).map_err(|e| Refusal::repository(&e))? {
+                let at = peel(self.repo, self.format, &hex).map_err(|e| Refusal::repository(&e))?;
+                out.push(Signers::at(self.repo, &at, &shown)?);
+            }
+        }
+        if let Some(old) = self.old {
+            let at =
+                peel(self.repo, self.format, &old.hex()).map_err(|e| Refusal::repository(&e))?;
+            let shown = format!("the old tip {}", &old.hex()[..12]);
+            out.push(Signers::at(self.repo, &at, &shown)?);
+        }
+        Ok(out)
+    }
+}
 
 /// The tip's coverage and the roots passed over.
 pub struct Tip {
@@ -42,9 +78,12 @@ pub fn verifier(repo: &Path) -> Result<Tool, Refusal> {
 }
 
 /// The tip's own root, else the first root in ref order that judged the same tree.
-pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
+/// `ci` is where a root with `from` is judged; `None` asks no trust question, for a reader
+/// that decides nothing (`show`).
+pub fn tip(store: &Store, tool: &Tool, tip: &Head, ci: Option<&CiSite>) -> Result<Tip, Refusal> {
     let mut notes = Vec::new();
-    let mut found = counted(store, tool, tip, &tip.commit, &mut notes)?.map(|r| (tip.commit, r));
+    let mut found =
+        counted(store, tool, tip, &tip.commit, ci, &mut notes)?.map(|r| (tip.commit, r));
     let own_stale = found.is_none() && !notes.is_empty();
     let roots = store.roots().map_err(Refusal::store)?;
     notes.extend(roots.notes());
@@ -53,7 +92,7 @@ pub fn tip(store: &Store, tool: &Tool, tip: &Head) -> Result<Tip, Refusal> {
             if listed.commit == tip.commit {
                 continue;
             }
-            if let Some(root) = counted(store, tool, tip, &listed.commit, &mut notes)? {
+            if let Some(root) = counted(store, tool, tip, &listed.commit, ci, &mut notes)? {
                 found = Some((listed.commit, root));
                 break;
             }
@@ -89,6 +128,7 @@ fn counted(
     tool: &Tool,
     tip: &Head,
     commit: &GitOid,
+    ci: Option<&CiSite>,
     notes: &mut Vec<String>,
 ) -> Result<Option<Root>, Refusal> {
     let mut not =
@@ -110,21 +150,74 @@ fn counted(
     }
     let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
     let sig = String::from_utf8_lossy(&stored.sig);
-    let verified = jtac_sign::verify(
-        tool,
-        Trust::None,
-        &root.signer,
-        Namespace::Root,
-        root.ts,
-        &bytes,
-        &sig,
-    )
-    .map_err(|e| Refusal::verifier(&e))?;
-    match verified {
-        Verified::Trusted | Verified::Unknown { .. } => Ok(Some(root)),
-        Verified::Invalid { what } => {
-            not(format!("its signature does not hold: {what}"));
-            Ok(None)
+    let ns = Namespace::of_root(&root);
+    let verify = |trust: Trust| {
+        jtac_sign::verify(tool, trust, &root.signer, ns, root.ts, &bytes, &sig)
+            .map_err(|e| Refusal::verifier(&e))
+    };
+    let (Some(ci), Namespace::CiRoot) = (ci, ns) else {
+        return Ok(match verify(Trust::None)? {
+            Verified::Trusted | Verified::Unknown { .. } => Some(root),
+            Verified::Invalid { what } => {
+                not(format!("its signature does not hold: {what}"));
+                None
+            }
+        });
+    };
+    let signers = ci.signers()?;
+    if signers.is_empty() {
+        return Err(Refusal::ci_root(ci, &tip.commit.hex()));
+    }
+    for s in &signers {
+        match verify(s.as_sign())? {
+            Verified::Trusted => return Ok(Some(root)),
+            Verified::Unknown { .. } => {}
+            Verified::Invalid { what } => {
+                not(format!("its signature does not hold: {what}"));
+                return Ok(None);
+            }
+        }
+    }
+    let read: Vec<String> = signers.iter().map(Signers::describe).collect();
+    not(format!(
+        "it has `from`, a CI root, and its signer is not named for namespace {} by {}",
+        ns.as_str(),
+        read.join(" or ")
+    ));
+    Ok(None)
+}
+
+impl Refusal {
+    /// A root with `from` at the tip, and no tree to read the CI namespace's signers from.
+    pub fn ci_root(ci: &CiSite, tip: &str) -> Self {
+        let remote = ci.remote.map(|r| quoted(r, "<remote>"));
+        let how = match &remote {
+            Some(remote) => format!(
+                "Run `git fetch {remote}`, then `git remote set-head {remote} --auto`, then \
+                 push again. Do not add `--no-verify`: the root would land unjudged, and a \
+                 reader trusts it only under a signers line for the CI namespace."
+            ),
+            None => "Push through a named remote, so this clone can hold its default branch: \
+                     `git remote add <name> <url>`, `git fetch <name>`, `git remote set-head \
+                     <name> --auto`, then `git push <name> <branch>`. A push that names a URL \
+                     has no tracking ref to read."
+                .to_owned(),
+        };
+        Self {
+            kind: "negotiation",
+            what: format!(
+                "{tip}'s root has `from`: a CI root, whose signer must be named for namespace \
+                 {} by the `.jtac/signers` of {}'s default branch tip or of the branch's old \
+                 tip, and this clone holds neither.",
+                Namespace::CiRoot.as_str(),
+                remote.as_deref().unwrap_or("the remote")
+            ),
+            why: "A root with `from` declares a pull request's commits as its waiver scope, \
+                  wider than its own commit, so only a key the repository names for CI may sign \
+                  one; the hook reads whom it names from the remote's own tips, never from the \
+                  pushed tip, which could carry its own key."
+                .to_owned(),
+            how,
         }
     }
 }

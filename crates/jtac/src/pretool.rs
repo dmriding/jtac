@@ -143,16 +143,13 @@ fn judge(here: &Path, push: &Push) -> Result<Option<Decision>, String> {
             let old = tracking(&fetch, &remote, &dst)
                 .and_then(|r| repo::peel(&repo, &format, &r).ok())
                 .map(|h| h.commit);
-            let g = update::gather(
-                &repo,
-                &store,
-                &tool,
-                &format,
-                tip.as_ref(),
-                &dst,
-                old.as_ref(),
-            )
-            .map_err(|r| fail(&r.what))?;
+            let r = update::Ref {
+                remote: Some(&remote),
+                remote_ref: &dst,
+                old,
+            };
+            let g = update::gather(&repo, &store, &tool, &format, tip.as_ref(), &r)
+                .map_err(|r| fail(&r.what))?;
             jtac_gate::decide(&g.update)
         };
         if last.as_ref().is_none_or(|l| rank(l) < rank(&decision)) {
