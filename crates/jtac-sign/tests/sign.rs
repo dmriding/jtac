@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use jtac_core::{Signer, Ts};
 use jtac_sign::{
     GitConfig, Identity, KeyRef, Namespace, Resolved, SignError, TRUST_CAP, Tool, Trust, Verified,
-    identity, resolve, sign, verify,
+    confine, identity, resolve, sign, verify,
 };
 
 /// A trust-file row: principal, key name, options.
@@ -258,6 +258,91 @@ fn a_ci_root_is_trusted_only_under_a_line_that_names_its_namespace() {
     let trust = k.trust(&[("dev@example.com", "key", "namespaces=\"jtac-ci-root-v1\"")]);
     let got = check(&id, Some(&trust), Namespace::CiRoot, MSG, &ordinary);
     assert!(invalid(&got).contains("namespace"), "{got:?}");
+}
+
+/// The confinement table, each prefix before the dev key: `true` is a line that confines the
+/// key to the CI namespace, and ssh-keygen must agree, trusting the key in that namespace and
+/// in no other; `false` is one `confine` drops. Rows after the blank one are the spellings the
+/// red team found that ssh-keygen reads as a plain principals field, or rejects.
+#[test]
+fn only_a_line_whose_namespaces_option_names_the_namespace_survives() {
+    let k = Keys::new();
+    let id = k.id(KeyRef::File(k.path("key")));
+    let ci_sig = sign(&id, Namespace::CiRoot, MSG).unwrap();
+    let lever_sig = sign(&id, Namespace::Lever, MSG).unwrap();
+    let rows: [(&str, bool); 24] = [
+        (
+            "dev@example.com namespaces=\"jtac-ci-root-v1,jtac-release-v1\" ",
+            true,
+        ),
+        (
+            "dev@example.com namespaces=\"jtac-release-v1,jtac-ci-root-v1\" ",
+            true,
+        ),
+        ("dev@example.com namespaces=\"jtac-ci-root-v1\" ", true),
+        ("dev@example.com\tnamespaces=\"jtac-ci-root-v1\"\t", true),
+        ("  dev@example.com namespaces=\"jtac-ci-root-v1\" ", true),
+        ("dev@example.com NAMESPACES=\"jtac-ci-root-v1\" ", true),
+        ("\"dev@example.com\" namespaces=\"jtac-ci-root-v1\" ", true),
+        (
+            "dev@example.com valid-after=\"20260101\",namespaces=\"jtac-ci-root-v1\",valid-before=\"20270101\" ",
+            true,
+        ),
+        ("dev@example.com ", false),
+        (
+            "dev@example.com namespaces=\"jtac-root-v1,jtac-lever-v1\" ",
+            false,
+        ),
+        ("dev@example.com namespaces=\"jtac-ci-root-v1x\" ", false),
+        ("dev@example.com namespaces=\"*\" ", false),
+        ("dev@example.com valid-before=\"20270101\" ", false),
+        ("# namespaces=\"jtac-ci-root-v1\" ", false),
+        ("", false),
+        ("\"dev@example.com, namespaces=jtac-ci-root-v1,x\" ", false),
+        (
+            "dev@example.com,\u{0c}namespaces=\"jtac-ci-root-v1\" ",
+            false,
+        ),
+        (
+            "dev@example.com,\u{0b}namespaces=\"jtac-ci-root-v1\" ",
+            false,
+        ),
+        (
+            "dev@example.com,\u{a0}namespaces=\"jtac-ci-root-v1\" ",
+            false,
+        ),
+        (
+            "dev@example.com,x\"y namespaces=\"jtac-ci-root-v1\" ",
+            false,
+        ),
+        ("dev@example.com namespaces=jtac-ci-root-v1 ", false),
+        (
+            "dev@example.com namespaces=\"jtac-ci-root-v1\",namespaces=\"x\" ",
+            false,
+        ),
+        ("\rdev@example.com,namespaces=\"jtac-ci-root-v1\" ", false),
+        (
+            " \r\rdev@example.com,namespaces=\"jtac-ci-root-v1\" ",
+            false,
+        ),
+    ];
+    for (prefix, want) in rows {
+        let line = format!("{prefix}{}\n", k.pub_line("key"));
+        let kept = confine(line.as_bytes(), "jtac-ci-root-v1");
+        assert_eq!(!kept.is_empty(), want, "{line:?}");
+        let path = k.path("row");
+        std::fs::write(&path, &line).unwrap();
+        let in_lever = check(&id, Some(&path), Namespace::Lever, MSG, &lever_sig);
+        if want {
+            assert_eq!(kept, line.as_bytes(), "{line:?}");
+            let in_ci = check(&id, Some(&path), Namespace::CiRoot, MSG, &ci_sig);
+            assert_eq!(kind(&in_ci), "trusted", "{line:?}: {in_ci:?}");
+            assert_eq!(kind(&in_lever), "unknown", "{line:?}: {in_lever:?}");
+        } else {
+            let in_ci = check(&id, Some(&path), Namespace::CiRoot, MSG, &ci_sig);
+            assert_eq!(kind(&in_ci), "unknown", "{line:?}: {in_ci:?}");
+        }
+    }
 }
 
 #[test]

@@ -14,6 +14,7 @@ mod verify;
 
 use std::path::PathBuf;
 
+pub use confine::confine;
 pub use identity::{Identity, identity, verifier};
 pub use key::{GitConfig, KeyRef, ResolveError, Resolved, resolve};
 pub use namespace::Namespace;

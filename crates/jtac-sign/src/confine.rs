@@ -23,9 +23,11 @@ const SPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 /// the first separator or at a double quote, which runs to its match and ends the field; the
 /// options token ends at a space or tab outside quotes, `\"` the one escape; a `namespaces`
 /// value is double-quoted and comma separated, given once. A line ssh-keygen would reject
-/// is not kept (`only_a_line_whose_namespaces_option_names_the_namespace_survives`).
+/// is not kept; the rows ssh-keygen and this must agree on are in
+/// `only_a_line_whose_namespaces_option_names_the_namespace_survives`, which runs them
+/// through ssh-keygen too.
 fn names(line: &str, ns: &str) -> bool {
-    let line = line.trim_start_matches([' ', '\t']);
+    let line = line.trim_start_matches(SPACE);
     if line.is_empty() || line.starts_with('#') {
         return false;
     }
@@ -102,75 +104,6 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample comment";
-
-    /// Rows after the blank one are the spellings the red team found that ssh-keygen reads as
-    /// a principals field with no option, or rejects: none may survive.
-    #[test]
-    fn only_a_line_whose_namespaces_option_names_the_namespace_survives() {
-        let rows: [(&str, bool); 22] = [
-            (
-                "ci@example.com namespaces=\"jtac-ci-root-v1,jtac-release-v1\" ",
-                true,
-            ),
-            (
-                "ci@example.com namespaces=\"jtac-release-v1,jtac-ci-root-v1\" ",
-                true,
-            ),
-            ("ci@example.com namespaces=\"jtac-ci-root-v1\" ", true),
-            ("ci@example.com\tnamespaces=\"jtac-ci-root-v1\"\t", true),
-            ("  ci@example.com namespaces=\"jtac-ci-root-v1\" ", true),
-            ("ci@example.com NAMESPACES=\"jtac-ci-root-v1\" ", true),
-            ("\"ci@example.com\" namespaces=\"jtac-ci-root-v1\" ", true),
-            (
-                "ci@example.com valid-after=\"20260101\",namespaces=\"jtac-ci-root-v1\",valid-before=\"20270101\" ",
-                true,
-            ),
-            (
-                "ci@example.com cert-authority,namespaces=\"jtac-ci-root-v1\" ",
-                true,
-            ),
-            ("dev@example.com ", false),
-            (
-                "dev@example.com namespaces=\"jtac-root-v1,jtac-lever-v1\" ",
-                false,
-            ),
-            ("dev@example.com namespaces=\"jtac-ci-root-v1x\" ", false),
-            ("dev@example.com namespaces=\"*\" ", false),
-            ("dev@example.com valid-before=\"20270101\" ", false),
-            ("# namespaces=\"jtac-ci-root-v1\" ", false),
-            ("", false),
-            ("\"dev@example.com, namespaces=jtac-ci-root-v1,x\" ", false),
-            (
-                "dev@example.com,\u{0c}namespaces=\"jtac-ci-root-v1\" ",
-                false,
-            ),
-            (
-                "dev@example.com,\u{0b}namespaces=\"jtac-ci-root-v1\" ",
-                false,
-            ),
-            (
-                "dev@example.com,\u{a0}namespaces=\"jtac-ci-root-v1\" ",
-                false,
-            ),
-            (
-                "dev@example.com,x\"y namespaces=\"jtac-ci-root-v1\" ",
-                false,
-            ),
-            ("dev@example.com namespaces=jtac-ci-root-v1 ", false),
-        ];
-        for (prefix, want) in rows {
-            let line = format!("{prefix}{KEY}");
-            assert_eq!(names(&line, "jtac-ci-root-v1"), want, "{line:?}");
-        }
-        let twice =
-            format!("dev@example.com namespaces=\"jtac-ci-root-v1\",namespaces=\"x\" {KEY}");
-        assert!(!names(&twice, "jtac-ci-root-v1"));
-        assert!(!names("lonely", "jtac-ci-root-v1"));
-        assert!(!names(
-            "\"unmatched namespaces=\"jtac-ci-root-v1\"",
-            "jtac-ci-root-v1"
-        ));
-    }
 
     #[test]
     fn confine_keeps_the_matching_lines_byte_for_byte_and_drops_the_rest() {

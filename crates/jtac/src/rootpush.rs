@@ -83,6 +83,7 @@ fn commits(
         .map(|l| l.commit)
         .collect();
     let not_remote = format!("--remotes={remote}");
+    let counted: BTreeSet<GitOid> = ranges.iter().map(|r| r.counted).collect();
     let mut out = Vec::new();
     let mut notes = String::new();
     for r in ranges {
@@ -98,7 +99,7 @@ fn commits(
         let listed = git(repo, &args).map_err(|e| e.to_string())?;
         for hex in String::from_utf8_lossy(&listed).lines() {
             let commit = oid(format, hex).map_err(|e| e.to_string())?;
-            if !rooted.contains(&commit) || commit == r.counted {
+            if !rooted.contains(&commit) || counted.contains(&commit) {
                 continue;
             }
             match store.root(&commit) {
