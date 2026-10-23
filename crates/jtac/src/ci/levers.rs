@@ -156,8 +156,10 @@ fn judged(listed: &[range::Listed], roots: &[RootFact]) -> BTreeSet<GitOid> {
 }
 
 /// Why a commit waiver on an earlier commit of the pull request does not carry to HEAD: the
-/// commits after the one it names that no root base trusts covers. `None` for a rule waiver,
-/// one naming HEAD, or one naming a commit outside the range, which the verdict ignores.
+/// pull request's commits after the one it names that no root base trusts covers. Base-branch
+/// commits merged in after it are outside the range and the base branch's own evidence. `None`
+/// for a rule waiver, one naming HEAD, or one naming a commit outside the range, which the
+/// verdict ignores.
 fn unjudged_after(
     repo: &Path,
     format: &str,
@@ -176,7 +178,10 @@ fn unjudged_after(
         return Ok(None);
     }
     let after = range::reachable(repo, format, &head.commit, &[*commit])?;
-    let unjudged: Vec<&GitOid> = after.iter().filter(|c| !judged.contains(c)).collect();
+    let unjudged: Vec<&GitOid> = after
+        .iter()
+        .filter(|c| in_range.contains(c) && !judged.contains(c))
+        .collect();
     Ok(unjudged.first().map(|first| {
         format!(
             "{} commits after the one it names are not covered by a root base trusts, {} among them",

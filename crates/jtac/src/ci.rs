@@ -47,10 +47,25 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         Some(path) => Signers::File(path.clone()),
         None => base_trust,
     };
-    let head_policy = policy::load_if_present(&repo, &head)?;
-    let base_policy = match touches_jtac(&repo, &base.commit, &head.commit.hex())? {
-        true => policy::load_if_present(&repo, &base_tip)?,
-        false => None,
+    let mut notes = Vec::new();
+    let head_policy = policy::load_if_present(&repo, &head);
+    let base_policy = match (
+        &head_policy,
+        touches_jtac(&repo, &base.commit, &head.commit.hex())?,
+    ) {
+        (Ok(Some(_)), false) => None,
+        _ => policy::load_if_present(&repo, &base_tip)?,
+    };
+    let head_policy = match (head_policy, &base_policy) {
+        (Ok(p), _) => p,
+        (Err(e), Some(_)) => {
+            notes.push(format!(
+                "HEAD's policy does not read ({}); the base branch's judges",
+                e.what
+            ));
+            None
+        }
+        (Err(e), None) => return Err(e),
     };
     let (loaded, policy_from) = match (&base_policy, &head_policy) {
         (Some(l), _) => (l, "base"),
@@ -86,7 +101,7 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         ci: &j,
     };
     let head_root = head::compare_head(&site, &chain.ledger)?;
-    let mut notes = chain.notes;
+    notes.extend(chain.notes);
     notes.extend(chain.ledger.notes.iter().cloned());
     let withheld = out::withheld(&j, &chain.withheld);
     let mut o = out::CiOut {

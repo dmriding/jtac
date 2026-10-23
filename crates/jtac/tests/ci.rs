@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use jtac_core::{FromHead, GitOid, Root, State};
+use jtac_core::{Covers, FromHead, GitOid, Root, State};
 use jtac_testkit::Repo;
 use serde_json::Value;
 
@@ -518,6 +518,55 @@ fn a_commit_waiver_carries_only_across_commits_a_trusted_root_covers() {
     assert_eq!(v["verdict"]["state"], "declared_off");
     assert_eq!(v["verdict"]["waivers"].as_array().unwrap().len(), 2);
     assert_eq!(v["withheld_waivers"], serde_json::json!([]));
+    p.repo.git(&["switch", "-q", "main"]);
+    p.add("m.txt", "m\n");
+    ok(&p.repo, &["check"]);
+    p.repo.git(&["switch", "-q", "feature"]);
+    p.repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-gpg-sign",
+        "-m",
+        "merge main",
+        "main",
+    ]);
+    ok(&p.repo, &["check"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["verdict"]["state"], "declared_off");
+    assert_eq!(
+        v["withheld_waivers"],
+        serde_json::json!([]),
+        "base-branch commits merged in after the waiver are not the pull request's"
+    );
+    let other = p.other.to_string_lossy().replace('\\', "/");
+    p.repo.git(&["config", "jtac.signingkey", &other]);
+    p.repo.git(&["config", "user.email", "other@example.com"]);
+    let late = p.add("late.txt", "late\n");
+    ok(&p.repo, &["check"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["verdict"]["state"], "covered");
+    assert_eq!(v["head_root"]["trust"], "unknown");
+    let whys: Vec<&str> = v["withheld_waivers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["why"].as_str().unwrap())
+        .collect();
+    assert_eq!(whys.len(), 2, "{v}");
+    for why in whys {
+        assert_eq!(
+            why,
+            format!(
+                "1 commits after the one it names are not covered by a root base trusts, {} \
+                 among them",
+                &late[..12]
+            ),
+            "a root base does not trust covers nothing here"
+        );
+    }
 }
 
 /// The trusted developer's rule waiver, copied into a root signed by a key base does not
@@ -904,6 +953,36 @@ fn a_from_root_at_the_head_is_compared_in_its_scope_or_unverifiable_without_its_
         &["ci", "--base", "main", "--require-local-root", "--json"],
     );
     assert_eq!(code, 1);
+    p.repo.remove(".jtac/signers");
+    p.repo.write(".jtac/signers/x", b"x\n");
+    let broken = p.repo.commit("signers is a directory");
+    std::fs::remove_dir_all(p.repo.path().join(".jtac/signers")).unwrap();
+    p.repo.write(
+        ".jtac/signers",
+        signers_line(&p.dev, "dev@example.com").as_bytes(),
+    );
+    let restored = p.repo.commit("signers restored");
+    ok(&p.repo, &["check"]);
+    let mut from = read_root(&p.repo, &restored);
+    from.base = Some(g(&broken));
+    from.covers = Covers::List(vec![g(&restored)]);
+    from.parents = vec![];
+    from.from = Some(FromHead {
+        head: g(&broken),
+        root: None,
+        compared: None,
+    });
+    put(&p.repo, &p.dev, &restored, &from);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["head_root"]["compared"], "unverifiable");
+    assert!(
+        v["head_root"]["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("its base's tree could not be read: "),
+        "{v}"
+    );
 }
 
 /// The head edits the policy with a trusted rule waiver, so its local root is judged under
@@ -991,12 +1070,39 @@ fn ci_refuses_a_base_that_does_not_resolve_a_dirty_tree_and_a_missing_policy_wit
         ran.stderr
     );
     p.repo.remove("dirty.txt");
+    p.repo.write(".jtac/policy.toml", b"version = 99\n");
+    p.repo.commit("unreadable policy");
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(rules(&v), ["JT-PROT-001"]);
+    assert!(
+        v["verdict"]["notes"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("HEAD's policy does not read ("),
+        "{v}"
+    );
     p.repo.remove(".jtac/policy.toml");
     p.repo.commit("no policy");
     let (code, v) = ci(&p.repo);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["policy_from"], "base");
     assert_eq!(rules(&v), ["JT-PROT-001"]);
+    let early = Repo::init(&[]);
+    early.write("a.txt", b"a\n");
+    early.commit("before adoption");
+    early.git(&["switch", "-q", "-c", "feature"]);
+    early.write("b.txt", b"b\n");
+    early.commit("feature");
+    early.git(&["switch", "-q", "main"]);
+    with_policy(&early);
+    early.commit("adopts");
+    early.git(&["switch", "-q", "feature"]);
+    let (code, v) = ci(&early);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(v["verdict"]["notes"], serde_json::json!([]));
     let bare = Repo::init(&[]);
     bare.write("a.txt", b"a\n");
     bare.commit("main");

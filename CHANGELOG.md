@@ -10,7 +10,8 @@ request moves them under a dated heading and bumps nothing.
 
 - (0.2.1) `jtac ci --base <rev> [--signers <file>] [--require-local-root]` (`DESIGN.md`
   section 15, M15b): one verdict on HEAD from its merge base with the base branch, under the
-  base's policy when the diff touches `.jtac/**`, with trust from the base rev's tree, the
+  base's policy when the diff touches `.jtac/**` or HEAD carries no readable policy, with
+  trust from the base rev's tree, the
   chain's waivers offered when base trusts the lever's signer and the root carrying it and,
   for a commit waiver on an earlier commit, every commit after it is covered by a trusted root,
   the withheld ones named with why and what they would have covered, the pull request's

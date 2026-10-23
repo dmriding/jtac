@@ -120,15 +120,20 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
     let base = root
         .base
         .map_or_else(|| site.head.commit.hex(), |b| b.hex());
-    let declared = root
-        .from
-        .as_ref()
-        .map(|_| declared(site, &base))
-        .transpose()?;
+    let declared = match root.from.as_ref().map(|_| declared(site, &base)) {
+        None => None,
+        Some(Ok(d)) => Some(d),
+        Some(Err(e)) => {
+            out.compared = Compared::Unverifiable;
+            out.why = Some(format!("its base's tree could not be read: {}", e.what));
+            return Ok(Some(out));
+        }
+    };
     let owed = declared.as_ref().and_then(|d| d.0.as_ref());
     let Some(policy) = owed.or(site.head_policy) else {
         out.compared = Compared::Lied;
-        out.why = Some("HEAD carries no policy file, and no root is judged without one".into());
+        out.why =
+            Some("HEAD carries no readable policy file, and no root is judged without one".into());
         return Ok(Some(out));
     };
     let mut facts = facts(&policy.policy, root.commit, root.tree).map_err(Refusal::internal)?;
@@ -219,6 +224,8 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
 /// What a `from` root's declared `base` says, as the merge job read it then (DESIGN.md
 /// section 15): its policy when the diff from it touches `.jtac/**` and it holds one, `None`
 /// meaning HEAD's, and its adoption fact. Never the verifier's base branch, which has moved on.
+/// A tree there that does not read is the caller's `Unverifiable`, never a refusal: CI's own
+/// verdict does not depend on it.
 fn declared(site: &Site, base: &str) -> Result<(Option<Loaded>, Adoption), Refusal> {
     let at = repo::peel(site.repo, site.format, base).map_err(|e| Refusal::repository(&e))?;
     let policy = if ci::touches_jtac(site.repo, base, &site.head.commit.hex())? {
