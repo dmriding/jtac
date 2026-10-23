@@ -3,6 +3,7 @@
 //! Impure: gathers facts and decides nothing. ssh-keygen does every cryptographic operation;
 //! this crate names the key, the namespace and the trust file, and reads the envelope.
 
+mod confine;
 mod fingerprint;
 mod identity;
 mod key;
@@ -13,6 +14,7 @@ mod verify;
 
 use std::path::PathBuf;
 
+pub use confine::confine;
 pub use identity::{Identity, identity, verifier};
 pub use key::{GitConfig, KeyRef, ResolveError, Resolved, resolve};
 pub use namespace::Namespace;

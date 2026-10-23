@@ -133,4 +133,57 @@ impl Repo {
         self.git(&["commit", "-q", "--no-gpg-sign", "-m", message]);
         self.git(&["rev-parse", "HEAD"])
     }
+
+    /// Replace `commit`'s root ref with `json` and `sig`, or with a fresh signature by `key`
+    /// in `namespace` when `sig` is `None`. `json` must be canonical: the reader verifies the
+    /// signature over the bytes it recomputes from the parsed root.
+    pub fn put_root(
+        &self,
+        key: &Path,
+        namespace: &str,
+        commit: &str,
+        json: &str,
+        sig: Option<&str>,
+    ) {
+        let json_path = self.write(".git/forged/root.json", json.as_bytes());
+        let sig = match sig {
+            Some(s) => s.to_owned(),
+            None => {
+                let sig_path = json_path.with_extension("json.sig");
+                let _ = std::fs::remove_file(&sig_path);
+                let out = Command::new("ssh-keygen")
+                    .args(["-Y", "sign", "-n", namespace, "-P", "", "-f"])
+                    .arg(key)
+                    .arg(&json_path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                std::fs::read_to_string(sig_path).unwrap()
+            }
+        };
+        let sig_path = self.write(".git/forged/root.sig", sig.as_bytes());
+        let j = self.git(&["hash-object", "-w", "--", json_path.to_str().unwrap()]);
+        let s = self.git(&["hash-object", "-w", "--", sig_path.to_str().unwrap()]);
+        let listing = format!("100644 blob {j}\troot.json\n100644 blob {s}\troot.sig\n");
+        let mut child = Command::new("git")
+            .args(["mktree"])
+            .current_dir(self.path())
+            .env_clear()
+            .envs(self.env())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), listing.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "git mktree");
+        let tree = String::from_utf8(out.stdout).unwrap().trim().to_owned();
+        let forged = self.git(&["commit-tree", &tree, "-m", "forged"]);
+        let root_ref = format!("refs/jtac/roots/{}/{commit}", &commit[..2]);
+        self.git(&["update-ref", &root_ref, &forged]);
+    }
 }

@@ -88,7 +88,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &tool,
         signers.as_sign(),
         &root.signer,
-        Namespace::Root,
+        Namespace::of_root(&root),
         root.ts,
         &bytes,
         &String::from_utf8_lossy(&stored.sig),

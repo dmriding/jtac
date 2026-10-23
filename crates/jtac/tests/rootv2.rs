@@ -1,11 +1,11 @@
 //! Root version 2 on a scripted history (DESIGN.md section 15, M15a): `check` writes `base`
 //! as the diff base and none on a parentless tip; `verify` refuses a root whose base is not
 //! an ancestor, whose covers reach below its base, or whose version 1 form carries a version
-//! 2 field; a version 1 root still reads; a root with `from` has an unknown signer until the
-//! CI namespace is read, so a developer key borrows no waiver through it.
+//! 2 field; a version 1 root still reads; a root with `from` is trusted only under a signers
+//! line that names the CI namespace, so a developer key borrows no waiver through it.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use jtac_core::{Covers, FromHead, GitOid, Root};
 use jtac_testkit::Repo;
@@ -89,47 +89,16 @@ fn root_json(repo: &Repo, commit: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn git_stdin(repo: &Repo, args: &[&str], stdin: &[u8]) -> String {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(repo.path())
-        .env_clear()
-        .envs(repo.env())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::io::Write::write_all(child.stdin.as_mut().unwrap(), stdin).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "git {args:?}");
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
-/// Replace `commit`'s root ref with `json`, freshly signed; `json` must stay canonical since
-/// the reader verifies the signature over the bytes it recomputes from the parsed root.
+/// Replace `commit`'s root ref with `json`, freshly signed in the namespace its shape picks;
+/// `json` must stay canonical since the reader verifies the signature over the bytes it
+/// recomputes from the parsed root.
 fn replace_root(repo: &Repo, key: &Path, commit: &str, json: &str) {
-    let json_path = repo.write(".git/forged/root.json", json.as_bytes());
-    let sig_path = json_path.with_extension("json.sig");
-    let _ = std::fs::remove_file(&sig_path);
-    let out = Command::new("ssh-keygen")
-        .args(["-Y", "sign", "-n", "jtac-root-v1", "-P", "", "-f"])
-        .arg(key)
-        .arg(&json_path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let sig = std::fs::read_to_string(sig_path).unwrap();
-    let sig_path = repo.write(".git/forged/root.sig", sig.as_bytes());
-    let j = repo.git(&["hash-object", "-w", "--", json_path.to_str().unwrap()]);
-    let s = repo.git(&["hash-object", "-w", "--", sig_path.to_str().unwrap()]);
-    let listing = format!("100644 blob {j}\troot.json\n100644 blob {s}\troot.sig\n");
-    let tree = git_stdin(repo, &["mktree"], listing.as_bytes());
-    let forged = repo.git(&["commit-tree", &tree, "-m", "forged"]);
-    repo.git(&["update-ref", &root_ref(commit), &forged]);
+    let v: Value = serde_json::from_str(json).unwrap();
+    let namespace = match v.get("from") {
+        Some(_) => "jtac-ci-root-v1",
+        None => "jtac-root-v1",
+    };
+    repo.put_root(key, namespace, commit, json, None);
 }
 
 /// `zero` parentless with a root; `base` on it with a root; `one` and `two` with one root at
@@ -370,6 +339,8 @@ fn trust_of(v: &Value, commit: &str) -> String {
         .unwrap()
 }
 
+/// The from root is signed in the CI namespace by the developer's key: a line that names no
+/// namespace leaves it unknown, and the same key under a line naming the namespace is trusted.
 #[test]
 fn a_from_root_has_an_unknown_signer_so_a_developer_key_borrows_no_waiver() {
     let repo = Repo::init(&[]);
@@ -413,6 +384,17 @@ fn a_from_root_has_an_unknown_signer_so_a_developer_key_borrows_no_waiver() {
     let (_, v) = json(&repo, &["audit", "--json"]);
     assert_eq!(trust_of(&v, &y), "unknown", "{v}");
     assert_eq!(trust_of(&v, &x), "trusted", "{v}");
+    let line = std::fs::read_to_string(repo.path().join(".jtac/signers")).unwrap();
+    let confined = line.replacen(' ', " namespaces=\"jtac-ci-root-v1,jtac-release-v1\" ", 1);
+    repo.write(".jtac/signers", confined.as_bytes());
+    repo.commit("the developer's key is named for the CI namespace");
+    let (code, v) = json(&repo, &["verify", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unknown_signers"], 3, "{v}");
+    let (_, v) = json(&repo, &["audit", "--json"]);
+    assert_eq!(trust_of(&v, &y), "trusted", "{v}");
+    assert_eq!(trust_of(&v, &x), "unknown", "{v}");
+    assert_eq!(trust_of(&v, &zero), "unknown", "{v}");
 }
 
 #[test]

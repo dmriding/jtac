@@ -88,6 +88,24 @@ pub fn config(repo: &Path, key: &str) -> Result<Option<String>, RepoError> {
 }
 
 /// The full ref name of the current branch's upstream, when it has one.
+/// The remote a bare `git push` of `short`'s branch goes to, as git picks it: the branch's
+/// push remote, the push default, its upstream remote, else `origin`.
+pub fn push_remote(repo: &Path, short: Option<&str>) -> Result<String, RepoError> {
+    for key in [
+        short.map(|b| format!("branch.{b}.pushRemote")),
+        Some("remote.pushDefault".to_owned()),
+        short.map(|b| format!("branch.{b}.remote")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(name) = config(repo, &key)? {
+            return Ok(name);
+        }
+    }
+    Ok("origin".to_owned())
+}
+
 pub fn upstream(repo: &Path) -> Result<Option<String>, RepoError> {
     probe(
         repo,

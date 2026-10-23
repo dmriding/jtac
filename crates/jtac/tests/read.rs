@@ -4,7 +4,7 @@
 //! trust read from HEAD rather than the work tree.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use jtac_testkit::Repo;
 use serde_json::Value;
@@ -251,51 +251,9 @@ fn audit_assigns_own_covers_tree_and_absent_and_verify_fails_only_when_told_to()
     );
 }
 
-fn git_stdin(repo: &Repo, args: &[&str], stdin: &[u8]) -> String {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(repo.path())
-        .env_clear()
-        .envs(repo.env())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::io::Write::write_all(child.stdin.as_mut().unwrap(), stdin).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "git {args:?}");
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
 /// Replace `commit`'s root ref with `json` and `sig`, or a fresh signature when `None`.
 fn replace_root(repo: &Repo, key: &Path, commit: &str, json: &str, sig: Option<&str>) {
-    let json_path = repo.write(".git/forged/root.json", json.as_bytes());
-    let sig = match sig {
-        Some(s) => s.to_owned(),
-        None => {
-            let sig_path = json_path.with_extension("json.sig");
-            let _ = std::fs::remove_file(&sig_path);
-            let out = Command::new("ssh-keygen")
-                .args(["-Y", "sign", "-n", "jtac-root-v1", "-P", "", "-f"])
-                .arg(key)
-                .arg(&json_path)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            std::fs::read_to_string(sig_path).unwrap()
-        }
-    };
-    let sig_path = repo.write(".git/forged/root.sig", sig.as_bytes());
-    let j = repo.git(&["hash-object", "-w", "--", json_path.to_str().unwrap()]);
-    let s = repo.git(&["hash-object", "-w", "--", sig_path.to_str().unwrap()]);
-    let listing = format!("100644 blob {j}\troot.json\n100644 blob {s}\troot.sig\n");
-    let tree = git_stdin(repo, &["mktree"], listing.as_bytes());
-    let forged = repo.git(&["commit-tree", &tree, "-m", "forged"]);
-    repo.git(&["update-ref", &root_ref(commit), &forged]);
+    repo.put_root(key, "jtac-root-v1", commit, json, sig);
 }
 
 #[test]

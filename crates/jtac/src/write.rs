@@ -40,7 +40,7 @@ pub fn root(
     leaves: &[Sha256Digest],
 ) -> Result<Option<Sha256Digest>, Refusal> {
     let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
-    let sig = sign(id, Namespace::Root, &bytes).map_err(|e| Refusal::sign(&e))?;
+    let sig = sign(id, Namespace::of_root(root), &bytes).map_err(|e| Refusal::sign(&e))?;
     match store.put_root(root, sig.as_bytes(), leaves) {
         Ok(id) => Ok(Some(id)),
         Err(StoreError::Exists { .. }) => Ok(None),

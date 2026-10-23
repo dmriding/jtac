@@ -177,10 +177,8 @@ impl Judge<'_> {
         })
     }
 
-    /// Object kind, tree, base, signature, each waiver's signature, covers, parents, in that
-    /// order; the first failure is the reason. A root with `from` is a CI root, and until the
-    /// CI namespace is read (DESIGN.md section 15, M16) its signer is unknown whatever the
-    /// trust file says, so no developer key vouches for a pull request's scope.
+    /// Object kind, tree, base, signature in the namespace the root's shape picks, each
+    /// waiver's signature, covers, parents, in that order; the first failure is the reason.
     fn root(
         mut self,
         s: &StoredRoot,
@@ -241,17 +239,13 @@ impl Judge<'_> {
             self.tool,
             self.signers.as_sign(),
             &root.signer,
-            Namespace::Root,
+            Namespace::of_root(root),
             root.ts,
             &bytes,
             &sig,
         )
         .map_err(|e| self.signers.refusal(self.command, &e))?;
         fact.trust = match verified {
-            Verified::Trusted if root.from.is_some() => Trust::Unknown {
-                why: "a root with `from` is a CI root, and this build reads no CI namespace"
-                    .to_owned(),
-            },
             Verified::Trusted => Trust::Trusted,
             Verified::Unknown { why } => Trust::Unknown { why },
             Verified::Invalid { what } => {

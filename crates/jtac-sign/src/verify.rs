@@ -7,6 +7,7 @@ use std::process::Output;
 
 use jtac_core::{Signer, Ts};
 
+use crate::confine::confine;
 use crate::fingerprint::printed;
 use crate::tool::{failure, first_line};
 use crate::{Namespace, SignError, Tool};
@@ -45,7 +46,7 @@ pub enum Trust<'a> {
 /// Verify `sig` over `msg` in `ns` as `signer`, with the keys in `trust` judged at `at`.
 /// The key ssh-keygen names must be the signer's. A named trust file that is not a plain
 /// readable file is an error; ssh-keygen is given a private copy of the bytes that passed
-/// that check.
+/// that check, confined to the lines that name the CI namespace when `ns` is it.
 pub fn verify(
     tool: &Tool,
     trust: Trust<'_>,
@@ -55,10 +56,18 @@ pub fn verify(
     msg: &[u8],
     sig: &str,
 ) -> Result<Verified, SignError> {
-    let trust = match trust {
-        Trust::File(path) => Some(temp("jtac-trust-", &read_trust(path)?)?),
-        Trust::Bytes(bytes) => Some(temp("jtac-trust-", bytes)?),
+    let read = match trust {
+        Trust::File(path) => Some(read_trust(path)?),
+        Trust::Bytes(bytes) => Some(bytes.to_vec()),
         Trust::None => None,
+    };
+    let confined = match ns {
+        Namespace::CiRoot => read.as_deref().map(|bytes| confine(bytes, ns.as_str())),
+        _ => None,
+    };
+    let trust = match confined.as_deref().or(read.as_deref()) {
+        Some(bytes) => Some(temp("jtac-trust-", bytes)?),
+        None => None,
     };
     let sig_file = temp("jtac-sig-", sig.as_bytes())?;
     let out = novalidate(tool, ns, &sig_file, msg)?;
@@ -75,6 +84,16 @@ pub fn verify(
             why: "no trust file".into(),
         });
     };
+    let confined_why = |why: String| Verified::Unknown {
+        why: format!(
+            "{why}; a root with `from` is trusted only under a signers line whose `namespaces` \
+             option names {}",
+            ns.as_str()
+        ),
+    };
+    if confined.as_deref().is_some_and(<[u8]>::is_empty) {
+        return Ok(confined_why("no signers line names the namespace".into()));
+    }
     let time = format!("verify-time={}", verify_time(at));
     let args: [&OsStr; 12] = [
         "-Y".as_ref(),
@@ -91,14 +110,15 @@ pub fn verify(
         time.as_ref(),
     ];
     let out = tool.run(&args, msg)?;
-    Ok(if out.status.success() {
-        Verified::Trusted
-    } else {
-        Verified::Unknown {
-            why: Some(first_line(&out.stderr))
-                .filter(|l| !l.is_empty())
-                .unwrap_or_else(|| "not in the trust file".to_owned()),
-        }
+    if out.status.success() {
+        return Ok(Verified::Trusted);
+    }
+    let why = Some(first_line(&out.stderr))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "not in the trust file".to_owned());
+    Ok(match confined {
+        Some(_) => confined_why(why),
+        None => Verified::Unknown { why },
     })
 }
 

@@ -12,7 +12,7 @@ use jtac_policy::FenceMode;
 use jtac_sign::Tool;
 use jtac_store::Store;
 
-use crate::coverage::{self, Tip};
+use crate::coverage::{self, CiSite, Tip};
 use crate::policy::{self, Loaded};
 use crate::refuse::Refusal;
 use crate::repo::{Head, RepoError, probe};
@@ -25,38 +25,56 @@ pub struct Gathered {
     pub tip: Tip,
 }
 
-/// `tip` pushed to `remote_ref` over `old`, the remote's oid when it has the ref; no tip is
-/// a deletion, whose only policy is the old tip's.
+/// One ref update as the caller names it.
+pub struct Ref<'a> {
+    /// The remote's name; `None` when the push named a URL, which has no tracking ref.
+    pub remote: Option<&'a str>,
+    /// The remote's URL when the caller has it, for the next command.
+    pub url: Option<&'a str>,
+    /// The ref on the remote, full name.
+    pub remote_ref: &'a str,
+    /// The remote's oid, when it has the ref.
+    pub old: Option<GitOid>,
+}
+
+/// `tip` pushed as `r` says; no tip is a deletion, whose only policy is the old tip's.
 pub fn gather(
     repo: &Path,
     store: &Store,
     tool: &Tool,
     format: &str,
     tip: Option<&Head>,
-    remote_ref: &str,
-    old: Option<&GitOid>,
+    r: &Ref,
 ) -> Result<Gathered, Refusal> {
     let (mut protected, mut deny_force) = match tip {
-        Some(tip) => fence(&policy::load(repo, tip)?, remote_ref),
+        Some(tip) => fence(&policy::load(repo, tip)?, r.remote_ref),
         None => (false, false),
     };
-    let history = history(repo, old, tip.map(|t| &t.commit))?;
-    if let (Some(old), History::FastForward | History::Rewinds) = (old, history) {
+    let history = history(repo, r.old.as_ref(), tip.map(|t| &t.commit))?;
+    let held = matches!(history, History::FastForward | History::Rewinds);
+    if let (Some(old), true) = (r.old, held) {
         let was =
             crate::repo::peel(repo, format, &old.hex()).map_err(|e| Refusal::repository(&e))?;
         if let Some(loaded) = policy::load_if_present(repo, &was)? {
-            let (p, d) = fence(&loaded, remote_ref);
+            let (p, d) = fence(&loaded, r.remote_ref);
             protected |= p;
             deny_force |= d;
         }
     }
+    let ci = CiSite {
+        repo,
+        format,
+        remote: r.remote,
+        url: r.url,
+        old: r.old.filter(|_| held),
+    };
     let covered = match tip {
-        Some(tip) => coverage::tip(store, tool, tip)?,
+        Some(tip) => coverage::tip(store, tool, tip, Some(&ci))?,
         None => coverage::none(),
     };
     Ok(Gathered {
         update: RefUpdate {
-            remote_ref: remote_ref.to_owned(),
+            remote_ref: r.remote_ref.to_owned(),
             delete: tip.is_none(),
             protected,
             deny_force,
