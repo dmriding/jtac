@@ -19,8 +19,8 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-/// Every command the parser accepts; `init`, `check`, `status`, `why`, `verify`, `replay`,
-/// `audit`, `show`, `waive`, and `hook` run in this release.
+/// Every command the parser accepts; `init`, `check`, `ci`, `status`, `why`, `verify`,
+/// `replay`, `audit`, `show`, `waive`, and `hook` run in this release.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Set this repository up: signing key, local store, policy, the pre-push hook, the
@@ -29,6 +29,10 @@ pub enum Command {
     /// Run the gate on HEAD: diff-integrity rules, the policy's checks, then the verdict;
     /// a pass writes a signed root
     Check(CheckArgs),
+    /// The pull request gate: one verdict on HEAD from its merge base with the base branch,
+    /// trust from the base, HEAD's root verified and compared; signs nothing, writes no root;
+    /// exit 0 pass, 1 fail, 2 could not answer
+    Ci(CiArgs),
     /// Whether a push would pass: HEAD's root, the unpushed commits, the last verdict
     Status(JsonArg),
     /// The last verdict's reasons, each with its rule, why it exists, and the next command
@@ -107,6 +111,24 @@ pub struct CheckArgs {
     /// the upstream, or the default branch
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
+    /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `jtac ci` flags.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct CiArgs {
+    /// The base branch: the rules diff from its merge base with HEAD, and its `.jtac/signers`
+    /// is the trust
+    #[arg(long, value_name = "REV")]
+    pub base: String,
+    /// An allowed-signers file instead of `.jtac/signers` in REV's tree
+    #[arg(long, value_name = "FILE")]
+    pub signers: Option<PathBuf>,
+    /// Fail when HEAD has no root, or one this gate cannot compare
+    #[arg(long)]
+    pub require_local_root: bool,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -292,6 +314,26 @@ mod tests {
                 json: false,
             }))
         );
+        let cli = Cli::try_parse_from([
+            "jtac",
+            "ci",
+            "--base",
+            "origin/main",
+            "--signers",
+            "s",
+            "--require-local-root",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Ci(CiArgs {
+                base: "origin/main".into(),
+                signers: Some("s".into()),
+                require_local_root: true,
+                json: false,
+            }))
+        );
+        assert!(Cli::try_parse_from(["jtac", "ci"]).is_err());
         let cli = Cli::try_parse_from(["jtac", "replay", "HEAD", "--json"]).unwrap();
         assert_eq!(
             cli.command,

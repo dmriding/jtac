@@ -6,6 +6,7 @@ use jtac_core::Severity;
 use jtac_policy::{Integrity, Matchers};
 
 use super::change::Change;
+use super::prot::Adoption;
 use super::rule::Rule;
 use super::view::View;
 use super::{add, ci, cmt, prot, sec, size, sup, test};
@@ -54,18 +55,18 @@ pub struct Report {
     pub tiers: BTreeSet<String>,
 }
 
-/// Judge `changes` under `integrity` and the policy's `matchers`. `adopting` is the gatherer's
-/// fact that no first-parent ancestor of the commit ever held the policy (decision 38).
+/// Judge `changes` under `integrity` and the policy's `matchers`; `adoption` is the
+/// gatherer's fact about what was in force (decisions 38 and 45).
 pub fn report(
     integrity: &Integrity,
     matchers: &Matchers,
     changes: &[Change],
-    adopting: bool,
+    adoption: Adoption,
 ) -> Report {
     let views: Vec<View> = changes.iter().map(View::of).collect();
     let added_lines = add::count(&views);
     let mut findings = Vec::new();
-    findings.extend(prot::check(&views, matchers, adopting));
+    findings.extend(prot::check(&views, matchers, adoption));
     findings.extend(test::check(&views, integrity));
     findings.extend(sup::check(&views, integrity));
     findings.extend(ci::check(&views));
@@ -114,7 +115,7 @@ mod tests {
             &policy.integrity,
             &policy.matchers().unwrap(),
             &changes,
-            false,
+            Adoption::None,
         );
         let order: Vec<(&str, &str, u64)> = got
             .findings

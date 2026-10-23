@@ -7,6 +7,7 @@ mod audit;
 mod bench;
 mod chain;
 mod check;
+mod ci;
 mod cli;
 mod coverage;
 mod detect;
@@ -134,6 +135,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         }
         Some(Command::Init(a)) => Run::verdict(init::init(&a, cwd), a.json),
         Some(Command::Check(a)) => Run::verdict(check::check(&a, cwd), a.json),
+        Some(Command::Ci(a)) => Run::verdict(ci::ci(&a, cwd), a.json),
         Some(Command::Hook(Hook::PrePush { remote, url })) => {
             let (stderr, code) = hook::pre_push(cwd, &remote, &url, stdin);
             Run {
@@ -204,8 +206,9 @@ mod tests {
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 9] = [
+        let rows: [(&[&str], &str); 10] = [
             (&["--help"], "check"),
+            (&["ci", "--help"], "--require-local-root"),
             (&["--help"], "bench"),
             (&["--help"], "audit"),
             (&["verify", "--help"], "--require-coverage"),
