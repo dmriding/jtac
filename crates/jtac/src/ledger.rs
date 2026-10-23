@@ -3,12 +3,14 @@
 //! from its parents to its tip, each parent's root id against the one this clone holds. A
 //! root the range does not touch is read for its shape only, so a long namespace costs one
 //! git child, not a signature check per root. A root for a commit the clone lacks has no tree
-//! to compare and no chain to walk: it counts for a tree match only.
+//! to compare and no chain to walk: it counts for a tree match only. A version 2 root's
+//! `base` is an ancestor of its tip and bounds the chain its `covers` is checked against,
+//! entry by entry and never for completeness (DESIGN.md section 15).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use jtac_core::{Body, Covers, GitOid, Sha256Digest, State};
+use jtac_core::{Body, Covers, GitOid, RootVersion, Sha256Digest, State};
 use jtac_gate::{RootFact, Trust};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot};
@@ -50,9 +52,14 @@ pub fn gather(
             continue;
         };
         ids.insert(r.listed.commit, s.root.id().map_err(Refusal::internal)?);
-        covers.push(match &s.root.covers {
-            Covers::List(list) => list.clone(),
-            Covers::Range { base, tip } => range::between(repo, format, base, tip)?,
+        covers.push(match (&s.root.covers, &s.root.from) {
+            (Covers::List(list), _) => list.clone(),
+            (Covers::Range { base, tip }, Some(_)) => {
+                range::reachable(repo, format, tip, &[*base])?
+                    .into_iter()
+                    .collect()
+            }
+            (Covers::Range { base, tip }, None) => range::between(repo, format, base, tip)?,
         });
     }
     let touched: Vec<usize> = (0..reads.len())
@@ -119,8 +126,8 @@ struct Judge<'a> {
 }
 
 impl Judge<'_> {
-    /// Tree, signature, each waiver's signature, covers, parents, in that order; the first
-    /// failure is the reason.
+    /// Tree, base, signature, each waiver's signature, covers, parents, in that order; the
+    /// first failure is the reason.
     fn root(
         self,
         s: &StoredRoot,
@@ -161,6 +168,26 @@ impl Judge<'_> {
                 );
             }
             Some(_) => {}
+        }
+        if let Some(base) = root.base {
+            if range::trees(self.repo, self.format, &[base])?[0].is_none() {
+                fact.covers.clear();
+                self.notes.push(format!(
+                    "{}'s root names a base this clone does not hold; it counts for a tree \
+                     match only",
+                    root.commit.hex()
+                ));
+            } else if tree.is_some() && !range::ancestor(self.repo, &base, &root.commit)? {
+                return invalid(
+                    fact,
+                    format!("its base {} is not an ancestor of its tip", base.hex()),
+                );
+            }
+        } else if root.v == RootVersion::V2
+            && tree.is_some()
+            && range::has_parent(self.repo, &root.commit)?
+        {
+            return invalid(fact, "it names no base and its tip has a parent".to_owned());
         }
         let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
         let sig = String::from_utf8_lossy(&s.sig);
@@ -214,7 +241,8 @@ impl Judge<'_> {
                 ));
             }
         }
-        let parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
+        let mut parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
+        parents.extend(root.base);
         let chain = match tree {
             Some(_) => range::reachable(self.repo, self.format, &root.commit, &parents)?,
             None => BTreeSet::new(),
@@ -223,7 +251,7 @@ impl Judge<'_> {
             return invalid(
                 fact,
                 format!(
-                    "it covers {}, which is not between its parents and its tip",
+                    "it covers {}, which is not between its parents or base and its tip",
                     off.hex()
                 ),
             );

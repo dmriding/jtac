@@ -30,8 +30,37 @@ pub enum OutOfScope {
     OidAlgorithm,
 }
 
-/// The waiver in `node` when it applies to `commit` at `now`.
-pub fn scope_at<'a>(node: &'a Node, commit: &GitOid, now: Ts) -> Result<&'a LeverBody, OutOfScope> {
+/// Which commits a commit waiver may name beside the tip (DESIGN.md section 15): none for
+/// the local gate, the pull request's in CI, any for a root with `from`, whose scope is
+/// history the reader may not hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waivable<'a> {
+    /// The tip alone.
+    Tip,
+    /// The tip and these.
+    Commits(&'a [GitOid]),
+    /// Any commit.
+    Any,
+}
+
+impl Waivable<'_> {
+    fn names(self, commit: &GitOid, waived: &GitOid) -> bool {
+        waived == commit
+            || match self {
+                Self::Tip => false,
+                Self::Commits(more) => more.contains(waived),
+                Self::Any => true,
+            }
+    }
+}
+
+/// The waiver in `node` when it applies to `commit`, or a commit `waivable` names, at `now`.
+pub fn scope_at<'a>(
+    node: &'a Node,
+    commit: &GitOid,
+    waivable: Waivable<'_>,
+    now: Ts,
+) -> Result<&'a LeverBody, OutOfScope> {
     let Body::Lever(body) = &node.body else {
         return Err(OutOfScope::NotAWaiver);
     };
@@ -46,7 +75,7 @@ pub fn scope_at<'a>(node: &'a Node, commit: &GitOid, now: Ts) -> Result<&'a Leve
     }
     match &body.scope {
         None => return Err(OutOfScope::NoScope),
-        Some(Scope::Commit { commit: waived }) if waived != commit => {
+        Some(Scope::Commit { commit: waived }) if !waivable.names(commit, waived) => {
             return Err(OutOfScope::OtherCommit);
         }
         Some(Scope::Rule { .. }) if body.expires.is_none() => return Err(OutOfScope::NoExpiry),
@@ -105,7 +134,46 @@ mod tests {
     use crate::node::{Body, Severity};
 
     fn at(node: &Node, commit: &str, now: &str) -> Result<(), OutOfScope> {
-        scope_at(node, &commit.parse().unwrap(), now.parse().unwrap()).map(|_| ())
+        scope_at(
+            node,
+            &commit.parse().unwrap(),
+            Waivable::Tip,
+            now.parse().unwrap(),
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn waivable_widens_a_commit_waiver_to_named_commits_or_any() {
+        let other: GitOid = "sha1:0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let far: GitOid = "sha1:0000000000000000000000000000000000000003"
+            .parse()
+            .unwrap();
+        let now: Ts = TS.parse().unwrap();
+        let waiver = commit_waiver();
+        let names: [GitOid; 1] = [COMMIT_ONE.parse().unwrap()];
+        let rows = [
+            ("tip", Waivable::Tip, &other, Err(OutOfScope::OtherCommit)),
+            ("named", Waivable::Commits(&names), &other, Ok(())),
+            (
+                "not named",
+                Waivable::Commits(&[]),
+                &other,
+                Err(OutOfScope::OtherCommit),
+            ),
+            ("any", Waivable::Any, &far, Ok(())),
+        ];
+        for (name, waivable, commit, want) in rows {
+            assert_eq!(
+                scope_at(&waiver, commit, waivable, now).map(|_| ()),
+                want,
+                "{name}"
+            );
+        }
+        let rule = rule_waiver();
+        assert!(scope_at(&rule, &other, Waivable::Tip, now).is_ok());
     }
 
     #[test]

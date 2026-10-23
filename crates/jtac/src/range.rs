@@ -143,6 +143,29 @@ pub fn between(
     Ok(all)
 }
 
+/// Whether `ancestor` is reachable from `tip`; both must be in the clone.
+pub fn ancestor(repo: &Path, ancestor: &GitOid, tip: &GitOid) -> Result<bool, Refusal> {
+    let (a, t) = (ancestor.hex(), tip.hex());
+    match git(repo, &["merge-base", "--is-ancestor", &a, &t]) {
+        Ok(_) => Ok(true),
+        Err(GitError::Failed {
+            status: Some(1), ..
+        }) => Ok(false),
+        Err(e) => Err(Refusal::repository(&RepoError::Git(e))),
+    }
+}
+
+/// Whether `commit` has a parent, read from the object itself so a shallow boundary hides
+/// nothing.
+pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, Refusal> {
+    let object = git(repo, &["cat-file", "commit", &commit.hex()])
+        .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+    Ok(String::from_utf8_lossy(&object)
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .any(|l| l.starts_with("parent ")))
+}
+
 fn oid(format: &str, hex: &str) -> Result<GitOid, Refusal> {
     repo::oid(format, hex).map_err(Refusal::internal)
 }

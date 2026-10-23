@@ -5,7 +5,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use jtac_core::{GitOid, Sha256Digest, Ts, scope_at};
+use jtac_core::{GitOid, Sha256Digest, Ts, Waivable, scope_at};
 use jtac_gate::{Decision, Refuse};
 use jtac_store::Store;
 use serde::Serialize;
@@ -131,7 +131,7 @@ pub fn status(cwd: &Path, json: bool) -> Result<Printed, Refusal> {
     let mut notes = g.tip.notes;
     let waivers = crate::lever::offered(&repo, &store, &mut notes)?
         .iter()
-        .filter(|l| scope_at(&l.node, &head.commit, now).is_ok())
+        .filter(|l| scope_at(&l.node, &head.commit, Waivable::Tip, now).is_ok())
         .filter_map(WaiverOut::of)
         .collect();
     let last = match state::read(&store) {

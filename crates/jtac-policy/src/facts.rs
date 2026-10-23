@@ -22,6 +22,7 @@ pub fn facts(policy: &Policy, commit: GitOid, tree: GitOid) -> Result<Facts, Can
         }))
         .collect(),
         block_at: policy.integrity.block_at,
+        waivable: Vec::new(),
     })
 }
 

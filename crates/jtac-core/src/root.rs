@@ -4,20 +4,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
 use crate::digest::Sha256Digest;
+use crate::from::FromHead;
 use crate::node::{Body, Node, Scope};
 use crate::oid::GitOid;
-use crate::schema::V1;
+use crate::schema::RootVersion;
 use crate::signer::Signer;
 use crate::time::Ts;
-use crate::waiver::{OutOfScope, scope_at};
+use crate::waiver::{OutOfScope, Waivable, scope_at};
 
 /// What a push tip's evidence adds up to. Signed as a whole; applied waivers are the only
 /// nodes that travel with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Root {
-    /// Schema version.
-    pub v: V1,
+    /// Schema version: 1, or 2 with `base` and `from` (DESIGN.md section 15).
+    pub v: RootVersion,
     /// The tip commit.
     pub commit: GitOid,
     /// The tip tree, what the checks judged.
@@ -28,6 +29,12 @@ pub struct Root {
     pub covers: Covers,
     /// Roots of the nearest covered ancestors. Empty on a non-initial commit is a visible break.
     pub parents: Vec<Parent>,
+    /// Version 2: the commit the rules diffed from; absent on a parentless tip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitOid>,
+    /// Version 2, a merge root alone: the head it stands for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<FromHead>,
     /// The policy in force.
     pub policy: PolicyRef,
     /// The gate that produced this root.
@@ -58,6 +65,7 @@ impl Root {
     /// Shape rules a reader checks before trusting any field. Signature, Merkle root, and
     /// counts are checked by their own code; this is only what the type cannot express.
     pub fn validate(&self) -> Result<(), RootError> {
+        self.validate_version()?;
         self.validate_levers()?;
         // DESIGN.md 11.6: a commit waiver and declared_off imply each other.
         let commit_waived = self.levers.iter().any(SignedLever::covers_commit);
@@ -101,6 +109,8 @@ impl Root {
             .into_iter()
             .chain(covers)
             .chain(parents)
+            .chain(self.base.as_ref())
+            .chain(self.from.as_ref().map(|f| &f.head))
             .any(|o| sha1(o) != commit_sha1)
         {
             return Err(RootError::OidAlgorithm);
@@ -108,12 +118,66 @@ impl Root {
         Ok(())
     }
 
+    /// Version 2's shape (DESIGN.md section 15, decision 46): `base` is below the tip and
+    /// `covers` reaches nothing at or below it, since a root vouches for nothing below the
+    /// diff it judged; no `base` is a parentless tip, covered alone; a root with `from` names
+    /// a head other than its tip, a `compared` exactly when it names a root, `base`'s root as
+    /// its only parent, and a bounded `covers` that begins at `base`. Version 1 names neither.
+    fn validate_version(&self) -> Result<(), RootError> {
+        if self.v == RootVersion::V1 {
+            return match (&self.base, &self.from) {
+                (None, None) => Ok(()),
+                (Some(_), _) => Err(RootError::VersionField { field: "base" }),
+                (None, Some(_)) => Err(RootError::VersionField { field: "from" }),
+            };
+        }
+        match &self.base {
+            Some(base) if *base == self.commit => return Err(RootError::BaseIsTip),
+            Some(base) => {
+                let (listed, lower) = match &self.covers {
+                    Covers::List(list) => (list.contains(base), None),
+                    Covers::Range { base: lower, .. } => (false, Some(lower)),
+                };
+                if listed || (lower == Some(base) && self.from.is_none()) {
+                    return Err(RootError::CoversBase);
+                }
+                if self.from.is_some() && lower.is_some_and(|lower| lower != base) {
+                    return Err(RootError::FromRangeBase);
+                }
+            }
+            None if self.from.is_some() => return Err(RootError::FromWithoutBase),
+            None => {
+                if self.covers != Covers::List(vec![self.commit]) || !self.parents.is_empty() {
+                    return Err(RootError::NoBaseHistory);
+                }
+            }
+        }
+        if let Some(from) = &self.from {
+            if from.head == self.commit {
+                return Err(RootError::FromSelf);
+            }
+            if from.root.is_some() != from.compared.is_some() {
+                return Err(RootError::FromCompared);
+            }
+            if self.parents.len() > 1 || self.parents.iter().any(|p| Some(p.commit) != self.base) {
+                return Err(RootError::FromParents);
+            }
+        }
+        Ok(())
+    }
+
     fn validate_levers(&self) -> Result<(), RootError> {
+        // A from root's commit waivers name the pull request's commits, which the CI
+        // signature attests and a reader's clone may not hold (DESIGN.md section 15).
+        let waivable = match self.from {
+            Some(_) => Waivable::Any,
+            None => Waivable::Tip,
+        };
         for (index, lever) in self.levers.iter().enumerate() {
             if self.levers[..index].iter().any(|l| l.node == lever.node) {
                 return Err(RootError::DuplicateWaiver { index });
             }
-            scope_at(&lever.node, &self.commit, self.ts).map_err(|why| match why {
+            scope_at(&lever.node, &self.commit, waivable, self.ts).map_err(|why| match why {
                 OutOfScope::NotAWaiver => RootError::NotAWaiver { index },
                 OutOfScope::NoScope => RootError::WaiverScope { index },
                 OutOfScope::OtherCommit => RootError::WaiverCommit { index },
@@ -326,12 +390,43 @@ pub enum RootError {
     /// A git id whose hash algorithm differs from `commit`'s.
     #[error("every git id in a root must use the commit's hash algorithm")]
     OidAlgorithm,
+    /// A version 1 root with a version 2 field.
+    #[error("a version 1 root has no `{field}` field")]
+    VersionField {
+        /// `base` or `from`.
+        field: &'static str,
+    },
+    /// `base` is the root's own commit.
+    #[error("base is the root's own commit")]
+    BaseIsTip,
+    /// `covers` names `base`, or begins at it on a root without `from`.
+    #[error("covers reaches base; a root vouches for nothing at or below the diff it judged")]
+    CoversBase,
+    /// A merge root's bounded `covers` must begin at `base`.
+    #[error("a from root's covers range does not begin at its base")]
+    FromRangeBase,
+    /// A merge root with no `base`.
+    #[error("a from root names no base")]
+    FromWithoutBase,
+    /// No `base` means a parentless tip: `covers` is the tip alone and `parents` is empty.
+    #[error("a root with no base names a parentless tip; covers is the tip alone, parents empty")]
+    NoBaseHistory,
+    /// `from.head` is the root's own commit.
+    #[error("from names the root's own commit as the head")]
+    FromSelf,
+    /// `from.root` and `from.compared` come together.
+    #[error("from names a root without compared, or compared without a root")]
+    FromCompared,
+    /// A merge root's parents is `base`'s root alone.
+    #[error("a from root's parents is base's root alone")]
+    FromParents,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::canonical::from_canonical;
+    use crate::compare::Compared;
     use crate::node::Action;
     use crate::node::tests::{
         COMMIT_ONE, EMPTY, TS, check_node, commit_waiver, lever, rule_waiver, signer, waiver,
@@ -348,12 +443,14 @@ mod tests {
 
     fn root() -> Root {
         Root {
-            v: V1,
+            v: RootVersion::V1,
             commit: COMMIT_ONE.parse().unwrap(),
             tree: GitOid::EMPTY_TREE_SHA1.parse().unwrap(),
             ts: TS.parse().unwrap(),
             covers: Covers::List(vec![COMMIT_ONE.parse().unwrap()]),
             parents: vec![],
+            base: None,
+            from: None,
             policy: PolicyRef {
                 hash: EMPTY.parse().unwrap(),
                 version: 1,
@@ -368,6 +465,25 @@ mod tests {
             levers: vec![],
             counts: Counts::default(),
             signer: signer(),
+        }
+    }
+
+    /// A version 2 root on `COMMIT_ONE` whose rules diffed from `COMMIT_ZERO`.
+    pub(crate) fn v2() -> Root {
+        Root {
+            v: RootVersion::V2,
+            base: Some(COMMIT_ZERO.parse().unwrap()),
+            ..root()
+        }
+    }
+
+    fn from_head() -> FromHead {
+        FromHead {
+            head: "sha1:0000000000000000000000000000000000000002"
+                .parse()
+                .unwrap(),
+            root: Some(EMPTY.parse().unwrap()),
+            compared: Some(Compared::Agreed),
         }
     }
 
@@ -445,8 +561,8 @@ mod tests {
         let good = serde_json::to_value(declared_off()).unwrap();
         let mut extra = good.clone();
         extra["note"] = "x".into();
-        let mut v2 = good.clone();
-        v2["v"] = 2.into();
+        let mut v3 = good.clone();
+        v3["v"] = 3.into();
         let mut bad_state = good.clone();
         bad_state["state"] = "absent".into();
         let mut extra_counts = good.clone();
@@ -461,7 +577,7 @@ mod tests {
         range["covers"] = serde_json::json!({"base": COMMIT_ZERO, "tip": COMMIT_ONE, "x": 1});
         for (name, doc) in [
             ("extra key", extra),
-            ("v2", v2),
+            ("v3", v3),
             ("state absent", bad_state),
             ("extra count", extra_counts),
             ("extra lever key", extra_lever),
@@ -788,6 +904,287 @@ mod tests {
                 Err(RootError::ParentDuplicate),
             ),
         ]);
+    }
+
+    #[test]
+    fn validate_accepts_version_two_shapes() {
+        let one: GitOid = COMMIT_ONE.parse().unwrap();
+        let zero: GitOid = COMMIT_ZERO.parse().unwrap();
+        let two: GitOid = "sha1:0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let merge = || Root {
+            from: Some(from_head()),
+            parents: vec![parent(zero)],
+            ..v2()
+        };
+        check(vec![
+            ("v2 with a base", v2(), Ok(())),
+            (
+                "v2 range beginning above base",
+                Root {
+                    covers: Covers::Range {
+                        base: two,
+                        tip: one,
+                    },
+                    ..v2()
+                },
+                Ok(()),
+            ),
+            (
+                "v2 parentless tip",
+                Root {
+                    v: RootVersion::V2,
+                    ..root()
+                },
+                Ok(()),
+            ),
+            ("from root", merge(), Ok(())),
+            (
+                "from root with no head root",
+                Root {
+                    from: Some(FromHead {
+                        root: None,
+                        compared: None,
+                        ..from_head()
+                    }),
+                    ..merge()
+                },
+                Ok(()),
+            ),
+            (
+                "from root with no parent",
+                Root {
+                    parents: vec![],
+                    ..merge()
+                },
+                Ok(()),
+            ),
+            (
+                "from root range beginning at base",
+                Root {
+                    covers: Covers::Range {
+                        base: zero,
+                        tip: one,
+                    },
+                    ..merge()
+                },
+                Ok(()),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn validate_refuses_wrong_version_two_shapes() {
+        let one: GitOid = COMMIT_ONE.parse().unwrap();
+        let zero: GitOid = COMMIT_ZERO.parse().unwrap();
+        let two: GitOid = "sha1:0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let merge = || Root {
+            from: Some(from_head()),
+            parents: vec![parent(zero)],
+            ..v2()
+        };
+        check(vec![
+            (
+                "v1 with a base",
+                Root {
+                    base: Some(zero),
+                    ..root()
+                },
+                Err(RootError::VersionField { field: "base" }),
+            ),
+            (
+                "v1 with a from",
+                Root {
+                    from: Some(from_head()),
+                    ..root()
+                },
+                Err(RootError::VersionField { field: "from" }),
+            ),
+            (
+                "base is the tip",
+                Root {
+                    base: Some(one),
+                    ..v2()
+                },
+                Err(RootError::BaseIsTip),
+            ),
+            (
+                "covers lists base",
+                Root {
+                    covers: Covers::List(vec![zero, one]),
+                    ..v2()
+                },
+                Err(RootError::CoversBase),
+            ),
+            (
+                "covers range begins at base without from",
+                Root {
+                    covers: Covers::Range {
+                        base: zero,
+                        tip: one,
+                    },
+                    ..v2()
+                },
+                Err(RootError::CoversBase),
+            ),
+            (
+                "from root range begins above base",
+                Root {
+                    covers: Covers::Range {
+                        base: two,
+                        tip: one,
+                    },
+                    ..merge()
+                },
+                Err(RootError::FromRangeBase),
+            ),
+            (
+                "from root without base",
+                Root {
+                    base: None,
+                    ..merge()
+                },
+                Err(RootError::FromWithoutBase),
+            ),
+            (
+                "no base, covers beyond the tip",
+                Root {
+                    v: RootVersion::V2,
+                    covers: Covers::List(vec![zero, one]),
+                    ..root()
+                },
+                Err(RootError::NoBaseHistory),
+            ),
+            (
+                "no base, a parent",
+                Root {
+                    v: RootVersion::V2,
+                    parents: vec![parent(zero)],
+                    ..root()
+                },
+                Err(RootError::NoBaseHistory),
+            ),
+            (
+                "from names the tip",
+                Root {
+                    from: Some(FromHead {
+                        head: one,
+                        ..from_head()
+                    }),
+                    ..merge()
+                },
+                Err(RootError::FromSelf),
+            ),
+            (
+                "from root without compared",
+                Root {
+                    from: Some(FromHead {
+                        compared: None,
+                        ..from_head()
+                    }),
+                    ..merge()
+                },
+                Err(RootError::FromCompared),
+            ),
+            (
+                "from parent is not base",
+                Root {
+                    parents: vec![parent(two)],
+                    ..merge()
+                },
+                Err(RootError::FromParents),
+            ),
+            (
+                "from with two parents",
+                Root {
+                    parents: vec![parent(zero), parent(two)],
+                    ..merge()
+                },
+                Err(RootError::FromParents),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn a_from_root_may_waive_any_commit_and_another_root_may_not() {
+        let other = waiver(
+            Scope::Commit {
+                commit: "sha1:0000000000000000000000000000000000000007"
+                    .parse()
+                    .unwrap(),
+            },
+            None,
+        );
+        let off = |r: Root| Root {
+            state: State::DeclaredOff,
+            levers: vec![signed(other.clone())],
+            counts: Counts {
+                waivers: 1,
+                ..Counts::default()
+            },
+            ..r
+        };
+        let merge = Root {
+            from: Some(from_head()),
+            parents: vec![parent(COMMIT_ZERO.parse().unwrap())],
+            ..v2()
+        };
+        assert_eq!(off(merge).validate(), Ok(()));
+        assert_eq!(
+            off(v2()).validate(),
+            Err(RootError::WaiverCommit { index: 0 })
+        );
+        assert_eq!(
+            off(root()).validate(),
+            Err(RootError::WaiverCommit { index: 0 })
+        );
+    }
+
+    #[test]
+    fn version_two_round_trips_and_version_one_bytes_are_unchanged() {
+        let merge = Root {
+            from: Some(from_head()),
+            parents: vec![parent(COMMIT_ZERO.parse().unwrap())],
+            ..v2()
+        };
+        for r in [v2(), merge] {
+            let bytes = r.canonical_bytes().unwrap();
+            assert_eq!(from_canonical::<Root>(&bytes).unwrap(), r);
+            assert!(String::from_utf8_lossy(&bytes).contains(r#""base":"sha1:"#));
+        }
+        let json = String::from_utf8(root().canonical_bytes().unwrap()).unwrap();
+        assert!(!json.contains("base") && !json.contains("from"), "{json}");
+        let doc = serde_json::json!({"v": 2, "base": COMMIT_ZERO}).to_string();
+        let _ = doc;
+    }
+
+    #[test]
+    fn root_v2_id_known_answer() {
+        // DESIGN.md section 9.4: a covered version 2 root over the empty tree whose rules
+        // diffed from the zero commit. Changing these bytes changes every version 2 root id.
+        let r = v2();
+        let json = String::from_utf8(r.canonical_bytes().unwrap()).unwrap();
+        let want = concat!(
+            r#"{"base":"sha1:0000000000000000000000000000000000000000""#,
+            r#","commit":"sha1:0000000000000000000000000000000000000001","counts":{"checks":0,"fail":0"#,
+            r#","findings":{"blocker":0,"major":0,"minor":0},"pass":0,"waivers":0}"#,
+            r#","covers":["sha1:0000000000000000000000000000000000000001"]"#,
+            r#","evidence":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855""#,
+            r#","gate":{"binary":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","version":"0.1.0"}"#,
+            r#","levers":[],"parents":[]"#,
+            r#","policy":{"hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","source":"repo""#,
+            r#","version":1},"signer":{"fingerprint":"SHA256:AAAA","principal":"dev@example.com"},"state":"covered""#,
+            r#","tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":2}"#
+        );
+        assert_eq!(json, want);
+        assert_eq!(
+            r.id().unwrap().to_string(),
+            "sha256:d82da976599cef7f551d5ce1e0d8b25c498f70d0ce505f1dacaf50aecce48f49"
+        );
+        assert_eq!(from_canonical::<Root>(json.as_bytes()).unwrap(), r);
     }
 
     #[test]
