@@ -8,6 +8,17 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.2.3) `jtac check --from <head> --base <old tip> [--push <remote>]` (`DESIGN.md`
+  section 15, M16b): the merge job. HEAD is the commit the forge made; the rules diff from
+  the old tip under its trust, the head's chain offers its trusted waivers in the pull
+  request's scope, the head's root is compared again with its checks run on its own tree, and
+  the root, signed in the CI namespace with `covers` from the old tip and the old tip's root
+  as its parent, records in `from` the head, its root and what the comparison made of it.
+  `--push` sends the merge root and, when the head agreed, the head's root outside the hook.
+  `jtac audit` reads a merge root's head: `verified`, `absent`, `unverified`, `disagreed`,
+  `lied` or `invalid`, with the head root's signer when its ref holds the root `from` names
+  and `root not held` when not. A root push's "not sent" note prints once per push.
+
 - (0.2.2) The CI namespace `jtac-ci-root-v1` (`DESIGN.md` sections 11.8 and 15, M16a): a
   root with `from` is signed and verified in it, and trusted only under a `.jtac/signers`
   line whose `namespaces` option names it, which jtac reads itself before ssh-keygen sees

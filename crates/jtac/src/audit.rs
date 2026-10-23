@@ -134,6 +134,9 @@ fn render(o: &AuditOut) -> String {
             r.state,
             via_text(r)
         );
+        if let Some(h) = &r.head {
+            let _ = writeln!(s, "          {}", h.line());
+        }
     }
     for w in &o.waivers {
         let _ = writeln!(s, "  waiver  {}", w.line());

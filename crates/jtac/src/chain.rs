@@ -112,6 +112,47 @@ pub fn chain(
     Ok(Chain { covers, parents })
 }
 
+/// `covers` and `parents` for a root with `from` (DESIGN.md section 15): the walk stops at
+/// `base` alone, so `covers` is every commit reachable from HEAD and not from `base`, the
+/// diff the verdict judged, and `parents` is `base`'s root alone, never one of the head's
+/// chain, which a root published or withheld later must not change. An empty `parents` is
+/// the visible break it always was. Past the bound the range begins at `base` itself.
+pub fn from_chain(
+    repo: &Path,
+    store: &Store,
+    head: &Head,
+    base: &GitOid,
+) -> Result<Chain, Refusal> {
+    let lines = walk(
+        repo,
+        &["--topo-order"],
+        head,
+        &BTreeSet::new(),
+        Some(&base.hex()),
+    )?;
+    let mut covers: Vec<GitOid> = lines
+        .iter()
+        .filter(|l| !l.starts_with('-'))
+        .map(|l| oid(head, l))
+        .collect::<Result<_, _>>()?;
+    covers.reverse();
+    let covers = match covers.len() > COVERS_BOUND {
+        true => Covers::Range {
+            base: *base,
+            tip: head.commit,
+        },
+        false => Covers::List(covers),
+    };
+    let parents = match store.root(base).map_err(Refusal::store)? {
+        Some(stored) => vec![Parent {
+            commit: *base,
+            root: stored.root.id().map_err(Refusal::internal)?,
+        }],
+        None => Vec::new(),
+    };
+    Ok(Chain { covers, parents })
+}
+
 /// `rev-list --boundary HEAD` with every covered commit and `base` uninteresting, fed on
 /// stdin so ten thousand roots are not ten thousand arguments.
 fn walk(

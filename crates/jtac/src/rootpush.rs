@@ -37,14 +37,38 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
         Ok(found) => found,
         Err(why) => return warning(remote, &[], &why),
     };
-    let pushed = match store.push(remote, &commits, &[(GUARD, "1")]) {
+    out.push_str(&send(store, remote, &commits).text);
+    out
+}
+
+/// What a root push left: the stderr text, and the refs the remote holds afterwards.
+pub struct Sent {
+    /// For stderr.
+    pub text: String,
+    /// Sent or already there; a rejected ref is not among them.
+    pub held: Vec<String>,
+}
+
+/// Push the root refs of `commits` to `remote` under the hook's guard; the merge job's own
+/// route (DESIGN.md section 15).
+pub fn send(store: &Store, remote: &str, commits: &[GitOid]) -> Sent {
+    let mut text = String::new();
+    let pushed = match store.push(remote, commits, &[(GUARD, "1")]) {
         Ok(pushed) => pushed,
         Err(e) => {
             let names: Vec<String> = commits.iter().map(ref_name).collect();
-            out.push_str(&warning(remote, &names, &e.to_string()));
-            return out;
+            text.push_str(&warning(remote, &names, &e.to_string()));
+            return Sent {
+                text,
+                held: Vec::new(),
+            };
         }
     };
+    let held = pushed
+        .iter()
+        .filter(|p| !matches!(p.outcome, PushOutcome::Rejected { .. }))
+        .map(|p| p.name.clone())
+        .collect();
     let rejected: Vec<String> = pushed
         .iter()
         .filter_map(|p| match &p.outcome {
@@ -53,17 +77,17 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
         })
         .collect();
     if !rejected.is_empty() {
-        out.push_str(&warning(remote, &rejected, "the remote refused them"));
-        return out;
+        text.push_str(&warning(remote, &rejected, "the remote refused them"));
+        return Sent { text, held };
     }
     let sent = pushed
         .iter()
         .filter(|p| p.outcome == PushOutcome::Sent)
         .count();
     if sent > 0 {
-        let _ = writeln!(out, "jtac: sent {sent} root(s) to {remote}");
+        let _ = writeln!(text, "jtac: sent {sent} root(s) to {remote}");
     }
-    out
+    Sent { text, held }
 }
 
 /// Commits in each range that have a root here, then the commit whose root covered its tip,
@@ -85,7 +109,7 @@ fn commits(
     let not_remote = format!("--remotes={remote}");
     let counted: BTreeSet<GitOid> = ranges.iter().map(|r| r.counted).collect();
     let mut out = Vec::new();
-    let mut notes = String::new();
+    let mut notes = BTreeSet::new();
     for r in ranges {
         let tip = r.tip.hex();
         let old = r.old.map(|o| format!("^{}", o.hex()));
@@ -105,26 +129,24 @@ fn commits(
             match store.root(&commit) {
                 Ok(Some(s)) if s.root.from.is_none() => out.push(commit),
                 Ok(Some(_)) => {
-                    let _ = writeln!(
-                        notes,
+                    notes.insert(format!(
                         "jtac: note: {}'s root has `from` and was not sent: a CI root travels \
-                         by CI's hand, or as the root that counted for the pushed tip",
+                         by CI's hand, or as the root that counted for the pushed tip\n",
                         commit.hex()
-                    );
+                    ));
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    let _ = writeln!(
-                        notes,
-                        "jtac: note: {}'s root was not sent: {e}",
+                    notes.insert(format!(
+                        "jtac: note: {}'s root was not sent: {e}\n",
                         commit.hex()
-                    );
+                    ));
                 }
             }
         }
         out.push(r.counted);
     }
-    Ok((out, notes))
+    Ok((out, notes.into_iter().collect()))
 }
 
 /// Loud, in three parts, and never a refusal.
