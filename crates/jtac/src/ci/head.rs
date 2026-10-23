@@ -44,6 +44,10 @@ pub struct Site<'a> {
     pub ci: &'a Judged,
     /// The store's cache: a check already run on the head's tree under its policy is a hit.
     pub cache: &'a dyn Cache,
+    /// The merge job, which holds the CI key: a root with `from` whose declared base names
+    /// a policy that is neither the head's own nor the branch's is unverifiable there, since
+    /// its signer chose that base and its checks would run beside the key (decision 47).
+    pub keyed: bool,
 }
 
 /// What `jtac ci` says about HEAD's root.
@@ -142,6 +146,14 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
             Some("HEAD carries no readable policy file, and no root is judged without one".into());
         return Ok(Some(out));
     };
+    let own = match site.head_policy {
+        Some(p) => Some(
+            facts(&p.policy, root.commit, root.tree)
+                .map_err(Refusal::internal)?
+                .policy,
+        ),
+        None => None,
+    };
     let mut facts = facts(&policy.policy, root.commit, root.tree).map_err(Refusal::internal)?;
     if root.policy.hash != facts.policy {
         out.compared = Compared::Lied;
@@ -150,6 +162,20 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
              under",
             root.policy.hash, facts.policy
         ));
+        return Ok(Some(out));
+    }
+    if site.keyed
+        && owed.is_some()
+        && own != Some(facts.policy)
+        && facts.policy != site.ci.facts.policy
+    {
+        out.compared = Compared::Unverifiable;
+        out.why = Some(
+            "its declared base names a policy that is neither the head's own nor the branch's, \
+             and the job that holds the CI key runs no other policy's checks; the pull request \
+             job compares it"
+                .into(),
+        );
         return Ok(Some(out));
     }
     let adoption = match &root.from {

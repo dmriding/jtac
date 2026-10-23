@@ -106,7 +106,7 @@ pub struct RowOut {
     /// Why the commit's own root did not count, when it has one that did not.
     pub invalid: Option<String>,
     /// For a merge root of the commit's own: its head (DESIGN.md section 15).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub head: Option<HeadOut>,
 }
 

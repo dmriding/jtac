@@ -1,14 +1,14 @@
-//! The head's tree on disk for its checks (DESIGN.md section 15): the repository itself
-//! when the tip's tree is the head's, a squash or a rebase that changed nothing, else a
-//! detached worktree under the store, removed when the comparison is done. A stale one from
-//! a run that died is removed first, so a crash never blocks the next job.
+//! The head's tree on disk for its checks (DESIGN.md section 15, decision 47): the repository
+//! itself when the tip's tree is the head's, a squash or a rebase that changed nothing, else a
+//! detached worktree in a directory of its own under the system temp dir, never inside the
+//! clone, since a tool that searches upward (cargo, node) would otherwise read the merge
+//! tree's configuration as the head's. Removed when the comparison is done; a registration a
+//! dead run left behind is pruned first, so a crash never blocks the next job.
 
 use std::path::{Path, PathBuf};
 
 use jtac_checks::diff::git::git;
-use jtac_store::Store;
 
-use crate::refuse::Refusal;
 use crate::repo::Head;
 
 /// Where the head's checks run.
@@ -19,33 +19,31 @@ pub struct HeadTree {
 }
 
 impl HeadTree {
-    /// Check `head` out when its tree is not `tip`'s.
-    pub fn checkout(repo: &Path, store: &Store, tip: &Head, head: &Head) -> Result<Self, Refusal> {
+    /// The repository itself: the head has no root to compare, or its tree is the tip's.
+    pub fn here(repo: &Path) -> Self {
+        Self {
+            repo: repo.to_path_buf(),
+            path: repo.to_path_buf(),
+            added: false,
+        }
+    }
+
+    /// Check `head` out when its tree is not `tip`'s. An error is git's text, the caller's
+    /// refusal.
+    pub fn checkout(repo: &Path, tip: &Head, head: &Head) -> Result<Self, String> {
         if tip.tree == head.tree {
-            return Ok(Self {
-                repo: repo.to_path_buf(),
-                path: repo.to_path_buf(),
-                added: false,
-            });
+            return Ok(Self::here(repo));
         }
-        let path = store.dir().join("heads").join(head.commit.hex());
+        let hex = head.commit.hex();
+        let path =
+            std::env::temp_dir().join(format!("jtac-head-{}-{}", &hex[..12], std::process::id()));
         let shown = path.to_string_lossy().into_owned();
-        if path.exists() {
-            let _ = git(repo, &["worktree", "remove", "--force", &shown]);
-            let _ = git(repo, &["worktree", "prune"]);
-        }
+        let _ = git(repo, &["worktree", "prune"]);
         git(
             repo,
-            &[
-                "worktree",
-                "add",
-                "--detach",
-                "--quiet",
-                &shown,
-                &head.commit.hex(),
-            ],
+            &["worktree", "add", "--detach", "--quiet", &shown, &hex],
         )
-        .map_err(|e| Refusal::worktree(&e.to_string()))?;
+        .map_err(|e| e.to_string())?;
         Ok(Self {
             repo: repo.to_path_buf(),
             path,
@@ -64,6 +62,7 @@ impl Drop for HeadTree {
         if self.added {
             let shown = self.path.to_string_lossy().into_owned();
             let _ = git(&self.repo, &["worktree", "remove", "--force", &shown]);
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }

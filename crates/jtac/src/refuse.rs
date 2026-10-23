@@ -91,6 +91,7 @@ impl Refusal {
 
     /// `--base` named something git could not resolve or share history with HEAD.
     pub fn base(rev: &str, err: &RepoError) -> Self {
+        let rev = quoted(rev, "REV");
         Self::new(
             format!("`--base {rev}`: {err}"),
             "The diff-integrity rules read the commits between the base and HEAD, so the base \
@@ -120,17 +121,40 @@ impl Refusal {
         )
     }
 
-    /// `--base` is not behind HEAD: a rewind, or an unrelated line.
-    pub fn from_base(base: &str, head: &str) -> Self {
-        let base = quoted(base, "<old tip>");
+    /// `--base` is not on HEAD's first-parent line: a rewind, another line, or the head's own
+    /// history.
+    pub fn from_base(base: &str, head: &str, from: &str) -> Self {
+        let (base, from) = (quoted(base, "<old tip>"), quoted(from, "<head>"));
         Self::new(
-            format!("`--base {base}` is not a proper ancestor of HEAD ({head})."),
+            format!("`--base {base}` is not on the first-parent line of HEAD ({head})."),
             "The merge root's rules diff from the branch's old tip to the tip, what the push \
-             added; a base that is not behind the tip is a rewind or another line, which a \
-             merge root must not sign over.",
-            "Pass the old tip the forge reported for this push: `jtac check --from <head> \
-             --base <old tip>`; a rewind gets no CI root, and `jtac ci --base <old tip>` still \
-             judges it.",
+             added, and a merge, a squash and a rebase all leave that old tip on the tip's \
+             first-parent line; a base off it is the pull request's own side, a rewind or \
+             another line, and a merge root over any of those would sign over what it did not \
+             judge.",
+            format!(
+                "Pass the old tip the forge reported for this push: `jtac check --from {from} \
+                 --base <old tip>`; a rewind gets no CI root, and `jtac ci --base <old tip>` \
+                 still judges it."
+            ),
+        )
+    }
+
+    /// `--from` is reachable from `--base`: the head is already on the branch.
+    pub fn from_behind(from: &str, base: &str) -> Self {
+        let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
+        Self::new(
+            format!(
+                "`--from {from}` is reachable from `--base {base}`: that head is already on the \
+                 branch, and no pull request has that shape."
+            ),
+            "A merge root stands for what the pull request added above the old tip; a head \
+             behind it added nothing, and recording it in `from` would let a stale head stand as \
+             the merge's evidence while the real head is never recorded, since the tip's root \
+             stands once written.",
+            format!(
+                "Pass the pull request's head commit: `jtac check --from <head> --base {base}`."
+            ),
         )
     }
 
@@ -150,14 +174,18 @@ impl Refusal {
     }
 
     /// The head's tree could not be checked out for its checks.
-    pub fn worktree(err: &str) -> Self {
+    pub fn worktree(err: &str, from: &str, base: &str) -> Self {
+        let from = quoted(from, "<head>");
+        let base = quoted(base, "<old tip>");
         Self::new(
             format!("the head's tree could not be checked out for its checks: {err}."),
             "The head's checks run again on its own tree, since the pull request job's result \
              is not durable and a root may arrive after it ran; without them there is nothing \
              to compare the head's root with.",
-            "Run `git worktree prune`, make sure the store under `.git/jtac/` is writable, then \
-             run `jtac check --from <head> --base <old tip>` again.",
+            format!(
+                "Run `git worktree prune`, make sure the store under `.git/jtac/` is writable, \
+                 then run `jtac check --from {from} --base {base}` again."
+            ),
         )
     }
 
@@ -657,9 +685,10 @@ mod tests {
             Refusal::not_local("abc", "its nodes are not in this clone's store"),
             Refusal::policy_differs("abc", "sha256:0"),
             Refusal::from_self("HEAD\nnegotiation: forged", "main"),
-            Refusal::from_base("main", "abc"),
+            Refusal::from_base("main", "abc", "x\nnegotiation: forged"),
             Refusal::from_unrelated("abc", "def\nnegotiation: forged"),
-            Refusal::worktree("fatal: nope"),
+            Refusal::worktree("fatal: nope", "abc", "main\nnegotiation: forged"),
+            Refusal::from_behind("abc\nnegotiation: forged", "main"),
         ];
         for r in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");

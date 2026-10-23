@@ -257,7 +257,7 @@ fn principal(row: &Value) -> &str {
 /// A merge commit, a squash and a rebase are each a commit the forge made: covered by the CI
 /// principal with the head verified, its root held, every rebased commit covered by the merge
 /// root, and the adoption commit by the developer's key. The merge's tree is not the head's,
-/// so the head's checks ran in a worktree; the squash's is, so they hit.
+/// so the head's checks ran in a worktree; the squash's is, so CI's own nodes stood in.
 #[test]
 fn forge_made_commits_are_covered_by_the_ci_principal_with_the_head_verified() {
     let f = forge();
@@ -273,8 +273,11 @@ fn forge_made_commits_are_covered_by_the_ci_principal_with_the_head_verified() {
     let (code, v, err) = f.job(&b[1], &f.main);
     assert_eq!(code, 0, "{v}{err}");
     assert_eq!(v["from"]["compared"], "agreed", "{v}");
-    assert!(
-        !f.ci.path().join(".git/jtac/heads").exists(),
+    assert_eq!(
+        f.ci.git(&["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        1,
         "the head's checks hit on the tip's tree: no worktree"
     );
 
@@ -297,16 +300,20 @@ fn forge_made_commits_are_covered_by_the_ci_principal_with_the_head_verified() {
         err.contains("sent 1 root(s)"),
         "the head's root was already there: {err}"
     );
-    let heads = f.ci.path().join(".git/jtac/heads");
-    assert!(
-        heads.read_dir().unwrap().next().is_none(),
-        "the worktree is removed"
-    );
     assert_eq!(
         f.ci.git(&["worktree", "list", "--porcelain"])
             .matches("worktree ")
             .count(),
-        1
+        1,
+        "the head's worktree is removed and pruned"
+    );
+    let leftover = format!("jtac-head-{}", &a[1][..12]);
+    assert!(
+        std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().starts_with(&leftover)),
+        "the head's directory is gone"
     );
     let root = read_root(&f.ci, &merge);
     assert_eq!(root.base, Some(g(&squash)));
@@ -409,7 +416,7 @@ fn a_fork_head_root_enters_the_base_repository_only_when_ci_found_it_agreeing() 
     assert_eq!(v["pushed"].as_array().map(Vec::len), Some(1), "{v}");
     let notes = v["verdict"]["notes"].to_string();
     assert!(
-        notes.contains("is withheld: CI found it disagreed"),
+        notes.contains("is not forwarded: CI found it disagreed"),
         "{notes}"
     );
     let held = f
@@ -435,6 +442,7 @@ fn a_fork_head_root_enters_the_base_repository_only_when_ci_found_it_agreeing() 
 
     let v = f.audit();
     let r = row(&v, &merge);
+    assert_eq!(principal(r), "ci@example.com", "{r}");
     assert_eq!(r["head"]["label"], "verified", "{r}");
     assert_eq!(r["head"]["held"], true, "{r}");
     let r = row(&v, &merge_b);
@@ -657,20 +665,55 @@ fn the_merge_job_refuses_a_fast_forward_an_unknown_head_and_a_base_not_behind_he
     f.push("origin", "b", true);
     f.fetch("origin");
     let merge = f.merge("origin/a");
-    let ran = jtac(&f.ci, &["check", "--from", &a[0], "--base", &b[0]]);
+    for base in [b[0].as_str(), merge.as_str(), a[0].as_str()] {
+        let ran = jtac(&f.ci, &["check", "--from", &a[0], "--base", base]);
+        assert_eq!(ran.code, 2, "{base}: {}", ran.stderr);
+        assert!(
+            ran.stderr
+                .contains("is not on the first-parent line of HEAD"),
+            "{}",
+            ran.stderr
+        );
+        assert!(
+            ran.stderr.contains(&format!("--from {}", a[0])),
+            "{}",
+            ran.stderr
+        );
+    }
+    let ran = jtac(&f.ci, &["check", "--from", &f.main, "--base", &f.main]);
     assert_eq!(ran.code, 2, "{}", ran.stderr);
-    assert!(
-        ran.stderr.contains("is not a proper ancestor of HEAD"),
-        "{}",
-        ran.stderr
+    assert!(ran.stderr.contains("is reachable from"), "{}", ran.stderr);
+    let ran = jtac(
+        &f.ci,
+        &["check", "--from", &a[0], "--base", "x\nfence: forged"],
     );
-    let ran = jtac(&f.ci, &["check", "--from", &a[0], "--base", &merge]);
     assert_eq!(ran.code, 2, "{}", ran.stderr);
-    assert!(
-        ran.stderr.contains("is not a proper ancestor"),
-        "{}",
-        ran.stderr
+    assert_eq!(ran.stderr.lines().count(), 3, "{}", ran.stderr);
+    let (code, v, err) = json(
+        &f.ci,
+        &[
+            "check", "--from", &a[0], "--base", &f.main, "--push", "nowhere", "--json",
+        ],
     );
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["pass"], true, "{v}");
+    assert_eq!(v["pushed"], serde_json::json!([]), "{v}");
+    assert!(err.contains("did not reach nowhere"), "{err}");
+    let (code, v, _) = json(
+        &f.ci,
+        &[
+            "check", "--from", &a[0], "--base", &f.main, "--push", "origin", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["pushed"], serde_json::json!([]), "a standing root: {v}");
+    assert!(
+        v["verdict"]["notes"]
+            .to_string()
+            .contains("nothing was pushed"),
+        "{v}"
+    );
+    f.ci.git(&["update-ref", "-d", &root_ref(&merge)]);
     let path = f.dev_key.to_string_lossy().replace('\\', "/");
     f.ci.git(&["config", "jtac.signingkey", &path]);
     f.ci.git(&["config", "user.email", "dev@example.com"]);
@@ -688,4 +731,109 @@ fn the_merge_job_refuses_a_fast_forward_an_unknown_head_and_a_base_not_behind_he
     let v: Value = serde_json::from_str(&ran.stdout).unwrap();
     assert_eq!(v["unknown_signers"], 1, "{v}");
     let _ = &f.ci_key;
+}
+
+/// The head's checks run on the head's tree under the head's own policy: a policy the pull
+/// request adds requires `marker.txt`, which main deletes meanwhile, so a run on the merge
+/// tip's checkout would disagree. A head root with `from` whose declared base names a policy
+/// that is neither the head's nor the branch's is unverifiable in the keyed job, while the
+/// pull request job still compares it (decision 47).
+#[test]
+fn the_head_s_checks_run_on_its_own_tree_and_under_no_policy_but_its_own_or_the_branch_s() {
+    let f = forge();
+    f.dev.write("marker.txt", b"m\n");
+    f.dev.commit("marker");
+    ok(&f.dev, &["check"]);
+    f.push("origin", "main", true);
+    let policy = std::fs::read_to_string(f.dev.path().join(".jtac/policy.toml")).unwrap();
+    let marker = format!(
+        "{policy}[checks.marker]\nrun = [\"git\", \"rev-parse\", \"--verify\", \"-q\", \
+         \"HEAD:marker.txt\"]\n"
+    );
+    f.dev.git(&["switch", "-q", "-c", "a", "main"]);
+    f.dev.write(".jtac/policy.toml", marker.as_bytes());
+    let head = f.dev.commit("policy requires the marker");
+    ok(
+        &f.dev,
+        &[
+            "waive",
+            "--rule",
+            "JT-PROT-001",
+            "--path",
+            ".jtac/",
+            "--expires",
+            "7d",
+            "--reason",
+            "reviewed",
+        ],
+    );
+    ok(&f.dev, &["check"]);
+    assert_eq!(
+        read_root(&f.dev, &head).counts.checks,
+        3,
+        "integrity, ok, marker"
+    );
+    f.push("origin", "a", true);
+    f.dev.git(&["switch", "-q", "main"]);
+    f.dev.remove("marker.txt");
+    let deleted = f.dev.commit("marker gone");
+    ok(&f.dev, &["check"]);
+    f.push("origin", "main", true);
+    f.fetch("origin");
+    let merge = f.merge("origin/a");
+    assert!(!f.ci.path().join("marker.txt").exists());
+    let (code, v, err) = f.job(&head, &deleted);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["policy_from"], "base", "{v}");
+    assert_eq!(v["from"]["compared"], "agreed", "{v}");
+    assert_eq!(v["head_root"]["run"]["counts"]["pass"], 3, "{v}");
+    assert_eq!(
+        read_root(&f.ci, &merge).levers.len(),
+        1,
+        "the head's rule waiver applied"
+    );
+
+    f.dev.git(&["fetch", "-q", "origin"]);
+    f.dev.git(&["fetch", "-q", "origin", JTAC]);
+    f.dev.git(&["switch", "-q", "-c", "b", "origin/main"]);
+    f.dev.write("marker.txt", b"m\n");
+    let foreign = format!(
+        "{policy}[checks.extra]\nrun = [\"{}\", \"--version\"]\n",
+        me()
+    );
+    f.dev.write(".jtac/policy.toml", foreign.as_bytes());
+    let b1 = f.dev.commit("foreign policy");
+    let (_, preview, _) = json(&f.dev, &["check", "--preview", "--json"]);
+    let foreign_hash = preview["policy"].as_str().unwrap().to_owned();
+    f.dev.write(".jtac/policy.toml", marker.as_bytes());
+    let b2 = f.dev.commit("the branch's policy again, marker back");
+    ok(&f.dev, &["check"]);
+    let mut forged = read_root(&f.dev, &b2);
+    forged.base = Some(g(&b1));
+    forged.covers = Covers::List(vec![g(&b2)]);
+    forged.parents = vec![];
+    forged.policy.hash = foreign_hash.parse().unwrap();
+    forged.counts.pass -= 1;
+    forged.from = Some(jtac_core::FromHead {
+        head: g(&b1),
+        root: None,
+        compared: None,
+    });
+    put(&f.dev, &f.dev_key, &b2, &forged);
+    let (code, v, _) = json(&f.dev, &["ci", "--base", "origin/main", "--json"]);
+    assert_eq!(code, 1, "the pull request job compares it: {v}");
+    assert_eq!(v["head_root"]["compared"], "disagreed", "{v}");
+    f.push("origin", "b", true);
+    f.fetch("origin");
+    f.merge("origin/b");
+    let (code, v, err) = f.job(&b2, &merge);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["from"]["compared"], "unverifiable", "{v}");
+    assert!(
+        v["head_root"]["why"]
+            .as_str()
+            .unwrap()
+            .contains("holds the CI key"),
+        "{v}"
+    );
 }

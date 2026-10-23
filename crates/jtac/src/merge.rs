@@ -12,6 +12,7 @@ mod tree;
 use std::path::{Path, PathBuf};
 
 use jtac_checks::diff::Adoption;
+use jtac_checks::diff::git::git;
 use jtac_core::{Compared, FromHead, GitOid, Ts};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, ref_name};
@@ -19,6 +20,7 @@ use jtac_store::{Store, ref_name};
 use crate::check::{Site, Written};
 use crate::ci::{self, head, levers};
 use crate::cli::CheckArgs;
+use crate::headof;
 use crate::refuse::Refusal;
 use crate::repo::{self, Base, Head};
 use crate::trust::Signers;
@@ -36,12 +38,14 @@ struct Job<'a> {
     old: Head,
     /// Where the head's chain stops, as hex.
     merge_base: String,
+    from_rev: &'a str,
     base_rev: &'a str,
 }
 
 impl<'a> Job<'a> {
-    /// Preflight as `check` has it, then the three commits: `--from` a held commit other
-    /// than HEAD, `--base` a proper ancestor of HEAD, and a merge base between the two.
+    /// Preflight as `check` has it, then the three commits: `--base` on HEAD's first-parent
+    /// line, `--from` a held commit that is neither HEAD nor behind the old tip, and a merge
+    /// base between the two (decision 47).
     fn resolve(a: &'a CheckArgs, cwd: &Path) -> Result<Self, Refusal> {
         let (Some(from_rev), Some(base_rev)) = (&a.from, &a.base) else {
             unreachable!("clap: `--from` requires `--base`")
@@ -63,9 +67,10 @@ impl<'a> Job<'a> {
         if from.commit == head.commit {
             return Err(Refusal::from_self(from_rev, base_rev));
         }
-        let old = repo::peel(&repo, &format, base_rev).map_err(|e| Refusal::base(base_rev, &e))?;
-        if old.commit == head.commit || !crate::range::ancestor(&repo, &old.commit, &head.commit)? {
-            return Err(Refusal::from_base(base_rev, &head.commit.hex()));
+        let old =
+            repo::peel(&repo, &format, base_rev).map_err(|_| Refusal::rev("check", base_rev))?;
+        if !first_parent_line(&repo, &head).contains(&old.commit.hex()) {
+            return Err(Refusal::from_base(base_rev, &head.commit.hex(), from_rev));
         }
         let merge_base = repo::probe(
             &repo,
@@ -74,6 +79,9 @@ impl<'a> Job<'a> {
         )
         .map_err(|e| Refusal::repository(&e))?
         .ok_or_else(|| Refusal::from_unrelated(from_rev, base_rev))?;
+        if merge_base == from.commit.hex() {
+            return Err(Refusal::from_behind(from_rev, base_rev));
+        }
         Ok(Self {
             repo,
             format,
@@ -81,9 +89,28 @@ impl<'a> Job<'a> {
             from,
             old,
             merge_base,
+            from_rev,
             base_rev,
         })
     }
+}
+
+/// HEAD's first-parent ancestors as hex, HEAD excluded: a merge, a squash and a rebase all
+/// leave the branch's old tip there, and the pull request's own side never is, so a `--base`
+/// off this line is a rewind, another line, or the head's own history.
+fn first_parent_line(repo: &Path, head: &Head) -> Vec<String> {
+    git(
+        repo,
+        &["rev-list", "--first-parent", &head.commit.hex(), "--"],
+    )
+    .map(|out| {
+        String::from_utf8_lossy(&out)
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// The rendered verdict; exit 1 on CI's own block alone.
@@ -139,18 +166,38 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     }
     let bytes = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &bytes, &j, &mut cache)?;
-    let head_root = {
-        let checkout = tree::HeadTree::checkout(repo, &store, &job.head, &job.from)?;
-        let site = head::Site {
-            repo,
-            cwd: checkout.path(),
-            format: &job.format,
-            head: job.from,
-            head_policy: head_policy.as_ref(),
-            ci: &j,
-            cache: &cache,
-        };
-        head::compare_head(&site, &chain.ledger)?
+    let head_root = match j.verdict.pass {
+        true => {
+            let rooted = chain
+                .ledger
+                .roots
+                .iter()
+                .any(|r| r.commit == job.from.commit);
+            let checkout = match rooted {
+                true => tree::HeadTree::checkout(repo, &job.head, &job.from)
+                    .map_err(|e| Refusal::worktree(&e, job.from_rev, job.base_rev))?,
+                false => tree::HeadTree::here(repo),
+            };
+            let site = head::Site {
+                repo,
+                cwd: checkout.path(),
+                format: &job.format,
+                head: job.from,
+                head_policy: head_policy.as_ref(),
+                ci: &j,
+                cache: &cache,
+                keyed: true,
+            };
+            head::compare_head(&site, &chain.ledger)?
+        }
+        false => {
+            notes.push(
+                "CI's own verdict blocks, so no root records the head and its root was not \
+                 compared here; the pull request job compares it"
+                    .to_owned(),
+            );
+            None
+        }
     };
     notes.extend(chain.notes);
     notes.extend(chain.ledger.notes.iter().cloned());
@@ -187,11 +234,15 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         written.as_ref(),
         &mut notes,
     );
+    let standing = existing
+        .filter(|_| written.as_ref().is_some_and(|w| !w.fresh))
+        .and_then(|s| s.root.from);
     let o = out::MergeOut {
         v: 1,
-        command: "check",
+        command: "check --from",
+        pass: j.verdict.pass,
         base_rev: job.base_rev.to_owned(),
-        from,
+        from: standing.unwrap_or(from),
         signers: trust.describe(),
         adoption: adoption == Adoption::Trust,
         policy_from,
@@ -206,15 +257,15 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     } else {
         out::render(&o)
     };
-    let mut printed = Printed::verdict(text, o.verdict.pass);
+    let mut printed = Printed::verdict(text, o.pass);
     printed.warn = state::write(&store, &o.verdict).err();
     printed.note = (!stderr.is_empty()).then_some(stderr);
     Ok(printed)
 }
 
 /// The refs `--push` sends: the merge root's when this run wrote it, and the head's when CI
-/// found it agreeing; one it found otherwise is withheld and named. Returns the refs sent and
-/// what the push printed for stderr.
+/// found it agreeing; one it found otherwise is not forwarded, and named. Returns the refs the
+/// remote holds afterwards and what the push printed for stderr.
 fn push(
     store: &Store,
     remote: Option<&str>,
@@ -227,10 +278,10 @@ fn push(
         Some(Compared::Agreed) => true,
         Some(c) => {
             notes.push(format!(
-                "the head's root ref {} is withheld: CI found it {}, and a root it could not \
-                 vouch for enters no ref every clone fetches",
+                "the head's root ref {} is not forwarded: CI found it {}, and a root it could \
+                 not vouch for enters no ref by CI's hand",
                 ref_name(&job.from.commit),
-                out::compared(c)
+                headof::word(c)
             ));
             false
         }
@@ -242,8 +293,8 @@ fn push(
             if forward {
                 commits.push(job.from.commit);
             }
-            let stderr = rootpush::send(store, remote, &commits);
-            (commits.iter().map(ref_name).collect(), stderr)
+            let sent = rootpush::send(store, remote, &commits);
+            (sent.held, sent.text)
         }
         (Some(_), _) => {
             notes.push("nothing was pushed: this run wrote no root".to_owned());

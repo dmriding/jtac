@@ -82,6 +82,7 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         head_policy,
         ci: &j,
         cache: &cache,
+        keyed: false,
     };
     let head_root = head::compare_head(&site, &chain.ledger)?;
     notes.extend(chain.notes);

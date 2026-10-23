@@ -31,11 +31,20 @@ pub struct HeadOut {
 pub fn label(from: &FromHead) -> &'static str {
     match from.compared {
         None => "absent",
-        Some(Compared::Unverifiable) => "unverified",
-        Some(Compared::Disagreed) => "disagreed",
-        Some(Compared::Lied) => "lied",
-        Some(Compared::Invalid) => "invalid",
         Some(Compared::Agreed) => "verified",
+        Some(c) => word(c),
+    }
+}
+
+/// The one word an outcome prints as wherever `from` is shown; `audit`'s label but for
+/// `agreed`, which it shows as `verified`.
+pub fn word(c: Compared) -> &'static str {
+    match c {
+        Compared::Agreed => "agreed",
+        Compared::Disagreed => "disagreed",
+        Compared::Lied => "lied",
+        Compared::Invalid => "invalid",
+        Compared::Unverifiable => "unverified",
     }
 }
 

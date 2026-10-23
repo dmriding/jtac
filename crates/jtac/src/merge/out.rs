@@ -4,7 +4,7 @@
 
 use std::fmt::Write;
 
-use jtac_core::{Compared, FromHead};
+use jtac_core::FromHead;
 use serde::Serialize;
 
 use crate::ci::head::HeadRoot;
@@ -19,6 +19,8 @@ pub struct MergeOut {
     pub v: u32,
     /// The command.
     pub command: &'static str,
+    /// Exit 0 when true: CI's own verdict passed; the head's outcome never decides it.
+    pub pass: bool,
     /// `--base` as given.
     pub base_rev: String,
     /// What the root records about the head.
@@ -64,7 +66,7 @@ pub fn render(o: &MergeOut) -> String {
         s,
         "  from    {} head {}",
         &o.from.head.hex()[..12],
-        o.from.compared.map_or("absent", compared)
+        o.from.compared.map_or("absent", crate::headof::word)
     );
     if let Some(h) = &o.head_root {
         s.push_str(&crate::ci::out::head_lines(h));
@@ -73,15 +75,4 @@ pub fn render(o: &MergeOut) -> String {
         let _ = writeln!(s, "  pushed  {r}");
     }
     s
-}
-
-/// The word `from.compared` prints as, `audit`'s label for every outcome but `agreed`.
-pub fn compared(c: Compared) -> &'static str {
-    match c {
-        Compared::Agreed => "agreed",
-        Compared::Disagreed => "disagreed",
-        Compared::Lied => "lied",
-        Compared::Invalid => "invalid",
-        Compared::Unverifiable => "unverified",
-    }
 }
