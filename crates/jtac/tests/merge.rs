@@ -307,13 +307,10 @@ fn forge_made_commits_are_covered_by_the_ci_principal_with_the_head_verified() {
         1,
         "the head's worktree is removed and pruned"
     );
-    let leftover = format!("jtac-head-{}", &a[1][..12]);
+    let registered = f.ci.path().join(".git/worktrees");
     assert!(
-        std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .flatten()
-            .all(|e| !e.file_name().to_string_lossy().starts_with(&leftover)),
-        "the head's directory is gone"
+        !registered.exists() || registered.read_dir().unwrap().next().is_none(),
+        "no worktree registration is left behind"
     );
     let root = read_root(&f.ci, &merge);
     assert_eq!(root.base, Some(g(&squash)));
