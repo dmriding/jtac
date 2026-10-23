@@ -1157,8 +1157,6 @@ pub(crate) mod tests {
         }
         let json = String::from_utf8(root().canonical_bytes().unwrap()).unwrap();
         assert!(!json.contains("base") && !json.contains("from"), "{json}");
-        let doc = serde_json::json!({"v": 2, "base": COMMIT_ZERO}).to_string();
-        let _ = doc;
     }
 
     #[test]

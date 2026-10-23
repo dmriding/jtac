@@ -1,11 +1,13 @@
 //! Root version 2 on a scripted history (DESIGN.md section 15, M15a): `check` writes `base`
 //! as the diff base and none on a parentless tip; `verify` refuses a root whose base is not
 //! an ancestor, whose covers reach below its base, or whose version 1 form carries a version
-//! 2 field; a version 1 root still reads.
+//! 2 field; a version 1 root still reads; a root with `from` has an unknown signer until the
+//! CI namespace is read, so a developer key borrows no waiver through it.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use jtac_core::{Covers, FromHead, GitOid, Root};
 use jtac_testkit::Repo;
 use serde_json::Value;
 
@@ -179,6 +181,20 @@ fn history() -> History {
     }
 }
 
+fn g(hex: &str) -> GitOid {
+    format!("sha1:{hex}").parse().unwrap()
+}
+
+fn read_root(repo: &Repo, commit: &str) -> Root {
+    serde_json::from_str(&root_json(repo, commit)).unwrap()
+}
+
+/// Write `r`, canonical and freshly signed, as `commit`'s root.
+fn put(repo: &Repo, key: &Path, commit: &str, r: &Root) {
+    let json = String::from_utf8(r.canonical_bytes().unwrap()).unwrap();
+    replace_root(repo, key, commit, &json);
+}
+
 fn states(repo: &Repo) -> Vec<(String, String)> {
     let (_, v) = json(repo, &["audit", "--json"]);
     v["rows"]
@@ -192,6 +208,7 @@ fn states(repo: &Repo) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A `--base` below the standing chain is recorded as the root's base: a declared fact.
 #[test]
 fn check_writes_version_two_with_the_diff_base_and_none_on_a_parentless_tip() {
     let h = history();
@@ -215,7 +232,6 @@ fn check_writes_version_two_with_the_diff_base_and_none_on_a_parentless_tip() {
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     let got = states(&h.repo);
     assert!(got.iter().all(|(_, s)| s == "covered"), "{got:?}");
-    // The oldest ancestor named by --base below the standing chain is a declared fact.
     h.repo.write("c.txt", b"c\n");
     let three = h.repo.commit("three");
     let ran = jtac(&h.repo, &["check", "--base", &h.zero]);
@@ -239,11 +255,40 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
     let base_field = format!("{{\"base\":\"sha1:{}\",", h.base);
     assert!(original.starts_with(&base_field), "{original}");
     let covers_open = format!("\"covers\":[\"sha1:{}\"", h.one);
-    let cases: [(&str, String, &str); 5] = [
+    let blob = h.repo.git(&["rev-parse", &format!("{}:a.txt", h.two)]);
+    let tree = h.repo.git(&["rev-parse", &format!("{}^{{tree}}", h.two)]);
+    let below = {
+        let mut r = read_root(&h.repo, &h.two);
+        r.parents = vec![];
+        r.covers = Covers::List(vec![g(&h.zero), g(&h.one), g(&h.two)]);
+        String::from_utf8(r.canonical_bytes().unwrap()).unwrap()
+    };
+    let gone = "abababababababababababababababababababab";
+    let cases: [(&str, String, String); 9] = [
+        (
+            "covers below base with no parents",
+            below,
+            "which is not between its parents or base and its tip".to_owned(),
+        ),
+        (
+            "base not in a full clone",
+            original.replace(&h.base, gone),
+            format!("its base {gone} is not in this clone"),
+        ),
         (
             "base not an ancestor",
             original.replace(&h.base, &h.side),
-            "is not an ancestor of its tip",
+            "is not an ancestor of its tip".to_owned(),
+        ),
+        (
+            "base is a blob",
+            original.replace(&base_field, &format!("{{\"base\":\"sha1:{blob}\",")),
+            format!("its base {blob} is a blob, not a commit"),
+        ),
+        (
+            "base is a tree",
+            original.replace(&base_field, &format!("{{\"base\":\"sha1:{tree}\",")),
+            format!("its base {tree} is a tree, not a commit"),
         ),
         (
             "no base, a parent",
@@ -254,7 +299,7 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
             )
             .replace(&base_field, "{")
             .replace(&format!("{covers_open},"), "\"covers\":["),
-            "it names no base and its tip has a parent",
+            "it names no base and its tip has a parent".to_owned(),
         ),
         (
             "covers lists base",
@@ -262,7 +307,7 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
                 &covers_open,
                 &format!("\"covers\":[\"sha1:{}\",\"sha1:{}\"", h.base, h.one),
             ),
-            "covers reaches base",
+            "covers reaches base".to_owned(),
         ),
         (
             "covers reaches below base",
@@ -270,12 +315,12 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
                 &covers_open,
                 &format!("\"covers\":[\"sha1:{}\",\"sha1:{}\"", h.zero, h.one),
             ),
-            "which is not between its parents or base and its tip",
+            "which is not between its parents or base and its tip".to_owned(),
         ),
         (
             "version 1 with a base",
             original.replace("\"v\":2}", "\"v\":1}"),
-            "a version 1 root has no `base` field",
+            "a version 1 root has no `base` field".to_owned(),
         ),
     ];
     for (name_of, forged, want) in &cases {
@@ -284,13 +329,20 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
         let (code, v) = json(&h.repo, &["verify", "--json"]);
         assert_eq!(code, 1, "{name_of}: {v}");
         let why = v["invalid"][0]["why"].as_str().unwrap_or_default();
-        assert!(why.contains(want), "{name_of}: {v}");
+        assert!(why.contains(want.as_str()), "{name_of}: {v}");
         let got = states(&h.repo);
         let state = |c: &str| got.iter().find(|r| r.0 == c).map(|r| r.1.as_str());
         assert_eq!(state(&h.two), Some("absent"), "{name_of}: {got:?}");
         assert_eq!(state(&h.base), Some("covered"), "{name_of}: {got:?}");
         h.repo.git(&["update-ref", &name, &kept]);
     }
+    let tree_as_tip = original.replace(&h.two, &tree);
+    replace_root(&h.repo, &h.key, &tree, &tree_as_tip);
+    let (code, v) = json(&h.repo, &["verify", "--json"]);
+    assert_eq!(code, 1, "{v}");
+    let why = v["invalid"][0]["why"].as_str().unwrap_or_default();
+    assert!(why.contains("its ref names a tree, not a commit"), "{v}");
+    h.repo.git(&["update-ref", "-d", &root_ref(&tree)]);
     let v1 = original
         .replace(&base_field, "{")
         .replace("\"v\":2}", "\"v\":1}");
@@ -299,4 +351,95 @@ fn a_version_two_root_breaking_its_shape_or_chain_is_invalid_and_version_one_sti
     assert_eq!(code, 0, "{v}");
     let got = states(&h.repo);
     assert!(got.iter().all(|(_, s)| s == "covered"), "{got:?}");
+}
+
+fn trusts_dev(repo: &Repo, key: &Path) {
+    let pubkey = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+    let pubkey: Vec<&str> = pubkey.split_whitespace().take(2).collect();
+    let line = format!("dev@example.com {}\n", pubkey.join(" "));
+    repo.write(".jtac/signers", line.as_bytes());
+}
+
+fn trust_of(v: &Value, commit: &str) -> String {
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["commit"] == format!("sha1:{commit}"))
+        .map(|r| r["trust"].as_str().unwrap_or("none").to_owned())
+        .unwrap()
+}
+
+#[test]
+fn a_from_root_has_an_unknown_signer_so_a_developer_key_borrows_no_waiver() {
+    let repo = Repo::init(&[]);
+    with_policy(&repo);
+    let key = keyed(&repo);
+    trusts_dev(&repo, &key);
+    let zero = repo.commit("zero");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.write("a.txt", b"a\n");
+    let x = repo.commit("x");
+    let ran = jtac(&repo, &["waive", "HEAD", "--reason", "x only"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let waived = read_root(&repo, &x);
+    assert_eq!(waived.levers.len(), 1);
+    repo.write("b.txt", b"b\n");
+    let y = repo.commit("y");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let (_, v) = json(&repo, &["audit", "--json"]);
+    assert_eq!(trust_of(&v, &y), "trusted");
+    let mut forged = waived.clone();
+    forged.commit = g(&y);
+    forged.tree = g(&repo.git(&["rev-parse", "HEAD^{tree}"]));
+    forged.covers = Covers::List(vec![g(&y)]);
+    forged.base = Some(g(&x));
+    forged.parents = vec![];
+    put(&repo, &key, &y, &forged);
+    let (code, v) = json(&repo, &["verify", "--json"]);
+    assert_eq!(code, 1, "{v}");
+    let why = v["invalid"][0]["why"].as_str().unwrap_or_default();
+    assert!(why.contains("waives a different commit"), "{v}");
+    forged.from = Some(FromHead {
+        head: g(&zero),
+        root: None,
+        compared: None,
+    });
+    put(&repo, &key, &y, &forged);
+    let (code, v) = json(&repo, &["verify", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unknown_signers"], 1, "{v}");
+    let (_, v) = json(&repo, &["audit", "--json"]);
+    assert_eq!(trust_of(&v, &y), "unknown", "{v}");
+    assert_eq!(trust_of(&v, &x), "trusted", "{v}");
+}
+
+#[test]
+fn a_from_root_past_the_bound_covers_base_to_tip_and_not_its_base() {
+    let h = history();
+    let mut r = read_root(&h.repo, &h.two);
+    r.from = Some(FromHead {
+        head: g(&h.side),
+        root: None,
+        compared: None,
+    });
+    r.covers = Covers::Range {
+        base: g(&h.base),
+        tip: g(&h.two),
+    };
+    put(&h.repo, &h.key, &h.two, &r);
+    let (code, v) = json(&h.repo, &["verify", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    let got = states(&h.repo);
+    assert!(got.iter().all(|(_, s)| s == "covered"), "{got:?}");
+    let (_, v) = json(&h.repo, &["audit", "--json"]);
+    let row = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["commit"] == format!("sha1:{}", h.one))
+        .unwrap();
+    assert_eq!(row["via"], "covers", "{row}");
+    assert_eq!(row["by"], format!("sha1:{}", h.two), "{row}");
 }
