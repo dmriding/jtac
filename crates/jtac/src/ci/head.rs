@@ -22,6 +22,7 @@ use crate::ledger::Ledger;
 use crate::policy::{self, Loaded};
 use crate::refuse::Refusal;
 use crate::repo::{self, Head};
+use crate::trust::Signers;
 use crate::{ci, range};
 
 /// What the comparison reads from the run around it.
@@ -32,12 +33,9 @@ pub struct Site<'a> {
     pub format: &'a str,
     /// HEAD.
     pub head: Head,
-    /// The base branch's tip.
-    pub base_tip: Head,
-    /// CI's adoption fact, a `from` root's too.
-    pub adoption: Adoption,
-    /// HEAD's policy, the one a root without `from` should have judged under.
-    pub head_policy: &'a Loaded,
+    /// HEAD's policy, the one a root without `from` should have judged under; `None` when HEAD
+    /// carries no policy file.
+    pub head_policy: Option<&'a Loaded>,
     /// CI's own run, whose check nodes judged the same tree.
     pub ci: &'a Judged,
 }
@@ -122,8 +120,17 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
     let base = root
         .base
         .map_or_else(|| site.head.commit.hex(), |b| b.hex());
-    let owed = should_policy(site, root, &base)?;
-    let policy = owed.as_ref().unwrap_or(site.head_policy);
+    let declared = root
+        .from
+        .as_ref()
+        .map(|_| declared(site, &base))
+        .transpose()?;
+    let owed = declared.as_ref().and_then(|d| d.0.as_ref());
+    let Some(policy) = owed.or(site.head_policy) else {
+        out.compared = Compared::Lied;
+        out.why = Some("HEAD carries no policy file, and no root is judged without one".into());
+        return Ok(Some(out));
+    };
     let mut facts = facts(&policy.policy, root.commit, root.tree).map_err(Refusal::internal)?;
     if root.policy.hash != facts.policy {
         out.compared = Compared::Lied;
@@ -147,7 +154,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
                 return Ok(Some(out));
             };
             facts.waivable = scope;
-            site.adoption
+            declared.as_ref().map_or(Adoption::None, |d| d.1)
         }
     };
     let read = changes(site.repo, &base, &site.head.commit.hex()).map_err(|e| e.to_string());
@@ -209,13 +216,18 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
     Ok(Some(out))
 }
 
-/// The base branch's policy when a `from` root's diff touches `.jtac/**` and base holds one;
-/// `None` means HEAD's.
-fn should_policy(site: &Site, root: &Root, base: &str) -> Result<Option<Loaded>, Refusal> {
-    if root.from.is_none() || !ci::touches_jtac(site.repo, base, &site.head.commit.hex())? {
-        return Ok(None);
-    }
-    policy::load_if_present(site.repo, &site.base_tip)
+/// What a `from` root's declared `base` says, as the merge job read it then (DESIGN.md
+/// section 15): its policy when the diff from it touches `.jtac/**` and it holds one, `None`
+/// meaning HEAD's, and its adoption fact. Never the verifier's base branch, which has moved on.
+fn declared(site: &Site, base: &str) -> Result<(Option<Loaded>, Adoption), Refusal> {
+    let at = repo::peel(site.repo, site.format, base).map_err(|e| Refusal::repository(&e))?;
+    let policy = if ci::touches_jtac(site.repo, base, &site.head.commit.hex())? {
+        policy::load_if_present(site.repo, &at)?
+    } else {
+        None
+    };
+    let adoption = ci::adoption_of(&Signers::at(site.repo, &at, base)?);
+    Ok((policy, adoption))
 }
 
 /// The commits a `from` root's commit waiver may name: after the merge base of its base and

@@ -41,22 +41,21 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let base_tip = repo::peel(&repo, &format, &a.base).map_err(|_| Refusal::rev("ci", &a.base))?;
     let base =
         repo::base(&repo, &head, Some(&a.base), None).map_err(|e| Refusal::base(&a.base, &e))?;
+    let base_trust = Signers::at(&repo, &base_tip, &a.base)?;
+    let adoption = adoption_of(&base_trust);
     let signers = match &a.signers {
         Some(path) => Signers::File(path.clone()),
-        None => Signers::at(&repo, &base_tip, &a.base)?,
+        None => base_trust,
     };
-    let adoption = match signers {
-        Signers::None { .. } => Adoption::Trust,
-        _ => Adoption::None,
-    };
-    let head_policy = policy::load(&repo, &head)?;
+    let head_policy = policy::load_if_present(&repo, &head)?;
     let base_policy = match touches_jtac(&repo, &base.commit, &head.commit.hex())? {
         true => policy::load_if_present(&repo, &base_tip)?,
         false => None,
     };
-    let (loaded, policy_from) = match &base_policy {
-        Some(l) => (l, "base"),
-        None => (&head_policy, "head"),
+    let (loaded, policy_from) = match (&base_policy, &head_policy) {
+        (Some(l), _) => (l, "base"),
+        (None, Some(l)) => (l, "head"),
+        (None, None) => return Err(Refusal::no_policy()),
     };
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let tool = coverage::verifier(&repo)?;
@@ -83,15 +82,13 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         repo: &repo,
         format: &format,
         head,
-        base_tip,
-        adoption,
-        head_policy: &head_policy,
+        head_policy: head_policy.as_ref(),
         ci: &j,
     };
     let head_root = head::compare_head(&site, &chain.ledger)?;
     let mut notes = chain.notes;
     notes.extend(chain.ledger.notes.iter().cloned());
-    let untrusted = out::untrusted(&j, &chain.untrusted);
+    let withheld = out::withheld(&j, &chain.withheld);
     let mut o = out::CiOut {
         v: 1,
         command: "ci",
@@ -101,7 +98,7 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         policy_from,
         waivable: chain.commits.len() as u64,
         verdict: output::output(&j, notes, false, None),
-        untrusted_waivers: untrusted,
+        withheld_waivers: withheld,
         head_root,
         require_local_root: a.require_local_root,
         reasons: Vec::new(),
@@ -114,6 +111,15 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         out::render(&o)
     };
     Ok(Printed::verdict(text, o.pass))
+}
+
+/// Decision 45's CI fact: a base tree with no signers file had nothing in force, whatever
+/// trust `--signers` supplies.
+pub fn adoption_of(base_trust: &Signers) -> Adoption {
+    match base_trust {
+        Signers::None { .. } => Adoption::Trust,
+        _ => Adoption::None,
+    }
 }
 
 /// Whether the diff from `base` to `tip` touches `.jtac/**`: then the base branch's policy

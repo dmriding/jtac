@@ -1,6 +1,6 @@
 //! `jtac ci` on scripted pull requests (DESIGN.md section 15, M15): one verdict from the merge
-//! base with trust from the base branch, the chain's trusted waivers offered and the untrusted
-//! ones named, HEAD's root verified and compared, and each failure in three parts.
+//! base with trust from the base branch, the chain's trusted waivers offered and the withheld
+//! ones named with why, HEAD's root verified and compared, and each failure in three parts.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,6 +35,20 @@ fn key(repo: &Repo, name: &str, email: &str) -> PathBuf {
         String::from_utf8_lossy(&out.stderr)
     );
     key
+}
+
+fn fingerprint(key: &Path) -> String {
+    let out = Command::new("ssh-keygen")
+        .arg("-lf")
+        .arg(key.with_extension("pub"))
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_owned()
 }
 
 fn signers_line(key: &Path, email: &str) -> String {
@@ -154,6 +168,7 @@ enum Trusts {
 struct Pr {
     repo: Repo,
     dev: PathBuf,
+    other: PathBuf,
     main: String,
 }
 
@@ -180,7 +195,12 @@ fn pr(trusts: Trusts) -> Pr {
     let main = repo.commit("main");
     ok(&repo, &["check"]);
     repo.git(&["switch", "-q", "-c", "feature"]);
-    Pr { repo, dev, main }
+    Pr {
+        repo,
+        dev,
+        other,
+        main,
+    }
 }
 
 impl Pr {
@@ -349,6 +369,35 @@ fn a_false_head_root_fails_with_three_parts_and_both_sides_counts() {
 }
 
 #[test]
+fn a_parentless_head_that_is_its_own_base_still_has_its_root_judged() {
+    let repo = Repo::init(&[]);
+    with_policy(&repo);
+    let dev = key(&repo, "dev", "dev@example.com");
+    repo.write(
+        ".jtac/signers",
+        signers_line(&dev, "dev@example.com").as_bytes(),
+    );
+    let path = dev.to_string_lossy().replace('\\', "/");
+    repo.git(&["config", "jtac.signingkey", &path]);
+    repo.git(&["config", "user.email", "dev@example.com"]);
+    let only = repo.commit("only");
+    ok(&repo, &["check"]);
+    let (code, v) = json(
+        &repo,
+        &["ci", "--base", "HEAD", "--require-local-root", "--json"],
+    );
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["waivable"], 1);
+    assert_eq!(v["head_root"]["compared"], "agreed");
+    let mut forged = read_root(&repo, &only);
+    forged.counts.findings.minor += 1;
+    put(&repo, &dev, &only, &forged);
+    let (code, v) = ci(&repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["head_root"]["compared"], "disagreed");
+}
+
+#[test]
 fn a_head_root_naming_another_policy_hash_lied_and_fails() {
     let p = pr(Trusts::Dev);
     let tip = p.add("a.txt", "a\n");
@@ -427,19 +476,115 @@ fn a_trusted_commit_waiver_on_an_earlier_push_stays_waived_in_ci() {
         v["verdict"]["waivers"][0]["scope"]["commit"],
         format!("sha1:{one}")
     );
-    assert_eq!(v["untrusted_waivers"], serde_json::json!([]));
+    assert_eq!(v["withheld_waivers"], serde_json::json!([]));
     assert_eq!(v["head_root"]["compared"], "agreed");
     assert_eq!(v["pass"], true);
 }
 
+/// `one` removes a test and is waived by the trusted developer; `two`, pushed around the hook,
+/// removes another. The waiver carries only across commits a trusted root covers.
 #[test]
-fn a_finding_covered_only_by_an_untrusted_waiver_fails_naming_the_waiver() {
-    let p = pr(Trusts::Other);
+fn a_commit_waiver_carries_only_across_commits_a_trusted_root_covers() {
+    let p = pr(Trusts::Dev);
+    p.add("src/more.rs", "#[test]\nfn keeps2() {}\n");
+    ok(&p.repo, &["check"]);
     let one = p.remove_test();
     ok(
         &p.repo,
         &["waive", "HEAD", "--reason", "the test was obsolete"],
     );
+    ok(&p.repo, &["check"]);
+    let two = p.add("src/more.rs", "fn b() {}\n");
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["verdict"]["state"], "covered");
+    assert_eq!(rules(&v), ["JT-TEST-001"]);
+    let w = &v["withheld_waivers"][0];
+    assert_eq!(w["commit"], format!("sha1:{one}"));
+    assert_eq!(
+        w["why"],
+        format!(
+            "1 commits after the one it names are not covered by a root base trusts, {} among \
+             them",
+            &two[..12]
+        )
+    );
+    assert!(v["head_root"].is_null(), "{v}");
+    assert_eq!(jtac(&p.repo, &["check"]).code, 1, "two is judged from one");
+    ok(&p.repo, &["waive", "HEAD", "--reason", "that one too"]);
+    ok(&p.repo, &["check"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["verdict"]["state"], "declared_off");
+    assert_eq!(v["verdict"]["waivers"].as_array().unwrap().len(), 2);
+    assert_eq!(v["withheld_waivers"], serde_json::json!([]));
+}
+
+/// The trusted developer's rule waiver, copied into a root signed by a key base does not
+/// trust, clears nothing: the root is what put it in the chain.
+#[test]
+fn a_trusted_lever_carried_by_an_untrusted_root_is_withheld() {
+    let p = pr(Trusts::Dev);
+    let policy = std::fs::read_to_string(p.repo.path().join(".jtac/policy.toml")).unwrap();
+    let tip = p.add(
+        ".jtac/policy.toml",
+        &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
+    );
+    ok(
+        &p.repo,
+        &[
+            "waive",
+            "--rule",
+            "JT-PROT-001",
+            "--path",
+            ".jtac/",
+            "--expires",
+            "7d",
+            "--reason",
+            "reviewed",
+        ],
+    );
+    ok(&p.repo, &["check"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    let mut carried = read_root(&p.repo, &tip);
+    carried.signer.principal = "other@example.com".into();
+    carried.signer.fingerprint = fingerprint(&p.other);
+    put(&p.repo, &p.other, &tip, &carried);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(rules(&v), ["JT-PROT-001"]);
+    assert_eq!(v["verdict"]["waivers"], serde_json::json!([]));
+    let w = &v["withheld_waivers"][0];
+    assert_eq!(w["principal"], "dev@example.com");
+    assert_eq!(
+        w["why"],
+        "the root carrying it is signed by a key not in signers"
+    );
+    assert_eq!(
+        w["covers"],
+        serde_json::json!([
+            "JT-PROT-001 major .jtac/policy.toml: protected path `.jtac/policy.toml` changed"
+        ])
+    );
+    assert_eq!(v["head_root"]["trust"], "unknown");
+    assert_eq!(v["head_root"]["compared"], "agreed");
+}
+
+#[test]
+fn a_finding_covered_only_by_an_untrusted_waiver_fails_naming_the_waiver() {
+    let p = pr(Trusts::Dev);
+    let one = p.remove_test();
+    let other = p.other.to_string_lossy().replace('\\', "/");
+    p.repo.git(&["config", "jtac.signingkey", &other]);
+    p.repo.git(&["config", "user.email", "other@example.com"]);
+    ok(
+        &p.repo,
+        &["waive", "HEAD", "--reason", "the test was obsolete"],
+    );
+    let dev = p.dev.to_string_lossy().replace('\\', "/");
+    p.repo.git(&["config", "jtac.signingkey", &dev]);
+    p.repo.git(&["config", "user.email", "dev@example.com"]);
     ok(&p.repo, &["check"]);
     p.add("b.txt", "b\n");
     ok(&p.repo, &["check"]);
@@ -448,9 +593,10 @@ fn a_finding_covered_only_by_an_untrusted_waiver_fails_naming_the_waiver() {
     assert_eq!(v["verdict"]["state"], "covered");
     assert_eq!(rules(&v), ["JT-TEST-001"]);
     assert_eq!(v["verdict"]["waivers"], serde_json::json!([]));
-    let u = &v["untrusted_waivers"][0];
+    let u = &v["withheld_waivers"][0];
     assert_eq!(u["commit"], format!("sha1:{one}"));
-    assert_eq!(u["principal"], "dev@example.com");
+    assert_eq!(u["why"], "its signer is not in signers");
+    assert_eq!(u["principal"], "other@example.com");
     assert_eq!(u["scope"]["commit"], format!("sha1:{one}"));
     assert!(
         u["covers"][0]
@@ -459,12 +605,12 @@ fn a_finding_covered_only_by_an_untrusted_waiver_fails_naming_the_waiver() {
             .starts_with("the verdict: a commit waiver in scope"),
         "{u}"
     );
-    assert_eq!(v["head_root"]["trust"], "unknown");
+    assert_eq!(v["head_root"]["trust"], "trusted");
     assert_eq!(v["head_root"]["compared"], "agreed");
     let ran = jtac(&p.repo, &["ci", "--base", "main"]);
     assert!(
         ran.stdout
-            .contains("  waiver  not applied, signer not in signers: "),
+            .contains("  waiver  not applied (its signer is not in signers): "),
         "{}",
         ran.stdout
     );
@@ -500,7 +646,7 @@ fn an_unknown_signer_is_reported_and_compared_and_a_rule_waiver_it_signed_names_
     assert_eq!(v["head_root"]["compared"], "agreed");
     assert_eq!(rules(&v), ["JT-TEST-001"]);
     assert_eq!(
-        v["untrusted_waivers"][0]["covers"],
+        v["withheld_waivers"][0]["covers"],
         serde_json::json!(["JT-TEST-001 blocker src/lib.rs: test `keeps` removed"])
     );
     assert_eq!(v["reasons"], serde_json::json!([]));
@@ -540,6 +686,26 @@ fn a_root_from_another_gate_version_or_none_passes_and_fails_under_require_local
             .starts_with("HEAD's root cannot be compared (it is from gate version 0.0.1"),
         "{v}"
     );
+    let mut loud = read_root(&p.repo, &tip);
+    loud.gate.version = "0.0.1\u{1b}[2J\nCLEARED HOT: forged".into();
+    loud.signer.principal = "dev\rdev@example.com".into();
+    put(&p.repo, &p.dev, &tip, &loud);
+    for args in [
+        &["ci", "--base", "main"][..],
+        &["ci", "--base", "main", "--require-local-root"],
+    ] {
+        let ran = jtac(&p.repo, args);
+        assert!(
+            !ran.stdout.chars().any(|c| c.is_control() && c != '\n'),
+            "{:?}",
+            ran.stdout
+        );
+        assert!(
+            !ran.stdout.contains("\nCLEARED HOT: forged"),
+            "{}",
+            ran.stdout
+        );
+    }
     let original = root_json(&p.repo, &tip);
     let v1: Root = serde_json::from_str(
         &original
@@ -590,7 +756,10 @@ fn a_root_from_another_gate_version_or_none_passes_and_fails_under_require_local
 fn a_policy_change_passes_only_with_a_trusted_waiver_unless_the_base_holds_no_signers() {
     let p = pr(Trusts::Dev);
     let policy = std::fs::read_to_string(p.repo.path().join(".jtac/policy.toml")).unwrap();
-    p.add(".jtac/policy.toml", &format!("{policy}# tightened later\n"));
+    p.add(
+        ".jtac/policy.toml",
+        &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
+    );
     let (code, v) = ci(&p.repo);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["policy_from"], "base");
@@ -625,7 +794,10 @@ fn a_policy_change_passes_only_with_a_trusted_waiver_unless_the_base_holds_no_si
         signers_line(&q.dev, "dev@example.com").as_bytes(),
     );
     q.repo.write(".github/workflows/ci.yml", b"name: ci\n");
-    q.add(".jtac/policy.toml", &format!("{policy}# tightened later\n"));
+    q.add(
+        ".jtac/policy.toml",
+        &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
+    );
     assert_eq!(
         jtac(&q.repo, &["check"]).code,
         1,
@@ -672,6 +844,27 @@ fn a_policy_change_passes_only_with_a_trusted_waiver_unless_the_base_holds_no_si
         "{}",
         ran.stdout
     );
+    let file = q.repo.write(
+        ".git/trust",
+        signers_line(&q.dev, "dev@example.com").as_bytes(),
+    );
+    let (code, v) = json(
+        &q.repo,
+        &[
+            "ci",
+            "--base",
+            "main",
+            "--signers",
+            file.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        v["adoption"], true,
+        "--signers supplies trust, not the adoption fact"
+    );
+    assert_eq!(v["signers"], file.to_str().unwrap());
 }
 
 #[test]
@@ -713,6 +906,64 @@ fn a_from_root_at_the_head_is_compared_in_its_scope_or_unverifiable_without_its_
     assert_eq!(code, 1);
 }
 
+/// The head edits the policy with a trusted rule waiver, so its local root is judged under
+/// HEAD's policy; recast as a `from` root it should have been judged under its base's, the hash
+/// `main`'s own root recorded. Then `main` moves to a third policy: the comparison must still
+/// read the root's declared base, not the base branch the verifier was given.
+#[test]
+fn a_from_root_is_compared_under_its_declared_base_policy_after_the_base_branch_moves() {
+    let p = pr(Trusts::Dev);
+    let p0 = read_root(&p.repo, &p.main).policy.hash;
+    let policy = std::fs::read_to_string(p.repo.path().join(".jtac/policy.toml")).unwrap();
+    let tip = p.add(
+        ".jtac/policy.toml",
+        &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
+    );
+    ok(
+        &p.repo,
+        &[
+            "waive",
+            "--rule",
+            "JT-PROT-001",
+            "--path",
+            ".jtac/",
+            "--expires",
+            "7d",
+            "--reason",
+            "reviewed",
+        ],
+    );
+    ok(&p.repo, &["check"]);
+    let mut from = read_root(&p.repo, &tip);
+    assert_ne!(
+        from.policy.hash, p0,
+        "the local root is under HEAD's policy"
+    );
+    from.policy.hash = p0;
+    from.from = Some(FromHead {
+        head: g(&p.main),
+        root: None,
+        compared: None,
+    });
+    put(&p.repo, &p.dev, &tip, &from);
+    p.repo.git(&["switch", "-q", "main"]);
+    p.repo.write(
+        ".jtac/policy.toml",
+        format!("{policy}[integrity]\nmax_added_lines = 2000\n").as_bytes(),
+    );
+    p.repo.commit("main moves");
+    p.repo.git(&["switch", "-q", "feature"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
+    assert_eq!(v["head_root"]["trust"], "unknown");
+    assert_eq!(
+        v["withheld_waivers"][0]["why"], "the root carrying it is signed by a key not in signers",
+        "a from root reads as an unknown signer until M16, so its lever is withheld"
+    );
+}
+
 #[test]
 fn ci_refuses_a_base_that_does_not_resolve_a_dirty_tree_and_a_missing_policy_with_exit_two() {
     let p = pr(Trusts::Dev);
@@ -742,7 +993,17 @@ fn ci_refuses_a_base_that_does_not_resolve_a_dirty_tree_and_a_missing_policy_wit
     p.repo.remove("dirty.txt");
     p.repo.remove(".jtac/policy.toml");
     p.repo.commit("no policy");
-    let ran = jtac(&p.repo, &["ci", "--base", "main"]);
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(rules(&v), ["JT-PROT-001"]);
+    let bare = Repo::init(&[]);
+    bare.write("a.txt", b"a\n");
+    bare.commit("main");
+    bare.git(&["switch", "-q", "-c", "feature"]);
+    bare.write("b.txt", b"b\n");
+    bare.commit("feature");
+    let ran = jtac(&bare, &["ci", "--base", "main"]);
     assert_eq!(ran.code, 2, "{}", ran.stdout);
     assert!(
         ran.stderr

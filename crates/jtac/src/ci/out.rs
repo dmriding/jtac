@@ -1,16 +1,17 @@
 //! What `jtac ci` prints (DESIGN.md sections 7.1 and 15): CI's own verdict as `check` shows
-//! one, then HEAD's root with both sides of the comparison, the waivers offered nowhere, and
-//! each failure that is not the verdict's in three parts. Versioned with `v`.
+//! one, then HEAD's root with both sides of the comparison, the waivers withheld, and each
+//! failure that is not the verdict's in three parts. Versioned with `v`.
 
 use std::fmt::Write;
 
-use jtac_core::{Compared, Counts, GitOid, SignedLever, gate};
+use jtac_core::{Compared, Counts, GitOid, gate};
 use jtac_store::ref_name;
 use serde::Serialize;
 
 use super::head::HeadRoot;
+use super::levers;
 use crate::judge::Judged;
-use crate::output::{Output, WaiverOut};
+use crate::output::{Output, WaiverOut, plain};
 use crate::reason::explain;
 use crate::render;
 
@@ -33,8 +34,8 @@ pub struct CiOut {
     pub waivable: u64,
     /// CI's own verdict.
     pub verdict: Output,
-    /// Waivers on the chain whose signer the base does not trust.
-    pub untrusted_waivers: Vec<Untrusted>,
+    /// Waivers on the chain that were offered nowhere, with why.
+    pub withheld_waivers: Vec<Withheld>,
     /// HEAD's root, when it has one.
     pub head_root: Option<HeadRoot>,
     /// Whether a missing or unverifiable root fails.
@@ -47,12 +48,14 @@ pub struct CiOut {
 
 /// A waiver named and offered nowhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Untrusted {
+pub struct Withheld {
     /// The commit whose root carries it.
     pub commit: GitOid,
     /// The waiver.
     #[serde(flatten)]
     pub waiver: WaiverOut,
+    /// Why it was not offered.
+    pub why: String,
     /// The verdict's reasons it would have covered, or the verdict itself.
     pub covers: Vec<String>,
 }
@@ -68,15 +71,15 @@ pub struct Part {
     pub how: String,
 }
 
-/// Each untrusted lever with what offering it would have changed, found by asking the verdict
+/// Each withheld lever with what offering it would have changed, found by asking the verdict
 /// again with that lever alone added.
-pub fn untrusted(j: &Judged, levers: &[(GitOid, SignedLever)]) -> Vec<Untrusted> {
+pub fn withheld(j: &Judged, levers: &[levers::Withheld]) -> Vec<Withheld> {
     levers
         .iter()
-        .filter_map(|(commit, lever)| {
-            let waiver = WaiverOut::of(lever)?;
+        .filter_map(|w| {
+            let waiver = WaiverOut::of(&w.lever)?;
             let mut nodes = j.nodes.clone();
-            nodes.push(lever.node.clone());
+            nodes.push(w.lever.node.clone());
             let with = gate(&j.facts, &nodes, j.now);
             let covers = if with.state != j.verdict.state {
                 vec!["the verdict: a commit waiver in scope declares it off".to_owned()]
@@ -88,9 +91,10 @@ pub fn untrusted(j: &Judged, levers: &[(GitOid, SignedLever)]) -> Vec<Untrusted>
                     .map(|r| explain(r, j).what)
                     .collect()
             };
-            Some(Untrusted {
-                commit: *commit,
+            Some(Withheld {
+                commit: w.commit,
                 waiver,
+                why: w.why.clone(),
                 covers,
             })
         })
@@ -122,7 +126,7 @@ impl CiOut {
                 push,
             )),
             Some(h) => {
-                let why = h.why.clone().unwrap_or_default();
+                let why = plain(h.why.as_deref().unwrap_or_default());
                 match h.compared {
                     Compared::Invalid => self.reasons.push(part(
                         format!("HEAD's root does not count: {why}."),
@@ -222,10 +226,11 @@ pub fn render(o: &CiOut) -> String {
     {
         let _ = writeln!(s, "{line}");
     }
-    for u in &o.untrusted_waivers {
+    for u in &o.withheld_waivers {
         let _ = writeln!(
             s,
-            "  waiver  not applied, signer not in signers: {} {}",
+            "  waiver  not applied ({}): {} {}",
+            u.why,
             &u.commit.hex()[..12],
             u.waiver.line()
         );
@@ -235,14 +240,16 @@ pub fn render(o: &CiOut) -> String {
     }
     if let Some(h) = &o.head_root {
         let signer = h.signer.as_ref().map_or(String::new(), |s| {
-            format!(" by {} ({})", s.principal, h.trust)
+            format!(" by {} ({})", plain(&s.principal), h.trust)
         });
         let _ = writeln!(
             s,
             "  head    root {}{signer}: {}{}",
             h.root.map_or("unreadable".to_owned(), |r| r.to_string()),
             compared(h.compared),
-            h.why.as_ref().map_or(String::new(), |w| format!(", {w}"))
+            h.why
+                .as_ref()
+                .map_or(String::new(), |w| format!(", {}", plain(w)))
         );
         if let (Some(r), Some(run)) = (&h.recorded, &h.run) {
             let _ = writeln!(s, "          recorded {}", side(Some(r)));
