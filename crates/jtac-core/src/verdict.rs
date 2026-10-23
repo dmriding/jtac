@@ -6,7 +6,7 @@ use crate::node::{Body, LeverBody, Node, Outcome, Scope, Severity};
 use crate::oid::GitOid;
 use crate::root::State;
 use crate::time::Ts;
-use crate::waiver::{covers_finding, scope_at};
+use crate::waiver::{Waivable, covers_finding, scope_at};
 
 /// What the policy and the repository say; the caller gathers it, `gate` decides.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +21,9 @@ pub struct Facts {
     pub checks: Vec<CheckSpec>,
     /// Lowest severity that fails the verdict.
     pub block_at: Severity,
+    /// Beside `commit`, the commits a commit waiver may name (DESIGN.md section 15): none
+    /// for the local gate, the pull request's in CI.
+    pub waivable: Vec<GitOid>,
 }
 
 /// One check as the policy names it.
@@ -121,7 +124,7 @@ pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
     }
     let mut waivers: Vec<(usize, &LeverBody)> = Vec::new();
     for (i, n) in nodes.iter().enumerate() {
-        if let Ok(w) = scope_at(n, &facts.commit, now)
+        if let Ok(w) = scope_at(n, &facts.commit, Waivable::Commits(&facts.waivable), now)
             && !waivers.iter().any(|(j, _)| nodes[*j] == *n)
         {
             waivers.push((i, w));
@@ -194,6 +197,7 @@ mod tests {
                 })
                 .collect(),
             block_at,
+            waivable: Vec::new(),
         }
     }
 
@@ -474,6 +478,23 @@ mod tests {
         assert!(!verdict.pass);
         assert_eq!(verdict.state, State::Covered);
         assert!(verdict.applied.is_empty());
+    }
+
+    #[test]
+    fn a_commit_waiver_on_a_waivable_commit_declares_off_and_on_another_does_not() {
+        let elsewhere: GitOid = OTHER_TREE.parse().unwrap();
+        let mut other = commit_waiver();
+        if let Body::Lever(b) = &mut other.body {
+            b.scope = Some(Scope::Commit { commit: elsewhere });
+        }
+        let mut f = facts(&[("test", true)], Severity::Major);
+        let nodes = vec![check("test", Outcome::Error), other];
+        let verdict = run(&f, nodes.clone());
+        assert_eq!((verdict.pass, verdict.state), (false, State::Covered));
+        f.waivable = vec![elsewhere];
+        let verdict = run(&f, nodes);
+        assert_eq!((verdict.pass, verdict.state), (true, State::DeclaredOff));
+        assert_eq!(verdict.applied, vec![1]);
     }
 
     #[test]

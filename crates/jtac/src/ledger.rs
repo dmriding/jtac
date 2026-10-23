@@ -3,19 +3,21 @@
 //! from its parents to its tip, each parent's root id against the one this clone holds. A
 //! root the range does not touch is read for its shape only, so a long namespace costs one
 //! git child, not a signature check per root. A root for a commit the clone lacks has no tree
-//! to compare and no chain to walk: it counts for a tree match only.
+//! to compare and no chain to walk: it counts for a tree match only. A version 2 root's
+//! `base` is an ancestor of its tip and bounds the chain its `covers` is checked against,
+//! entry by entry and never for completeness (DESIGN.md section 15).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use jtac_core::{Body, Covers, GitOid, Sha256Digest, State};
+use jtac_core::{Body, Covers, GitOid, RootVersion, Sha256Digest, State};
 use jtac_gate::{RootFact, Trust};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot};
 
 use crate::range::{self, Listed};
 use crate::refuse::Refusal;
-use crate::{output, trust::Signers};
+use crate::{output, repo, trust::Signers};
 
 /// The touched roots as facts, with the stored form of each readable one beside it.
 pub struct Ledger {
@@ -50,9 +52,17 @@ pub fn gather(
             continue;
         };
         ids.insert(r.listed.commit, s.root.id().map_err(Refusal::internal)?);
-        covers.push(match &s.root.covers {
-            Covers::List(list) => list.clone(),
-            Covers::Range { base, tip } => range::between(repo, format, base, tip)?,
+        covers.push(match (&s.root.covers, &s.root.from) {
+            (Covers::List(list), _) => list.clone(),
+            (Covers::Range { base, tip }, Some(_)) => {
+                match range::kinds(repo, &[*base])?[0].as_deref() {
+                    Some("commit") => range::reachable(repo, format, tip, &[*base])?
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            }
+            (Covers::Range { base, tip }, None) => range::between(repo, format, base, tip)?,
         });
     }
     let touched: Vec<usize> = (0..reads.len())
@@ -64,6 +74,8 @@ pub fn gather(
         .collect();
     let commits: Vec<GitOid> = touched.iter().map(|&i| reads[i].listed.commit).collect();
     let trees = range::trees(repo, format, &commits)?;
+    let kinds = range::kinds(repo, &commits)?;
+    let shallow = repo::shallow(repo).map_err(|e| Refusal::repository(&e))?;
     let mut ledger = Ledger {
         roots: Vec::new(),
         stored: Vec::new(),
@@ -79,10 +91,12 @@ pub fn gather(
                     signers,
                     command,
                     format,
+                    shallow,
                     ids: &ids,
                     notes: &mut notes,
                 };
-                (judged.root(s, &covers[i], trees[k])?, Some(s.clone()))
+                let kind = kinds[k].as_deref();
+                (judged.root(s, &covers[i], trees[k], kind)?, Some(s.clone()))
             }
         };
         ledger.roots.push(fact);
@@ -114,18 +128,65 @@ struct Judge<'a> {
     signers: &'a Signers,
     command: &'a str,
     format: &'a str,
+    shallow: bool,
     ids: &'a BTreeMap<GitOid, Sha256Digest>,
     notes: &'a mut Vec<String>,
 }
 
 impl Judge<'_> {
-    /// Tree, signature, each waiver's signature, covers, parents, in that order; the first
-    /// failure is the reason.
+    /// Why a version 2 root's base makes it invalid (DESIGN.md section 15): a non-commit, a
+    /// commit that is not the tip's ancestor, or none on a tip with a parent. A base the
+    /// clone lacks is invalid in a full clone that holds the tip, since it cannot be an
+    /// ancestor there; in a shallow clone it is a note, and the root's covers go unjudged.
+    fn base(
+        &mut self,
+        root: &jtac_core::Root,
+        tree: Option<GitOid>,
+        covers: &mut Vec<GitOid>,
+    ) -> Result<Option<String>, Refusal> {
+        let Some(base) = root.base else {
+            let parented = root.v == RootVersion::V2
+                && tree.is_some()
+                && range::has_parent(self.repo, &root.commit)?;
+            return Ok(parented.then(|| "it names no base and its tip has a parent".to_owned()));
+        };
+        Ok(match range::kinds(self.repo, &[base])?[0].as_deref() {
+            None if tree.is_some() && !self.shallow => Some(format!(
+                "its base {} is not in this clone, which holds its tip and is not shallow",
+                base.hex()
+            )),
+            None => {
+                covers.clear();
+                self.notes.push(format!(
+                    "{}'s root names a base this shallow clone does not hold; its covers are \
+                     not judged, and it counts for its own commit and a tree match only",
+                    root.commit.hex()
+                ));
+                None
+            }
+            Some("commit")
+                if tree.is_some() && !range::ancestor(self.repo, &base, &root.commit)? =>
+            {
+                Some(format!(
+                    "its base {} is not an ancestor of its tip",
+                    base.hex()
+                ))
+            }
+            Some("commit") => None,
+            Some(kind) => Some(format!("its base {} is a {kind}, not a commit", base.hex())),
+        })
+    }
+
+    /// Object kind, tree, base, signature, each waiver's signature, covers, parents, in that
+    /// order; the first failure is the reason. A root with `from` is a CI root, and until the
+    /// CI namespace is read (DESIGN.md section 15, M16) its signer is unknown whatever the
+    /// trust file says, so no developer key vouches for a pull request's scope.
     fn root(
-        self,
+        mut self,
         s: &StoredRoot,
         covers: &[GitOid],
         tree: Option<GitOid>,
+        kind: Option<&str>,
     ) -> Result<RootFact, Refusal> {
         let root = &s.root;
         let mut fact = RootFact {
@@ -154,6 +215,15 @@ impl Judge<'_> {
                     root.commit.hex()
                 ));
             }
+            Some(_) if kind != Some("commit") => {
+                return invalid(
+                    fact,
+                    format!(
+                        "its ref names a {}, not a commit",
+                        kind.unwrap_or("missing object")
+                    ),
+                );
+            }
             Some(t) if t != root.tree => {
                 return invalid(
                     fact,
@@ -161,6 +231,9 @@ impl Judge<'_> {
                 );
             }
             Some(_) => {}
+        }
+        if let Some(why) = self.base(root, tree, &mut fact.covers)? {
+            return invalid(fact, why);
         }
         let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
         let sig = String::from_utf8_lossy(&s.sig);
@@ -175,6 +248,10 @@ impl Judge<'_> {
         )
         .map_err(|e| self.signers.refusal(self.command, &e))?;
         fact.trust = match verified {
+            Verified::Trusted if root.from.is_some() => Trust::Unknown {
+                why: "a root with `from` is a CI root, and this build reads no CI namespace"
+                    .to_owned(),
+            },
             Verified::Trusted => Trust::Trusted,
             Verified::Unknown { why } => Trust::Unknown { why },
             Verified::Invalid { what } => {
@@ -214,7 +291,8 @@ impl Judge<'_> {
                 ));
             }
         }
-        let parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
+        let mut parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
+        parents.extend(root.base);
         let chain = match tree {
             Some(_) => range::reachable(self.repo, self.format, &root.commit, &parents)?,
             None => BTreeSet::new(),
@@ -223,7 +301,7 @@ impl Judge<'_> {
             return invalid(
                 fact,
                 format!(
-                    "it covers {}, which is not between its parents and its tip",
+                    "it covers {}, which is not between its parents or base and its tip",
                     off.hex()
                 ),
             );

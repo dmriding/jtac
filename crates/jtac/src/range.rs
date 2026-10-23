@@ -143,6 +143,59 @@ pub fn between(
     Ok(all)
 }
 
+/// The object type of each id as git names it, `None` where the clone has no such object.
+/// A reader asks before it walks: a blob or tree where a commit should be is a forgery, not
+/// missing history, and `merge-base` on one is a fatal error, not an answer.
+pub fn kinds(repo: &Path, oids: &[GitOid]) -> Result<Vec<Option<String>>, Refusal> {
+    let stdin: String = oids.iter().map(|c| format!("{}\n", c.hex())).collect();
+    let out = git_with(
+        repo,
+        &["cat-file", "--batch-check"],
+        Some(stdin.as_bytes()),
+        &[],
+    )
+    .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+    let text = String::from_utf8_lossy(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() != oids.len() {
+        return Err(Refusal::internal(format!(
+            "cat-file --batch-check answered {} lines for {} objects",
+            lines.len(),
+            oids.len()
+        )));
+    }
+    Ok(lines
+        .iter()
+        .map(|l| match l.split(' ').collect::<Vec<_>>()[..] {
+            [_, kind, _] => Some((*kind).to_owned()),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Whether `ancestor` is reachable from `tip`; both must be commits in the clone.
+pub fn ancestor(repo: &Path, ancestor: &GitOid, tip: &GitOid) -> Result<bool, Refusal> {
+    let (a, t) = (ancestor.hex(), tip.hex());
+    match git(repo, &["merge-base", "--is-ancestor", &a, &t]) {
+        Ok(_) => Ok(true),
+        Err(GitError::Failed {
+            status: Some(1), ..
+        }) => Ok(false),
+        Err(e) => Err(Refusal::repository(&RepoError::Git(e))),
+    }
+}
+
+/// Whether `commit` has a parent, read from the object itself so a shallow boundary hides
+/// nothing.
+pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, Refusal> {
+    let object = git(repo, &["cat-file", "commit", &commit.hex()])
+        .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+    Ok(String::from_utf8_lossy(&object)
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .any(|l| l.starts_with("parent ")))
+}
+
 fn oid(format: &str, hex: &str) -> Result<GitOid, Refusal> {
     repo::oid(format, hex).map_err(Refusal::internal)
 }

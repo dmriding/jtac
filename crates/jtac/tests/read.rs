@@ -325,7 +325,7 @@ fn a_tampered_root_is_invalid_for_the_reason_verify_names_and_its_commits_read_a
             ),
             None,
             format!(
-                "it covers {}, which is not between its parents and its tip",
+                "it covers {}, which is not between its parents or base and its tip",
                 h.side
             ),
         ),

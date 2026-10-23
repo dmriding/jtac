@@ -4,7 +4,7 @@
 use jtac_checks::{Cache, CacheKey, lookup, store};
 use jtac_core::{
     Body, Capture, CheckBody, Counts, Covers, GateRef, GitOid, Node, Outcome, PolicyRef,
-    PolicySource, Root, Sha256Digest, Signer, State, Ts, V1,
+    PolicySource, Root, RootVersion, Sha256Digest, Signer, State, Ts,
 };
 use jtac_store::{PushOutcome, Store, StoreError, ref_name};
 use jtac_testkit::Repo;
@@ -23,7 +23,9 @@ fn oid(repo: &Repo, spec: &str) -> GitOid {
 fn root(repo: &Repo, ts: &str) -> Root {
     let commit = oid(repo, "HEAD^{commit}");
     Root {
-        v: V1,
+        v: RootVersion::V1,
+        base: None,
+        from: None,
         commit,
         tree: oid(repo, "HEAD^{tree}"),
         ts: ts.parse().unwrap(),

@@ -6,8 +6,21 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Added
+
+- (0.2.0) Root version 2 (`DESIGN.md` section 15, M15a): `check` writes `base`, the commit
+  the rules diffed from, absent on a parentless tip, and the reader refuses a root whose base
+  is not an ancestor of its tip, whose `covers` reaches at or below it, or whose version 1
+  form carries a version 2 field. The `from` field and its five `compared` outcomes are read
+  and validated; nothing writes one before M16. The verdict takes the commits a commit waiver
+  may name as a fact, and `compare` in `jtac-core` is the pure comparison `jtac ci` (M15b)
+  will call. A 0.1.x reader sees a version 2 root as unreadable, which is why this is the
+  minor bump `docs/RELEASING.md` names for an evidence format change.
+
 ### Changed
 
+- (0.2.0) `DESIGN.md` section 10.3 states that `--base` overrides the nearest covered
+  ancestor and that the root records it (#84).
 - (0.1.7) `DESIGN.md` section 15 is the v0.2 plan: milestones M15 to M18 with done-whens,
   decisions 40 to 46, open question 7 closed; the README roadmap follows it.
 - (0.1.6) `docs/RELEASING.md` names the release branch `rel/vX.Y.Z`, outside the default

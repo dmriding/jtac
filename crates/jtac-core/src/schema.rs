@@ -20,21 +20,61 @@ impl<'de> Deserialize<'de> for V1 {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         match u64::deserialize(d)? {
             1 => Ok(V1),
-            other => Err(serde::de::Error::custom(UnsupportedVersion(other))),
+            other => Err(serde::de::Error::custom(UnsupportedVersion {
+                got: other,
+                reads: "version 1",
+            })),
+        }
+    }
+}
+
+/// The `"v"` field of a root: 1, or 2 with `base` and `from` (DESIGN.md sections 9.4 and
+/// 15). Any other number is refused at the reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootVersion {
+    /// Names neither `base` nor `from`.
+    V1,
+    /// Names `base`, and `from` on a merge root.
+    V2,
+}
+
+impl Serialize for RootVersion {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RootVersion {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match u64::deserialize(d)? {
+            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
+            other => Err(serde::de::Error::custom(UnsupportedVersion {
+                got: other,
+                reads: "versions 1 and 2",
+            })),
         }
     }
 }
 
 /// The reader saw a version it has no reader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub struct UnsupportedVersion(pub u64);
+pub struct UnsupportedVersion {
+    /// The version in the document.
+    pub got: u64,
+    /// What this build reads, for the message.
+    pub reads: &'static str,
+}
 
 impl fmt::Display for UnsupportedVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "schema version {} is not supported; this build reads version 1",
-            self.0
+            "schema version {} is not supported; this build reads {}",
+            self.got, self.reads
         )
     }
 }
@@ -55,6 +95,28 @@ mod tests {
             let err = serde_json::from_str::<V1>(bad).unwrap_err().to_string();
             assert!(
                 bad == "\"1\"" || bad == "1.0" || bad == "-1" || err.contains("not supported"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_version_is_one_or_two_and_nothing_else() {
+        assert_eq!(serde_json::to_string(&RootVersion::V2).unwrap(), "2");
+        assert_eq!(
+            serde_json::from_str::<RootVersion>("1").unwrap(),
+            RootVersion::V1
+        );
+        assert_eq!(
+            serde_json::from_str::<RootVersion>("2").unwrap(),
+            RootVersion::V2
+        );
+        for bad in ["0", "3", "\"2\""] {
+            let err = serde_json::from_str::<RootVersion>(bad)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                bad == "\"2\"" || err.contains("versions 1 and 2"),
                 "{bad}: {err}"
             );
         }
