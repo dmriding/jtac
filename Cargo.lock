@@ -434,9 +434,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-raw-sys"
@@ -662,18 +662,18 @@ dependencies = [
 
 [[package]]
 name = "shuck-ast"
-version = "0.2.4"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17df9daf7695b7943883c857a260b2a1d3a64d253b7180a8e68154dd46ff56d1"
+checksum = "b57dbc9d96bc6a3297f6c90e6255b4f1463249ddb662c414863835a95ae782eb"
 dependencies = [
  "compact_str",
 ]
 
 [[package]]
 name = "shuck-parser"
-version = "0.2.4"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0117e771260a0be5de26833a11e5a639d6dc25fe1b58a572997a68ad9cb88e6"
+checksum = "b2658f8703b29fb17e90b47613c29d56daf018600ef406995f7b50def48e7163"
 dependencies = [
  "memchr",
  "shuck-ast",
