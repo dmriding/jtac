@@ -6,6 +6,37 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Changed
+
+- (0.2.4) shuck-parser and shuck-ast 0.2.4 to 0.2.7, which bound their own nesting, chain
+  length and stack. The command reader refuses brackets past twelve deep instead of sixteen,
+  under the depth a debug build of the parser reads for bare `$(`, so that shape answers alike
+  in debug and release; an operator chain past 1000 links or keywords past 100 deep are
+  unreadable with the parser's reason. Supersedes dependabot pull request #98.
+- (0.2.4) What the parser drops under a clean status is unreadable: shuck's nested reparse of a
+  `${…}` operand, a subscript, a pattern or an arithmetic body stops at a cumulative depth of its
+  own and hands back a substitution with an empty body, an operand or pattern as plain text
+  holding an unescaped backtick, a `$` that opens an expansion, or a `<(` where bash runs one
+  (unquoted, or in a `${…}` pattern, replacement, case operand or subscript even inside `"…"`),
+  or an arithmetic command or expansion with no expression, so
+  `x=${a:-$(git push; <eight nested ifs>)}`, `echo "${PWD/x/<(git push)}"`, `(( $(git push) 1 ))`
+  and `$((true) && git push)` read as nothing. A backslash before a dollar or a backslash in a
+  backtick body is unreadable like one before a backtick: bash cooks all three before it parses
+  the body, and the parser's spans no longer match the source. Found by the review rounds; 0.2.4
+  of shuck did the same a little deeper, and never built a process substitution inside an operand.
+- (0.2.4) The command reader holds four invariants in place of a rule per finding (`DESIGN.md`
+  section 11): line continuations joined once before the parser runs, a part that can run a
+  command laid where the source has it, a heredoc read only in its plain shape, and stdin kept
+  only as one heredoc or here-string on descriptor 0. Twenty review rounds on this bump each
+  found a hole in one of those families; their rows stay as the tests of the invariant that
+  closes each. The price, until shuck lays a cooked literal at its source width: a `"…"` with an
+  escaped quote, dollar or backslash before a `$(…)` in it (`curl -d "{\"text\":\"$(cat f)\"}"`)
+  is unreadable, as is a continuation inside a quoted heredoc body, and a shell whose stdin is a
+  dup, a closed descriptor or a file (`bash <&0`, `bash <&-`, `bash < run.sh`) fails closed;
+  `${BRANCH//\//-}`, `"${N:-\$HOME}"` and `${x//\\/\\\\}` read, `gi\<newline>t push` reads as
+  the push it is, and `bash -c '# c\<newline>git push'` hands the inner shell the text as
+  written, where the comment rule refuses it.
+
 ### Added
 
 - (0.2.3) `jtac check --from <head> --base <old tip> [--push <remote>]` (`DESIGN.md`
@@ -76,6 +107,19 @@ request moves them under a dated heading and bumps nothing.
 
 ### Fixed
 
+- (0.2.4) Command-reader holes older than the shuck bump, found by its review rounds and closed
+  by the invariants above: a quoted word bash reads again as a subscript
+  (`let 'm[${a:-<(git push)}]=1'`, `unset`, `[[ -v`) ran the `<(` in its `${…}` operand unseen;
+  a backslash shuck drops from a `${…}` operand or pattern shifted every span inside it, so
+  `${PWD/\/$(git push)/y}` read as nothing; a line continuation split a `$`, `{`, keyword, `[[`,
+  `((`, `<<-` or delimiter line and the parser read the pieces; an unquoted heredoc handed to a
+  shell was passed on uncooked, so `bash <<EOF` with `\$(git push)` in the body ran unseen; a
+  heredoc was read other than bash reads it (a trailing blank on the delimiter line, a `)` after
+  it inside a substitution, a second heredoc on a line the parser took as quoted, a backslash or
+  brace in the delimiter, a digit before `<<` lexed as a word); and stdin was resolved other than
+  bash does (a numberless output redirect taken as stdin, `0>&0` clearing it, a substitution in
+  a later redirect target running with the heredoc on stdin, `> >(bash)` and `bash < <(…)` read
+  as nothing, stdin of a compound command or a function not reaching the commands inside).
 - (0.1.3) The `signoff` CI job failed every pull request after GitHub's "Update branch" button:
   the merge commit it writes carries no `Signed-off-by` trailer. A merge whose tree is exactly
   the clean merge of its two parents is now exempt, proven with `git merge-tree` on the runner;

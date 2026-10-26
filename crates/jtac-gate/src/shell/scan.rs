@@ -4,10 +4,14 @@
 //! lexer of its own would drift from the parser's, and every drift is a hole. Counted blind,
 //! a quoted bracket can only make a script unreadable, never hide one.
 
-/// Frames deeper than this are not read: the parser recurses once per level.
-pub(crate) const MAX_SUBSHELLS: usize = 16;
-/// Openers in all, whatever the closers say: a quoted `)` cannot lower the count, and the
-/// parser thread's stack holds this many nested `$(` in a debug build.
+/// Frames deeper than this are not read. shuck's own stack budget stops at 14 nested `$(` in
+/// a debug build and 68 in release; a cap under both gives that shape one answer in either
+/// build, with this reader's reason. Heavier frames (`x="$(`, 10 in debug) and keywords
+/// nested inside the brackets still spend that budget first, so a debug build refuses some
+/// shapes a release build reads, never the reverse: fail closed.
+pub(crate) const MAX_SUBSHELLS: usize = 12;
+/// Openers in all, whatever the closers say: a quoted `)` cannot lower the depth count, so
+/// the total is the depth the parser might really see.
 const MAX_OPENERS: usize = 4096;
 /// An arithmetic or `${…}` body longer than this is refused: shuck's arithmetic parser is
 /// quadratic, and 60 KiB of `1+1+…` takes it half a minute in a debug build.
