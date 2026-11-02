@@ -124,6 +124,12 @@ struct Forge {
 }
 
 fn forge() -> Forge {
+    forge_with(true)
+}
+
+/// `signers` false leaves `.jtac/signers` out of the adoption commit: the first pull request
+/// brings it, and the old tip trusts nobody.
+fn forge_with(signers: bool) -> Forge {
     let origin = Repo::bare(&[]);
     let dev = Repo::clone_of(&origin);
     let policy = format!(
@@ -135,12 +141,15 @@ fn forge() -> Forge {
     dev.write("src/lib.rs", b"#[test]\nfn keeps() {}\nfn a() {}\n");
     let dev_key = key(dev.path(), "dev", "dev@example.com");
     let ci_key = key(dev.path(), "ci", "ci@example.com");
-    let signers = format!(
+    let lines = format!(
         "{}{}",
         signers_line(&dev_key, "dev@example.com", ""),
         signers_line(&ci_key, "ci@example.com", CI_OPTION)
     );
-    dev.write(".jtac/signers", signers.as_bytes());
+    dev.write(".git/signers", lines.as_bytes());
+    if signers {
+        dev.write(".jtac/signers", lines.as_bytes());
+    }
     let path = dev_key.to_string_lossy().replace('\\', "/");
     dev.git(&["config", "jtac.signingkey", &path]);
     dev.git(&["config", "user.email", "dev@example.com"]);
@@ -875,5 +884,105 @@ fn a_root_already_on_the_forge_s_tip_is_kept_only_as_ci_s_own_for_this_head() {
     assert_eq!(code, 0, "{v}{err}");
     let notes = v["verdict"]["notes"].to_string();
     assert!(notes.contains("HEAD already has a root; it stands"), "{v}");
+    let own = read_root(&f.ci, &merge);
+    assert_eq!(own.signer.principal, "ci@example.com");
+    let refused = |root: &Root, key: &Path, why: &str| {
+        put(&f.ci, key, &merge, root);
+        let ran = jtac(&f.ci, &["check", "--from", &a[0], "--base", &f.main]);
+        assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+        assert!(ran.stderr.contains(why), "{}", ran.stderr);
+    };
+    let mut other = own.clone();
+    other.from.as_mut().unwrap().head = g(&f.main);
+    refused(&other, &f.ci_key, "its `from` names head");
+    let mut dev = own.clone();
+    dev.signer = read_root(&f.ci, &a[0]).signer;
+    refused(&dev, &f.dev_key, "not named for namespace jtac-ci-root-v1");
+    put(&f.ci, &f.ci_key, &merge, &own);
+    let (code, v, err) = f.job(&a[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+}
+
+/// The adoption merge's old tip names no key, so CI's own root verifies as an unknown
+/// signer's there; a re-run keeps it all the same, since it is the job's own key's.
+#[test]
+fn a_re_run_on_the_adoption_merge_keeps_ci_s_own_root() {
+    let f = forge_with(false);
+    f.dev.git(&["switch", "-q", "-c", "a", "main"]);
+    let lines = std::fs::read(f.dev.path().join(".git").join("signers")).unwrap();
+    f.dev.write(".jtac/signers", &lines);
+    let a = f.dev.commit("signers");
+    f.push("origin", "a", false);
+    f.fetch("origin");
+    let merge = f.merge("origin/a");
+    let (code, v, err) = f.job(&a, &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    assert!(
+        v["verdict"]["notes"]
+            .to_string()
+            .contains("not named for namespace"),
+        "{v}"
+    );
+    let (code, v, err) = f.job(&a, &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    assert!(
+        v["verdict"]["notes"]
+            .to_string()
+            .contains("HEAD already has a root; it stands"),
+        "{v}"
+    );
     assert_eq!(read_root(&f.ci, &merge).signer.principal, "ci@example.com");
+}
+
+/// A root pushed onto the forge's commit between the job's fetch and its push: the remote
+/// refuses the merge root, the job reads back what is there and judges it as standing. A
+/// developer's is the fence; a concurrent run's own is kept and this run's stays unsent.
+#[test]
+fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
+    let f = forge();
+    let a = f.feature("a", 1);
+    f.push("origin", "a", true);
+    f.fetch("origin");
+    let merge = f.merge("origin/a");
+    f.ci.git(&["push", "-q", "origin", "main"]);
+    f.dev.git(&["fetch", "-q", "origin"]);
+    let mut forged = read_root(&f.dev, &a[0]);
+    forged.commit = g(&merge);
+    forged.tree = g(&f.dev.git(&["rev-parse", &format!("{merge}^{{tree}}")]));
+    forged.covers = Covers::List(vec![g(&a[0]), g(&merge)]);
+    put(&f.dev, &f.dev_key, &merge, &forged);
+    f.dev.git(&["push", "-q", "origin", ROOTS]);
+    let ran = jtac(
+        &f.ci,
+        &[
+            "check", "--from", &a[0], "--base", &f.main, "--push", "origin",
+        ],
+    );
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr.contains("no `from`")
+            && ran
+                .stderr
+                .contains("origin holds it, pushed after this run fetched")
+            && ran.stderr.contains(&format!(":{}", root_ref(&merge))),
+        "{}",
+        ran.stderr
+    );
+    f.dev
+        .git(&["push", "-q", "origin", &format!(":{}", root_ref(&merge))]);
+    f.ci.git(&["update-ref", "-d", &root_ref(&merge)]);
+    let (code, v, err) = f.job(&a[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    assert!(v["pushed"].to_string().contains(&root_ref(&merge)), "{v}");
+    let first = read_root(&f.ci, &merge);
+    f.ci.git(&["update-ref", "-d", &root_ref(&merge)]);
+    let (code, v, err) = f.job(&a[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    let notes = v["verdict"]["notes"].to_string();
+    assert!(
+        notes.contains("origin already holds CI's own root for this head"),
+        "{v}"
+    );
+    assert!(!v["pushed"].to_string().contains(&root_ref(&merge)), "{v}");
+    assert_eq!(read_root(&f.second(), &merge), first);
 }

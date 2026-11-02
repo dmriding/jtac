@@ -22,7 +22,8 @@ request moves them under a dated heading and bumps nothing.
   first `.jtac/signers` together, clears with every protected-path finding minor
   (decision 45); a repository gated locally first adds CI under one waiver. This
   repository runs the action on itself; `scripts/action-version.sh` holds the action's
-  version to the workspace's. (M17, decision 49)
+  version to the workspace's. The merge job keeps a root already on the tip, at its fetch or
+  on the remote when its push is refused, only as CI's own for this head. (M17, decision 49)
 - (0.2.5) The CI waiver (DESIGN.md section 15, decision 48, M16c): `jtac waive <commit> --ci
   --reason` records that a commit was merged without CI's root, on purpose. It is a commit
   waiver whose scope names the gate, node version 2 with a version 1 reader, carried unapplied

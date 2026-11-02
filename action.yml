@@ -104,9 +104,10 @@ runs:
     # A tip the forge names as a merged pull request's gets `check --from <its head>`, CI's one
     # verdict from the old tip with the head chain's waivers in scope, and a root; anything
     # else, a direct push or a fast-forward, gets `jtac ci` from the old tip and no root, so a
-    # bypass is judged and never signed over (decision 43); a tip that already carries a root
-    # keeps it, which is what a re-run finds. A force push or an old tip the clone cannot
-    # fetch is refused: a gate that cannot anchor judges nothing.
+    # bypass is judged and never signed over (decision 43); a root on the tip, at the fetch
+    # or on the remote when the job's push is refused, stands only as CI's own for this head.
+    # A force push or an old tip the clone cannot fetch is refused: a gate that cannot anchor
+    # judges nothing.
     - name: merge root
       if: github.event_name == 'push'
       shell: bash
