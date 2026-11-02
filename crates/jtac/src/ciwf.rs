@@ -60,8 +60,8 @@ pub fn pub_path(key: &Path) -> PathBuf {
 }
 
 /// The workflow: the pull request gate and the merge root, each the action pinned to this
-/// release; `root` carries the environment, the queue that keeps every merge's run, and the
-/// write permission the root push needs.
+/// release; `root` carries the environment, the queue that keeps every merge's run, the write
+/// permission the root push needs and the read the merged pull request lookup needs.
 pub fn workflow(version: &str, default_branch: &str) -> String {
     format!(
         "# The jtac CI gate: `jtac ci` on every pull request and every push to `{default_branch}`,\n\
@@ -97,6 +97,7 @@ pub fn workflow(version: &str, default_branch: &str) -> String {
          \x20     queue: max\n\
          \x20   permissions:\n\
          \x20     contents: write\n\
+         \x20     pull-requests: read\n\
          \x20   steps:\n\
          \x20     - uses: {CHECKOUT}\n\
          \x20       with:\n\
@@ -224,7 +225,7 @@ mod tests {
         assert!(text.contains("    environment: jtac-ci\n"));
         assert!(text.contains("      group: jtac-root-${{ github.ref }}\n"));
         assert!(text.contains("      cancel-in-progress: false\n      queue: max\n"));
-        assert!(text.contains("      contents: write\n"));
+        assert!(text.contains("      contents: write\n      pull-requests: read\n"));
         assert!(text.ends_with("          key: ${{ secrets.JTAC_CI_KEY }}\n"));
     }
 

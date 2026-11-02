@@ -2,7 +2,8 @@
 
 BLUF: one action, one environment secret, one commit. Every pull request and every push to the
 default branch is judged again under a key the developer does not hold, and every merged pull
-request gets a root that key signed. The design is `DESIGN.md` section 15; this page is the
+request gets a root that key signed; the root job needs `contents: write` and
+`pull-requests: read`, which the written workflow grants. The design is `DESIGN.md` section 15; this page is the
 operator's.
 
 ## Adopt
@@ -36,9 +37,9 @@ operator's.
 | Event | Command | Result |
 | --- | --- | --- |
 | `pull_request` | `jtac ci --base origin/<base>` on the pull request head, full history, roots fetched from the repository the head lives in | Exit 0 pass, 1 fail (three parts in the log and the step summary), 2 could not answer |
-| `push` to the default branch | `jtac ci --base <old tip>` on the tip, every push | A forged root or failing code pushed straight to the branch fails the job |
-| the same push, when the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the head's roots fetched from its repository, runs queued per branch | A root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike |
-| the same push, no pull request | nothing more | The gate's verdict stands as CI evidence; no root signs over a direct push |
+| `push` to the default branch, the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the head's roots fetched from its repository where the base holds none, runs queued per branch | CI's one verdict from the old tip with the head chain's waivers in scope; a root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike; a tip already carrying a root is compared by `jtac ci` first and keeps it |
+| `push` to the default branch, no pull request or a fast-forward | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
+| `push` that rewrote the branch, or whose old tip the clone cannot fetch | refused, exit 2 | A gate that cannot anchor at the old tip judges nothing, and says so |
 | any other event | refused, exit 2 | `pull_request_target` would hand the pull request head the secrets |
 | either job | `actions/upload-artifact` of `.git/jtac` as `jtac-store-<job>` | `jtac replay` on a downloaded store |
 
