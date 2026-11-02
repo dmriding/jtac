@@ -1,42 +1,53 @@
 # The CI gate
 
-BLUF: one action, one environment secret, one commit. Every pull request is judged again under
-a key the developer does not hold, and every merge commit gets a root that key signed. The
-design is `DESIGN.md` section 15; this page is the operator's.
+BLUF: one action, one environment secret, one commit. Every pull request and every push to the
+default branch is judged again under a key the developer does not hold, and every merged pull
+request gets a root that key signed. The design is `DESIGN.md` section 15; this page is the
+operator's.
 
 ## Adopt
 
 1. In a clone with the GitHub remote, run `jtac init --ci github`. It writes
    `.github/workflows/jtac.yml`, writes `.jtac/signers` when the repository has none (your
    line for every namespace, the CI key's confined to `jtac-ci-root-v1,jtac-release-v1`),
-   makes a CI key under the user config directory (`jtac/ci/<owner>-<repo>_ed25519`), and
-   prints the steps below with your values filled in. The private key is never printed.
+   makes a CI key under the user config directory (`jtac/ci/<owner>/<repo>_ed25519`), and
+   prints the steps below with your values filled in. The private key is never printed. It
+   refuses before writing anything when the remote is not GitHub or the clone does not know
+   the default branch (`git remote set-head origin --auto`).
 2. Add the CODEOWNERS line it prints, `/.jtac/ @<owner>`, so the forge asks a second human on
    every trust or policy change.
-3. Create the environment `jtac-ci` with deployment branches and tags limited to the default
-   branch and `v*`. That rule is what keeps the key off pull request runs: a pull request
-   from the same repository runs its own workflow file, so a repository secret would hand
-   the key to any branch.
+3. Create the environment `jtac-ci` with the three `gh api` calls it prints: the environment,
+   then the default branch and `v*` tags as the only deployment targets. That rule is what
+   keeps the key off pull request runs: a pull request from the same repository runs its
+   own workflow file, so a repository secret would hand the key to any branch.
 4. `gh secret set JTAC_CI_KEY --env jtac-ci < <key path>`.
-5. Require the `jtac` check in the default branch's ruleset, and merge commits only.
-6. Commit the workflow, the trust file and the policy together. On the commit that adds the
-   first `.jtac/signers` every protected-path finding is minor, locally and in CI (decision
-   45); the next change under `.jtac/` or `.github/` is major and clears only through a
-   waiver a trusted signer put in the chain.
+5. Require the `jtac` check in the default branch's ruleset, and a tag ruleset that lets only
+   administrators create `v*` tags: the environment admits any `v*` tag by name, so without
+   that rule a writer who tags an unreviewed commit holds the key.
+6. Commit the workflow, the trust file and the policy together. In a fresh repository that
+   commit is the adoption commit: every protected-path finding on it is minor, locally and in
+   CI (decision 45). In a repository that already runs the local gate, the commit is a
+   `JT-PROT-001` major locally and takes one rule waiver, since a signers file alone must not
+   lift the fence the policy already is; in CI it is adoption, since the branch held no
+   signers. The next change under `.jtac/` or `.github/` is major everywhere.
 
 ## What runs
 
 | Event | Command | Result |
 | --- | --- | --- |
 | `pull_request` | `jtac ci --base origin/<base>` on the pull request head, full history, roots fetched from the repository the head lives in | Exit 0 pass, 1 fail (three parts in the log and the step summary), 2 could not answer |
-| `push` to the default branch, a merge commit | `jtac check --from HEAD^2 --base <old tip> --push origin` under the CI key, one job at a time per branch | A root on the merge commit signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*` |
-| `push`, not a merge commit | nothing | The commit reads as the developer's root says, or absent; the log says why |
-| either | `actions/upload-artifact` of `.git/jtac` as `jtac-store-<job>` | `jtac replay` on a downloaded store |
+| `push` to the default branch | `jtac ci --base <old tip>` on the tip, every push | A forged root or failing code pushed straight to the branch fails the job |
+| the same push, when the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the head's roots fetched from its repository, runs queued per branch | A root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike |
+| the same push, no pull request | nothing more | The gate's verdict stands as CI evidence; no root signs over a direct push |
+| any other event | refused, exit 2 | `pull_request_target` would hand the pull request head the secrets |
+| either job | `actions/upload-artifact` of `.git/jtac` as `jtac-store-<job>` | `jtac replay` on a downloaded store |
 
 The action pins the release it installs to its own version; `scripts/action-version.sh`
 holds that literal to the workspace version and the release workflow refuses a tag where
-they differ. An `input: binary` runs a built `jtac` instead, which is how this repository
-gates itself from its own tree before a release carries the change.
+they differ. A `binary` input runs a built `jtac` instead, which is how this repository
+gates itself from its own tree before a release carries the change. The `root` job queues
+up to a hundred runs per branch (`queue: max`); a run dropped beyond that is re-run from
+the Actions tab with its own event, which restores the root.
 
 ## What the check says about the pushed root
 
@@ -54,7 +65,9 @@ pull request clears the policy it brings.
 ## Fork pull requests
 
 Roots come from the fork, since that is where the developer pushed them; trust comes from the
-base branch, so the fork's `.jtac/signers` counts for nothing. The run has no secret.
+base branch, so the fork's `.jtac/signers` counts for nothing. The pull request run has no
+secret. The merge job fetches the fork's roots again, so the head's root and the waivers it
+carried are what the merge root records.
 
 ## Bypass merges
 
@@ -72,10 +85,9 @@ cannot sign that waiver, so a job never explains its own absence.
 
 ## What reads as the developer's
 
-A fast-forward merge makes no commit of its own, a squash or rebase merge names no head the
-push event carries, and a direct push bypassed the gate: none gets a CI root. Require merge
-commits in the ruleset. Reading the pull request head for squash and rebase merges through
-the forge is a follow-up.
+A fast-forward merge makes no commit of its own and a direct push bypassed the gate: neither
+gets a CI root. Both are judged by `jtac ci` on the push; a direct push that fails the gate
+fails the job. Require pull requests in the ruleset.
 
 ## A leaked key
 
@@ -86,7 +98,7 @@ signer's, which is the honest state.
 
 ## What the fence cannot do
 
-A composite action cannot see the environment its job runs in, so the deployment rule is the
-forge's to keep. The merge job checks the signing key against the old tip's `.jtac/signers`
-and says when no line names it for the CI namespace: every reader then sees an unknown
-signer's root, which is what a key outside the trust file deserves.
+A composite action cannot see the environment its job runs in, so the deployment rule and
+the tag ruleset are the forge's to keep. The merge job checks the signing key against the old
+tip's `.jtac/signers` and says when no line names it for the CI namespace: every reader then
+sees an unknown signer's root, which is what a key outside the trust file deserves.

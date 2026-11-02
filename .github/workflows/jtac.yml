@@ -1,5 +1,5 @@
-# The jtac CI gate on jtac itself: `jtac ci` on every pull request, a CI-signed root on every
-# merge to `main`. From `jtac init --ci github`, with the action and the binary taken from this
+# The jtac CI gate on jtac itself: `jtac ci` on every pull request and push to `main`, a
+# CI-signed root on every merged pull request. From `jtac init --ci github`, with the action and the binary taken from this
 # tree, so a change to either gates itself before a release carries it (docs/CI.md).
 name: jtac
 
@@ -38,6 +38,7 @@ jobs:
     concurrency:
       group: jtac-root-${{ github.ref }}
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
     steps:

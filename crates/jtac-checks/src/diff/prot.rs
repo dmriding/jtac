@@ -19,8 +19,8 @@ pub enum Adoption {
     /// adds the policy file.
     Policy,
     /// No `.jtac/signers` was in force (decision 45): the base branch holds none in CI, or
-    /// locally no parent's history held one and HEAD brings it; every protected path is
-    /// minor, since with no trust no waiver could have cleared anything.
+    /// locally the commit brings the first policy and the first signers file together; every
+    /// protected path is minor, since with no trust no waiver could have cleared anything.
     Trust,
 }
 

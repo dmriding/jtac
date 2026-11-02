@@ -2,6 +2,10 @@
 //! the workflow that calls the action, the CI key's allowed-signers line, and the GitHub
 //! steps an operator does by hand. Pure; `cicfg` reads and writes.
 
+use std::path::{Path, PathBuf};
+
+use jtac_checks::git::quoted;
+
 /// Where the workflow lands.
 pub const WORKFLOW_PATH: &str = ".github/workflows/jtac.yml";
 /// The environment whose deployment rule keeps the CI key off pull request runs.
@@ -17,7 +21,8 @@ pub const CHECK_NAME: &str = "jtac";
 const CHECKOUT: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
 const DOCS: &str = "https://github.com/dmriding/jtac/blob/main/docs/CI.md";
 
-/// `owner` and `repo` of a github.com remote URL in the spellings git accepts.
+/// `owner` and `repo` of a github.com remote URL in the spellings git accepts; a name that
+/// is a path step (`.`, `..`) or holds a separator is none, since both name a key file.
 pub fn github_slug(url: &str) -> Option<(String, String)> {
     let path = [
         "https://github.com/",
@@ -33,24 +38,35 @@ pub fn github_slug(url: &str) -> Option<(String, String)> {
     let (owner, repo) = path.split_once('/')?;
     let ok = |s: &str| {
         !s.is_empty()
+            && s != "."
+            && s != ".."
             && s.chars()
                 .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
     };
     (ok(owner) && ok(repo)).then(|| (owner.to_owned(), repo.to_owned()))
 }
 
-/// The CI key's file name under `<user config>/jtac/ci/`: one key per repository.
-pub fn key_name(owner: &str, repo: &str) -> String {
-    format!("{owner}-{repo}_ed25519")
+/// The CI key's path under `<user config>/jtac/ci/`: a directory per owner, a file per
+/// repository, so two repositories never share one.
+pub fn key_path(owner: &str, repo: &str) -> PathBuf {
+    Path::new(owner).join(format!("{repo}_ed25519"))
+}
+
+/// `<key>.pub` as ssh-keygen names it, whatever dots the file name holds.
+pub fn pub_path(key: &Path) -> PathBuf {
+    let mut name = key.as_os_str().to_owned();
+    name.push(".pub");
+    PathBuf::from(name)
 }
 
 /// The workflow: the pull request gate and the merge root, each the action pinned to this
-/// release; `root` carries the environment, the concurrency group and the write permission
-/// the root push needs.
+/// release; `root` carries the environment, the queue that keeps every merge's run, and the
+/// write permission the root push needs.
 pub fn workflow(version: &str, default_branch: &str) -> String {
     format!(
-        "# The jtac CI gate: `jtac ci` on every pull request, a CI-signed root on every merge to\n\
-         # `{default_branch}`. Written by `jtac init --ci github`; {DOCS}\n\
+        "# The jtac CI gate: `jtac ci` on every pull request and every push to `{default_branch}`,\n\
+         # a CI-signed root on every merged pull request. Written by `jtac init --ci github`;\n\
+         # {DOCS}\n\
          name: jtac\n\
          \n\
          on:\n\
@@ -78,6 +94,7 @@ pub fn workflow(version: &str, default_branch: &str) -> String {
          \x20   concurrency:\n\
          \x20     group: jtac-root-${{{{ github.ref }}}}\n\
          \x20     cancel-in-progress: false\n\
+         \x20     queue: max\n\
          \x20   permissions:\n\
          \x20     contents: write\n\
          \x20   steps:\n\
@@ -100,30 +117,47 @@ pub fn ci_signers_line(public: &str) -> Option<String> {
     ))
 }
 
+/// Whether a trust file's lines name `line`'s key.
+pub fn names_key(trust: &str, line: &str) -> bool {
+    let Some(blob) = line.split_whitespace().last() else {
+        return false;
+    };
+    trust
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| l.split_whitespace().any(|w| w == blob))
+}
+
 /// The first trust file: the operator's line for every namespace, then the CI key's.
 pub fn signers_file(dev_line: &str, ci_line: &str) -> String {
     format!("{}\n{ci_line}", dev_line.trim_end())
 }
 
 /// What the operator does on GitHub, in order; `key` is the private key's path.
-pub fn next_steps(owner: &str, key: &str, default_branch: &str) -> [String; 4] {
+pub fn next_steps(owner: &str, repo: &str, key: &str, default_branch: &str) -> [String; 4] {
+    let env = format!("repos/{owner}/{repo}/environments/{ENVIRONMENT}");
     [
         format!(
             "CODEOWNERS: add `/.jtac/ @{owner}` (a team, for an organization) so the forge asks \
              a second human on every trust or policy change"
         ),
         format!(
-            "environment: create `{ENVIRONMENT}` under Settings > Environments with deployment \
-             branches and tags limited to `{default_branch}` and `v*`; that rule is what keeps \
-             the key off pull request runs"
+            "environment: `gh api -X PUT {env} -F \
+             'deployment_branch_policy[protected_branches]=false' -F \
+             'deployment_branch_policy[custom_branch_policies]=true'`, then `gh api -X POST \
+             {env}/deployment-branch-policies -f name={default_branch} -f type=branch` and \
+             the same with `-f name='v*' -f type=tag`; that rule is what keeps the key off \
+             pull request runs"
         ),
         format!(
-            "secret: `gh secret set {SECRET} --env {ENVIRONMENT} < {key}` uploads the CI \
-             private key; it leaves this machine no other way, and is never committed"
+            "secret: `gh secret set {SECRET} --env {ENVIRONMENT} < {}` uploads the CI private \
+             key; it leaves this machine no other way, and is never committed",
+            quoted(key, "<key path>")
         ),
         format!(
-            "ruleset: require the `{CHECK_NAME}` check on `{default_branch}` and merge commits \
-             only; a squash or rebase merge gets no CI root ({DOCS})"
+            "rulesets: require the `{CHECK_NAME}` check on `{default_branch}`, and let only \
+             administrators create `v*` tags: the environment admits any `v*` tag, so without \
+             that rule a writer who tags an unreviewed commit holds the key ({DOCS})"
         ),
     ]
 }
@@ -149,17 +183,33 @@ mod tests {
         for url in [
             "https://example.com/example-org/example-app.git",
             "https://gitlab.com/example-org/example-app.git",
+            "https://github.com.example.com/example-org/example-app.git",
             "https://github.com/example-org",
             "https://github.com//example-app",
             "https://github.com/example-org/example app",
             "https://github.com/example-org/example-app/extra",
+            "https://github.com/../example-app",
+            "https://github.com/example-org/..",
             "",
         ] {
             assert_eq!(github_slug(url), None, "{url}");
         }
+    }
+
+    #[test]
+    fn a_key_per_repository_and_its_pub_file_keep_every_dot_in_the_name() {
         assert_eq!(
-            key_name("example-org", "example-app"),
-            "example-org-example-app_ed25519"
+            key_path("example-org", "example-app"),
+            Path::new("example-org/example-app_ed25519")
+        );
+        assert_ne!(
+            key_path("example-team", "app"),
+            key_path("example", "team-app")
+        );
+        let key = Path::new("/workspace/jtac/ci/example/my.app_ed25519");
+        assert_eq!(
+            pub_path(key),
+            Path::new("/workspace/jtac/ci/example/my.app_ed25519.pub")
         );
     }
 
@@ -173,9 +223,9 @@ mod tests {
         assert!(text.contains("  root:\n    if: github.event_name == 'push'"));
         assert!(text.contains("    environment: jtac-ci\n"));
         assert!(text.contains("      group: jtac-root-${{ github.ref }}\n"));
+        assert!(text.contains("      cancel-in-progress: false\n      queue: max\n"));
         assert!(text.contains("      contents: write\n"));
         assert!(text.ends_with("          key: ${{ secrets.JTAC_CI_KEY }}\n"));
-        assert!(text.contains("merge to\n# `trunk`."));
     }
 
     #[test]
@@ -187,16 +237,30 @@ mod tests {
              ssh-ed25519 AAAAC3\n"
         );
         assert_eq!(ci_signers_line("ssh-ed25519"), None);
-        assert_eq!(
-            signers_file("dev@example.com ssh-ed25519 BBBB\n", &line),
-            format!("dev@example.com ssh-ed25519 BBBB\n{line}")
+        let file = signers_file("dev@example.com ssh-ed25519 BBBB\n", &line);
+        assert_eq!(file, format!("dev@example.com ssh-ed25519 BBBB\n{line}"));
+        assert!(names_key(&file, &line));
+        assert!(!names_key("dev@example.com ssh-ed25519 BBBB\n", &line));
+        assert!(!names_key("# AAAAC3 in a comment\n", &line));
+    }
+
+    #[test]
+    fn the_next_steps_name_the_owner_the_environment_the_quoted_key_and_the_tag_rule() {
+        let steps = next_steps(
+            "example-org",
+            "example-app",
+            "/work space/ci_ed25519",
+            "main",
         );
-        let steps = next_steps("example-org", "/workspace/ci_ed25519", "main");
         assert!(steps[0].contains("`/.jtac/ @example-org`"));
-        assert!(steps[1].contains("`jtac-ci`") && steps[1].contains("`main` and `v*`"));
         assert!(
-            steps[2].contains("gh secret set JTAC_CI_KEY --env jtac-ci < /workspace/ci_ed25519")
+            steps[1].contains("gh api -X PUT repos/example-org/example-app/environments/jtac-ci")
+                && steps[1].contains("-f name=main -f type=branch")
+                && steps[1].contains("-f name='v*' -f type=tag")
         );
-        assert!(steps[3].contains("`jtac` check"));
+        assert!(
+            steps[2].contains("gh secret set JTAC_CI_KEY --env jtac-ci < '/work space/ci_ed25519'")
+        );
+        assert!(steps[3].contains("`jtac` check") && steps[3].contains("`v*` tags"));
     }
 }

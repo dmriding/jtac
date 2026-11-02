@@ -62,14 +62,16 @@ pub struct Offered {
 }
 
 /// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
-/// held `.jtac/policy.toml`, or `.jtac/signers` while `head` brings one. Read from history,
+/// held `.jtac/policy.toml`; widened to every protected path when `head` also brings the
+/// first `.jtac/signers`, and never by a signers file alone, which an agent could add to lift
+/// the fence a local policy already is. Read from history,
 /// never from the diff's base, which `--base` lets the pusher choose; every parent, since a
 /// merge whose first parent never held a policy would otherwise weaken the one its second
 /// parent holds; through `rev-list`, since `log` reads `log.follow` and `log.showRoot` from
 /// the pusher's own config and either hides the hit
 /// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`,
-/// `adopting_the_trust_file_makes_every_protected_finding_minor_once`). A root commit has no
-/// parent and no diff to judge.
+/// `a_fresh_repository_adopts_the_gate_and_ci_in_one_commit_and_a_signers_file_alone_lifts_nothing`).
+/// A root commit has no parent and no diff to judge.
 pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
     let git = |e: RepoError| Refusal::repository(&e);
     let parents = repo::probe(
@@ -93,12 +95,12 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
     let brings_trust = repo::probe(repo, &["rev-parse", "--verify", "-q", &trust], 1)
         .map_err(git)?
         .is_some();
-    Ok(if brings_trust && never_held(TRUST_PATH)? {
-        Adoption::Trust
-    } else if never_held(POLICY_PATH)? {
-        Adoption::Policy
-    } else {
+    Ok(if !never_held(POLICY_PATH)? {
         Adoption::None
+    } else if brings_trust && never_held(TRUST_PATH)? {
+        Adoption::Trust
+    } else {
+        Adoption::Policy
     })
 }
 

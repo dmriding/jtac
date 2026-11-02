@@ -835,9 +835,9 @@ fn a_policy_change_passes_only_with_a_trusted_waiver_unless_the_base_holds_no_si
         &format!("{policy}[integrity]\nmax_added_lines = 1000\n"),
     );
     assert_eq!(
-        jtac(&q.repo, &["check", "--preview"]).code,
-        0,
-        "locally the first signers file is adoption too (decision 45)"
+        jtac(&q.repo, &["check"]).code,
+        1,
+        "locally the change is major"
     );
     let (code, v) = ci(&q.repo);
     assert_eq!(code, 0, "{v}");

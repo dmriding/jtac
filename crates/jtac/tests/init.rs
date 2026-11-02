@@ -916,7 +916,8 @@ fn a_symlinked_agent_directory_or_settings_file_is_refused_and_left_alone() {
 /// `--ci github` writes the workflow pinned to this release, the first trust file with the
 /// operator's line and the CI key's, and a CI key under the user config directory, never
 /// printed; it names the operator's four steps; a second run keeps everything; a dry run
-/// writes nothing; a remote off GitHub or a forge with no workflow is refused before any write.
+/// writes nothing; a remote off GitHub, a forge with no workflow or an unknown default
+/// branch is refused before any write.
 #[test]
 fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
     let env = Env::new();
@@ -941,11 +942,24 @@ fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
         "origin",
         "git@github.com:example-org/example-app.git",
     ]);
+    let ran = env.jtac(&["init", "--ci", "github"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("`git remote set-head origin --auto`"),
+        "{}",
+        ran.stderr
+    );
+    env.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
     let key = env
         .xdg()
         .join("jtac")
         .join("ci")
-        .join("example-org-example-app_ed25519");
+        .join("example-org")
+        .join("example-app_ed25519");
     let workflow = env
         .repo
         .path()
@@ -971,7 +985,7 @@ fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
         &format!("wrote workflow .github/workflows/jtac.yml (pinned to v{version})"),
         "wrote trust file .jtac/signers (your line and the CI key's)",
         "CODEOWNERS: add `/.jtac/ @example-org`",
-        "environment: create `jtac-ci`",
+        "environment: `gh api -X PUT repos/example-org/example-app/environments/jtac-ci",
         &format!(
             "gh secret set JTAC_CI_KEY --env jtac-ci < {}",
             slashes(&key)

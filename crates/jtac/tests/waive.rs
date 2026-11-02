@@ -111,9 +111,8 @@ fn hook(repo: &Repo, stdin: &str) -> Ran {
     Ran::of(child.wait_with_output().unwrap())
 }
 
-/// `base` on origin's `main` holds the policy and a trust file of comments alone; the clone
-/// is keyed. The dev's line is what the first test adds: an edit under `.jtac/`, a major
-/// (the first trust file itself is minor, decision 45; see `check.rs`).
+/// `base` on origin's `main` holds the policy alone; the clone is keyed. The trust file is
+/// not yet committed, so the adoption step is what the first test adds.
 struct Adopting {
     repo: Repo,
     key: PathBuf,
@@ -125,7 +124,6 @@ fn adopting() -> Adopting {
     let origin = Repo::bare(&[]);
     let repo = Repo::clone_of(&origin);
     repo.write(".jtac/policy.toml", policy().as_bytes());
-    repo.write(".jtac/signers", b"# who may sign\n");
     repo.write(".gitignore", b"*.profraw\n");
     repo.write("src/lib.rs", b"#[test]\nfn keeps() {}\nfn a() {}\n");
     let base = repo.commit("base");
@@ -144,7 +142,7 @@ fn lines_with(text: &str, word: &str) -> usize {
     text.lines().filter(|l| l.contains(word)).count()
 }
 
-/// The trust case: editing `.jtac/signers` is a JT-PROT-001 major that blocks; a rule
+/// The adoption case: committing `.jtac/signers` is a JT-PROT-001 major that blocks; a rule
 /// waiver on the rule under `.jtac/` lets the verdict pass with the root `covered` and
 /// `waivers` 1; `status`, `check`, `verify`, `audit`, the hook and `replay` all show it.
 #[test]

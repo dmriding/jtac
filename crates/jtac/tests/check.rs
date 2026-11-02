@@ -802,19 +802,30 @@ fn the_adoption_fact_is_plumbing_so_log_config_cannot_hide_a_root_policy() {
     );
 }
 
-/// Decision 45 locally: the commit that adds the first `.jtac/signers` is the adoption commit,
-/// so every protected-path finding on it is minor, `.github/**` included; the next change to
-/// either is major, and a merge that takes the file from a side branch is no adoption.
+/// Decision 45 locally: the commit that brings the policy and the first `.jtac/signers`
+/// together is the adoption commit, so every protected-path finding on it is minor,
+/// `.github/**` included; the next change to any of them is major; a merge that takes them
+/// from a side branch is no adoption; and in a repository that already holds a policy a
+/// signers file, even an empty one, lifts nothing, so its CI adoption takes a waiver.
 #[test]
-fn adopting_the_trust_file_makes_every_protected_finding_minor_once() {
+fn a_fresh_repository_adopts_the_gate_and_ci_in_one_commit_and_a_signers_file_alone_lifts_nothing()
+{
+    let major = |ran: Ran| {
+        assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stdout.contains("JT-PROT-001 major") && !ran.stdout.contains("in force to protect"),
+            "{}",
+            ran.stdout
+        );
+    };
     let repo = Repo::init(&[]);
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let before = repo.commit("code");
     repo.write(".jtac/policy.toml", policy("").as_bytes());
     repo.write(".gitignore", b"*.profraw\n");
-    repo.write("src/lib.rs", b"fn a() {}\n");
-    let before = repo.commit("policy first");
     repo.write(".jtac/signers", b"dev@example.com ssh-ed25519 AAAA\n");
     repo.write(".github/workflows/jtac.yml", b"on: pull_request\n");
-    let adopt = repo.commit("adopt ci");
+    let adopt = repo.commit("adopt the gate and ci");
     let ran = jtac(&repo, &["check", "--preview"]);
     assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     for path in [".jtac/signers", ".github/workflows/jtac.yml"] {
@@ -829,14 +840,6 @@ fn adopting_the_trust_file_makes_every_protected_finding_minor_once() {
         "{}",
         ran.stdout
     );
-    let major = |ran: Ran| {
-        assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
-        assert!(
-            ran.stdout.contains("JT-PROT-001 major") && !ran.stdout.contains("in force to protect"),
-            "{}",
-            ran.stdout
-        );
-    };
     repo.write(".github/workflows/jtac.yml", b"on: push\n");
     repo.commit("edit the workflow");
     major(jtac(&repo, &["check", "--preview"]));
@@ -850,8 +853,18 @@ fn adopting_the_trust_file_makes_every_protected_finding_minor_once() {
         "--no-ff",
         "--no-gpg-sign",
         "-m",
-        "took trust",
+        "took the gate",
         &adopt,
     ]);
     major(jtac(&repo, &["check", "--preview", "--base", &before]));
+
+    let repo = Repo::init(&[]);
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    repo.commit("gated locally");
+    repo.write(".jtac/signers", b"");
+    repo.write(".github/workflows/jtac.yml", b"on: pull_request\n");
+    repo.commit("ci later, with an empty trust file");
+    major(jtac(&repo, &["check", "--preview"]));
 }

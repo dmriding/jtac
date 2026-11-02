@@ -18,8 +18,9 @@ request moves them under a dated heading and bumps nothing.
 - (0.2.7) The GitHub action (`action.yml`): `jtac ci` on a pull request, a CI-signed merge
   root on a push to the default branch, the evidence store as an artifact. `jtac init --ci
   github` writes the workflow, the first `.jtac/signers` and a CI key, and prints the
-  operator's steps (`docs/CI.md`). Locally the commit that adds the first `.jtac/signers` is
-  the adoption commit too (decision 45): every protected-path finding on it is minor. This
+  operator's steps (`docs/CI.md`). Locally a fresh repository's adoption commit, the policy and the
+  first `.jtac/signers` together, clears with every protected-path finding minor
+  (decision 45); a repository gated locally first adds CI under one waiver. This
   repository runs the action on itself; `scripts/action-version.sh` holds the action's
   version to the workspace's. (M17, decision 49)
 - (0.2.5) The CI waiver (DESIGN.md section 15, decision 48, M16c): `jtac waive <commit> --ci
