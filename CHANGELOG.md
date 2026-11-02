@@ -6,6 +6,13 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Changed
+
+- (0.2.6) CI: the Linux `test` job is gone; `coverage` already runs every test once,
+  instrumented, and a second uninstrumented build proved nothing more. Debuginfo is off for
+  CI builds (`CARGO_PROFILE_DEV_DEBUG=0` in the workflow, local builds unchanged). The
+  ruleset's required checks lose `test`; `coverage` and the rest stand.
+
 ### Added
 
 - (0.2.5) The CI waiver (DESIGN.md section 15, decision 48, M16c): `jtac waive <commit> --ci

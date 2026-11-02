@@ -15,6 +15,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Nothing in CI reads debuginfo; it is most of the link time and the cache.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   fmt:
@@ -37,14 +39,6 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --workspace --all-features --locked
 
   # Required by the main ruleset. An `if` on this job would skip it and still report success.
   test-windows:
@@ -74,6 +68,8 @@ jobs:
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: cargo-llvm-cov
+      # The Linux test run: llvm-cov runs every test once, instrumented, so a plain
+      # `cargo test` job would build the workspace a second time to prove the same thing.
       # 80% line coverage is a floor (DESIGN.md section 13). A drop below it fails the build.
       - run: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 80
 
