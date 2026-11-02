@@ -313,7 +313,8 @@ fn push(
 /// The root `remote` holds for the tip after refusing this run's, judged as a standing one:
 /// a concurrent run's own is kept and this run's stays unsent; any other is the fence, and
 /// one the job cannot read is too, since a refusal it cannot see is the window the fence
-/// closes (`a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing`).
+/// closes; a remote holding none refused the ref itself
+/// (`a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing`).
 fn arrived(
     store: &Store,
     remote: &str,
@@ -323,10 +324,7 @@ fn arrived(
     let tip = &keeper.job.head.commit;
     let stored = match store.remote_root(remote, tip) {
         Ok(Some(s)) => s,
-        Ok(None) => {
-            let why = format!("{remote} refused this run's root and holds none to read");
-            return Err(Refusal::from_standing(tip, &why, keeper.remote));
-        }
+        Ok(None) => return Err(Refusal::root_unsent(tip, remote)),
         Err(e) => {
             let why = format!("{remote} refused this run's root and its own does not read: {e}");
             return Err(Refusal::from_standing(tip, &why, keeper.remote));
@@ -361,7 +359,7 @@ fn head_policy(repo: &Path, from: &Head, notes: &mut Vec<String>) -> Option<poli
 struct Keeper<'a> {
     tool: &'a Tool,
     trust: &'a Signers,
-    /// The job's key, accepted where the old tip's signers name none for the CI namespace.
+    /// The job's key, accepted whether or not the old tip's signers name it.
     own: &'a Signer,
     job: &'a Job<'a>,
     /// `--push`, for the ref to delete.
@@ -371,9 +369,9 @@ struct Keeper<'a> {
 impl Keeper<'_> {
     /// Why `stored` is not CI's own for this head, or `None` when it is: `from` names
     /// `--from` and the signature is a key the old tip's signers name for the CI namespace, or
-    /// the job's own where they name none, since the adoption merge and the first CI merge have
-    /// no line to verify under and a re-run there must keep what the job wrote
-    /// (`a_re_run_on_the_adoption_merge_keeps_ci_s_own_root`). Anything else was pushed onto
+    /// the job's own whether or not they name it, since the adoption merge has no line to
+    /// verify under, a rotation leaves the secret behind the signers, and a re-run must keep
+    /// what the job wrote (`a_re_run_on_the_adoption_merge_keeps_ci_s_own_root`). Anything else was pushed onto
     /// the forge's commit around the job
     /// (`a_root_already_on_the_forge_s_tip_is_kept_only_as_ci_s_own_for_this_head`).
     fn reason(&self, stored: &StoredRoot) -> Result<Option<String>, Refusal> {
@@ -433,6 +431,28 @@ impl Keeper<'_> {
 }
 
 impl Refusal {
+    /// The remote refused the merge root's ref and holds no root for the tip: a rule or a
+    /// hook on the remote denies the push, and a root only the job's clone holds is read by
+    /// nobody.
+    pub fn root_unsent(tip: &GitOid, remote: &str) -> Self {
+        let remote = quoted(remote, "<remote>");
+        let name = ref_name(tip);
+        Self::fence(
+            format!(
+                "{remote} refused the merge root's ref {name} and holds no root for the tip {}.",
+                &tip.hex()[..12]
+            ),
+            "A root only the job's clone holds is evidence nobody reads, so the job does not \
+             pass on it; a remote that refuses a ref it does not hold has a rule or a hook \
+             denying the push, not another root in the way.",
+            format!(
+                "Let the CI principal create refs under refs/jtac/ on {remote} (the ruleset or \
+                 server hook that refused decides), then re-run the job; `git push {remote} \
+                 {name}` from a clone holding the root shows the refusal."
+            ),
+        )
+    }
+
     /// A root on the tip that is not CI's own for this head.
     pub fn from_standing(tip: &GitOid, why: &str, remote: Option<&str>) -> Self {
         let hex = tip.hex();
@@ -513,5 +533,12 @@ mod tests {
         let bare = Refusal::from_standing(&tip, "x", None);
         assert!(bare.how.contains("`git push <remote> :refs/"));
         assert!(r.text().contains("\nfence: "), "{r:?}");
+        let u = Refusal::root_unsent(&tip, "origin");
+        assert!(u.what.contains("origin refused") && u.what.contains("0123456789ab."));
+        assert!(!u.why.is_empty());
+        assert!(u.how.contains(
+            "`git push origin refs/jtac/roots/01/0123456789abcdef0123456789abcdef01234567`"
+        ));
+        assert!(u.text().contains("\nfence: "), "{u:?}");
     }
 }

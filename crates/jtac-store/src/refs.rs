@@ -226,17 +226,36 @@ impl Store {
         Ok(roots)
     }
 
-    /// The root `remote` holds for `commit`, fetched into `FETCH_HEAD` and read as the local
-    /// ref is; no local ref is replaced. A remote that holds no such ref is a git failure.
+    /// The root `remote` holds for `commit`, or `None` when it holds no ref for it: fetched
+    /// into `FETCH_HEAD` alone, `--refmap=` keeping a configured `refs/jtac/*` refspec from
+    /// replacing the local ref on the way, and read as the local ref is.
     pub fn remote_root(
         &self,
         remote: &str,
         commit: &GitOid,
     ) -> Result<Option<StoredRoot>, StoreError> {
         let name = ref_name(commit);
+        match git(
+            self.repo(),
+            &["ls-remote", "--exit-code", "--", remote, &name],
+        ) {
+            Ok(_) => {}
+            Err(GitError::Failed {
+                status: Some(2), ..
+            }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
         git(
             self.repo(),
-            &["fetch", "--quiet", "--no-tags", "--", remote, &name],
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--refmap=",
+                "--",
+                remote,
+                &name,
+            ],
         )?;
         read_at(self, commit, "FETCH_HEAD")
     }

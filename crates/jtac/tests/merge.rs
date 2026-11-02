@@ -936,7 +936,8 @@ fn a_re_run_on_the_adoption_merge_keeps_ci_s_own_root() {
 
 /// A root pushed onto the forge's commit between the job's fetch and its push: the remote
 /// refuses the merge root, the job reads back what is there and judges it as standing. A
-/// developer's is the fence; a concurrent run's own is kept and this run's stays unsent.
+/// developer's is the fence; a concurrent run's own is kept and this run's stays unsent,
+/// the local ref untouched; a remote that refuses the ref and holds none is its own fence.
 #[test]
 fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
     let f = forge();
@@ -985,4 +986,31 @@ fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
     );
     assert!(!v["pushed"].to_string().contains(&root_ref(&merge)), "{v}");
     assert_eq!(read_root(&f.second(), &merge), first);
+    assert_ne!(read_root(&f.ci, &merge), first);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.dev
+            .git(&["push", "-q", "origin", &format!(":{}", root_ref(&merge))]);
+        f.ci.git(&["update-ref", "-d", &root_ref(&merge)]);
+        let hook = f.origin.write(
+            "hooks/pre-receive",
+            b"#!/bin/sh\nwhile read old new ref; do case \"$ref\" in refs/jtac/roots/*) exit 1;; \
+              esac; done\nexit 0\n",
+        );
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ran = jtac(
+            &f.ci,
+            &[
+                "check", "--from", &a[0], "--base", &f.main, "--push", "origin",
+            ],
+        );
+        assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stderr.contains("holds no root for the tip")
+                && ran.stderr.contains(&format!("origin {}", root_ref(&merge))),
+            "{}",
+            ran.stderr
+        );
+    }
 }
