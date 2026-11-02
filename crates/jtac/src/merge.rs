@@ -4,7 +4,8 @@
 //! chain offers its trusted waivers, the head's root is compared as the pull request job
 //! compared it, with the head's checks run again on its own tree, and the root, signed in the
 //! CI namespace, records what the head had in `from`. Only CI's own verdict fails the job;
-//! what the head had never stops the merge root.
+//! what the head had never stops the merge root. A root already on the tip is kept only as
+//! CI's own for this head.
 
 mod out;
 mod tree;
@@ -15,7 +16,7 @@ use jtac_checks::diff::Adoption;
 use jtac_checks::diff::git::git;
 use jtac_core::{Compared, FromHead, GitOid, Ts};
 use jtac_sign::{Namespace, Tool, Verified};
-use jtac_store::{Store, ref_name};
+use jtac_store::{Store, StoredRoot, ref_name};
 
 use crate::check::{Site, Written};
 use crate::ci::{self, head, levers};
@@ -126,17 +127,11 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let mut notes = Vec::new();
     let policies = ci::policies(repo, &job.head, &job.old, &job.old.commit.hex(), &mut notes)?;
     let (loaded, policy_from) = policies.judging();
-    let head_policy = match policy::load_if_present(repo, &job.from) {
-        Ok(p) => p,
-        Err(e) => {
-            notes.push(format!(
-                "the head's policy does not read ({}); its root is compared under none",
-                e.what
-            ));
-            None
-        }
-    };
+    let head_policy = head_policy(repo, &job.from, &mut notes);
     let tool = coverage::verifier(repo)?;
+    existing
+        .as_ref()
+        .map_or(Ok(()), |s| standing(&tool, &trust, s, &job))?;
     let chain = levers::gather(
         repo,
         &store,
@@ -304,6 +299,81 @@ fn push(
     }
 }
 
+/// The head's own policy, for comparing its root; one that does not read is a note.
+fn head_policy(repo: &Path, from: &Head, notes: &mut Vec<String>) -> Option<policy::Loaded> {
+    match policy::load_if_present(repo, from) {
+        Ok(p) => p,
+        Err(e) => {
+            notes.push(format!(
+                "the head's policy does not read ({}); its root is compared under none",
+                e.what
+            ));
+            None
+        }
+    }
+}
+
+/// A root already on the forge's tip is kept only as CI's own for this head: signed in the CI
+/// namespace by a key the old tip's signers name, its `from` naming `--from`, which is what a
+/// re-run finds; anything else was pushed around the job and is refused, since a standing
+/// root is kept unread otherwise (`Site::commit`,
+/// `a_root_already_on_the_forge_s_tip_is_kept_only_as_ci_s_own_for_this_head`).
+fn standing(tool: &Tool, trust: &Signers, stored: &StoredRoot, job: &Job) -> Result<(), Refusal> {
+    let why = match &stored.root.from {
+        None => Some("it has no `from`: a developer's root, not a merge root".to_owned()),
+        Some(f) if f.head != job.from.commit => Some(format!(
+            "its `from` names head {}, not {}",
+            &f.head.hex()[..12],
+            job.from_rev
+        )),
+        Some(_) => None,
+    };
+    if let Some(why) = why {
+        return Err(Refusal::from_standing(&job.head.commit, &why));
+    }
+    let bytes = stored.root.canonical_bytes().map_err(Refusal::internal)?;
+    let verified = jtac_sign::verify(
+        tool,
+        trust.as_sign(),
+        &stored.root.signer,
+        Namespace::CiRoot,
+        stored.root.ts,
+        &bytes,
+        &String::from_utf8_lossy(&stored.sig),
+    )
+    .map_err(|e| Refusal::verifier(&e))?;
+    if matches!(verified, Verified::Trusted) {
+        return Ok(());
+    }
+    let why = format!(
+        "its signature does not verify in namespace {} under {}",
+        Namespace::CiRoot.as_str(),
+        trust.describe()
+    );
+    Err(Refusal::from_standing(&job.head.commit, &why))
+}
+
+impl Refusal {
+    /// A root on the tip that is not CI's own for this head.
+    pub fn from_standing(tip: &GitOid, why: &str) -> Self {
+        let hex = tip.hex();
+        Self::fence(
+            format!(
+                "the tip {} already carries a root this job did not write: {why}.",
+                &hex[..12]
+            ),
+            "One root per tip stands once written, and the job keeps a standing root only when it \
+             is CI's own for this head, which is what a re-run finds; any other was pushed onto \
+             the forge's commit around the job, and keeping it would sign over whoever pushed it.",
+            format!(
+                "Read it with `jtac show {hex}`; if nobody should have written it, delete the ref \
+                 (`git push <remote> :{}`) and re-run the job.",
+                ref_name(tip)
+            ),
+        )
+    }
+}
+
 /// A note when the key that signed is not one the old tip's signers name for the CI
 /// namespace: every reader will read the root as an unknown signer's. The adoption merge,
 /// whose old tip holds no signers file, is the expected case.
@@ -338,4 +408,28 @@ fn named(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_standing_root_refusal_has_three_parts_and_names_the_ref() {
+        let tip: GitOid = "sha1:0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .unwrap();
+        let r = Refusal::from_standing(&tip, "it has no `from`");
+        assert!(r.what.contains("0123456789ab") && r.what.ends_with("no `from`."));
+        assert!(!r.why.is_empty());
+        assert!(
+            r.how
+                .contains("jtac show 0123456789abcdef0123456789abcdef01234567")
+        );
+        assert!(
+            r.how
+                .contains(":refs/jtac/roots/01/0123456789abcdef0123456789abcdef01234567`")
+        );
+        assert!(r.text().contains("\nfence: "), "{r:?}");
+    }
 }

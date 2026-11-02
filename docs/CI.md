@@ -1,8 +1,8 @@
 # The CI gate
 
 BLUF: one action, one environment secret, one commit. Every pull request and every push to the
-default branch, save the one that creates it, is judged again under a key the developer does not hold, and every merged pull
-request gets a root that key signed; the root job needs `contents: write` and
+default branch, save the one that creates it, is judged again under a key the developer does not hold, and every pull
+request merged by a commit of the forge's gets a root that key signed; the root job needs `contents: write` and
 `pull-requests: read`, which the written workflow grants. The design is `DESIGN.md` section 15; this page is the
 operator's.
 
@@ -37,7 +37,7 @@ operator's.
 | Event | Command | Result |
 | --- | --- | --- |
 | `pull_request` | `jtac ci --base origin/<base>` on the pull request head, full history, roots fetched from the repository the head lives in | Exit 0 pass, 1 fail (three parts in the log and the step summary), 2 could not answer |
-| `push` to the default branch, the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the roots of the pull request's own commits fetched from its repository where the base holds none, runs queued per branch | CI's one verdict from the old tip with the head chain's waivers in scope; a root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike; a tip already carrying a root keeps it, so a re-run writes none |
+| `push` to the default branch, the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the roots of the pull request's own commits fetched from its repository where the base holds none, runs queued per branch | CI's one verdict from the old tip with the head chain's waivers in scope; a root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike; a root already on the tip is kept only as CI's own for this head (a re-run), any other is refused with the ref to delete |
 | `push` to the default branch, no pull request or a fast-forward | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
 | `push` that rewrote the branch, or whose old tip the clone cannot fetch | refused, exit 2 | A gate that cannot anchor at the old tip judges nothing, and says so |
 | `push` that created the branch | nothing judged, exit 0 | There is no old tip to diff from; the next push is judged |

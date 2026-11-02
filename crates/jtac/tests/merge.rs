@@ -834,3 +834,46 @@ fn the_head_s_checks_run_on_its_own_tree_and_under_no_policy_but_its_own_or_the_
         "{v}"
     );
 }
+
+/// A root already on the forge's tip is kept only as CI's own for this head: a developer's
+/// root pushed onto the merge commit around the job is refused with the ref to delete, the
+/// job passes once it is gone, and a re-run finds CI's own root and keeps it.
+#[test]
+fn a_root_already_on_the_forge_s_tip_is_kept_only_as_ci_s_own_for_this_head() {
+    let f = forge();
+    let a = f.feature("a", 1);
+    f.push("origin", "a", true);
+    f.fetch("origin");
+    let merge = f.merge("origin/a");
+    f.ci.git(&["push", "-q", "origin", "main"]);
+    let mut forged = read_root(&f.ci, &a[0]);
+    forged.commit = g(&merge);
+    forged.tree = g(&f.ci.git(&["rev-parse", &format!("{merge}^{{tree}}")]));
+    forged.covers = Covers::List(vec![g(&a[0]), g(&merge)]);
+    put(&f.ci, &f.dev_key, &merge, &forged);
+    let ran = jtac(
+        &f.ci,
+        &[
+            "check", "--from", &a[0], "--base", &f.main, "--push", "origin",
+        ],
+    );
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr
+            .contains("already carries a root this job did not write")
+            && ran.stderr.contains("no `from`")
+            && ran.stderr.contains(&format!(":{}", root_ref(&merge)))
+            && ran.stderr.contains("fence: "),
+        "{}",
+        ran.stderr
+    );
+    f.ci.git(&["update-ref", "-d", &root_ref(&merge)]);
+    let (code, v, err) = f.job(&a[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["from"]["compared"], "agreed", "{v}");
+    let (code, v, err) = f.job(&a[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    let notes = v["verdict"]["notes"].to_string();
+    assert!(notes.contains("HEAD already has a root; it stands"), "{v}");
+    assert_eq!(read_root(&f.ci, &merge).signer.principal, "ci@example.com");
+}

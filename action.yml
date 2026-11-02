@@ -78,7 +78,7 @@ runs:
         fi
         if [ -n "$HEAD_SHA" ]; then
           git fetch -q "$REMOTE" "+refs/heads/$BASE_REF:refs/remotes/$REMOTE/$BASE_REF" "+refs/pull/$PR/head:refs/remotes/pull/$PR/head"
-          git fetch -q "${HEAD_REPO:-$REMOTE}" "+refs/jtac/*:refs/jtac/*"
+          git fetch -q --no-tags "${HEAD_REPO:-$REMOTE}" "+refs/jtac/*:refs/jtac/*"
           git checkout -q --detach "$HEAD_SHA"
         else
           git fetch -q "$REMOTE" "+refs/jtac/*:refs/jtac/*"
@@ -170,11 +170,12 @@ runs:
         fi
         git fetch -q "$REMOTE" "+refs/pull/$number/head:refs/remotes/pull/$number/head"
         # The head repository's roots for the pull request's own commits alone, where this clone
-        # holds none: a fork never supplies the old tip's root, so the merge root's parent stays
-        # the branch's own, and no other ref of the fork's enters the clone.
+        # holds none, and no tags: a fork never supplies the old tip's root, so the merge root's
+        # parent stays the branch's own. A root already on the tip is `check --from`'s to judge.
         if [ -n "$head_repo" ]; then
-          git fetch -q "$head_repo" "+refs/jtac/roots/*:refs/jtac-head/roots/*"
-          for c in $(git rev-list "$head" --not "$BEFORE"); do
+          git fetch -q --no-tags "$head_repo" "+refs/jtac/roots/*:refs/jtac-head/roots/*"
+          added=$(git rev-list "$head" --not "$BEFORE")
+          for c in $added; do
             from="refs/jtac-head/roots/${c:0:2}/$c"
             want="refs/jtac/roots/${c:0:2}/$c"
             if oid=$(git rev-parse -q --verify "$from") && ! git rev-parse -q --verify "$want" >/dev/null; then
