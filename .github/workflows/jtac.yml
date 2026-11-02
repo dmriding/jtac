@@ -1,0 +1,53 @@
+# The jtac CI gate on jtac itself: `jtac ci` on every pull request, a CI-signed root on every
+# merge to `main`. From `jtac init --ci github`, with the action and the binary taken from this
+# tree, so a change to either gates itself before a release carries it (docs/CI.md).
+name: jtac
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  jtac:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --locked -p jtac
+      - uses: ./
+        with:
+          binary: target/debug/jtac
+
+  root:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: jtac-ci
+    concurrency:
+      group: jtac-root-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --locked -p jtac
+      - uses: ./
+        with:
+          binary: target/debug/jtac
+          key: ${{ secrets.JTAC_CI_KEY }}

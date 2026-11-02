@@ -15,6 +15,13 @@ request moves them under a dated heading and bumps nothing.
 
 ### Added
 
+- (0.2.7) The GitHub action (`action.yml`): `jtac ci` on a pull request, a CI-signed merge
+  root on a push to the default branch, the evidence store as an artifact. `jtac init --ci
+  github` writes the workflow, the first `.jtac/signers` and a CI key, and prints the
+  operator's steps (`docs/CI.md`). Locally the commit that adds the first `.jtac/signers` is
+  the adoption commit too (decision 45): every protected-path finding on it is minor. This
+  repository runs the action on itself; `scripts/action-version.sh` holds the action's
+  version to the workspace's. (M17, decision 49)
 - (0.2.5) The CI waiver (DESIGN.md section 15, decision 48, M16c): `jtac waive <commit> --ci
   --reason` records that a commit was merged without CI's root, on purpose. It is a commit
   waiver whose scope names the gate, node version 2 with a version 1 reader, carried unapplied

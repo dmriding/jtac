@@ -801,3 +801,57 @@ fn the_adoption_fact_is_plumbing_so_log_config_cannot_hide_a_root_policy() {
         ran.stdout
     );
 }
+
+/// Decision 45 locally: the commit that adds the first `.jtac/signers` is the adoption commit,
+/// so every protected-path finding on it is minor, `.github/**` included; the next change to
+/// either is major, and a merge that takes the file from a side branch is no adoption.
+#[test]
+fn adopting_the_trust_file_makes_every_protected_finding_minor_once() {
+    let repo = Repo::init(&[]);
+    repo.write(".jtac/policy.toml", policy("").as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.write("src/lib.rs", b"fn a() {}\n");
+    let before = repo.commit("policy first");
+    repo.write(".jtac/signers", b"dev@example.com ssh-ed25519 AAAA\n");
+    repo.write(".github/workflows/jtac.yml", b"on: pull_request\n");
+    let adopt = repo.commit("adopt ci");
+    let ran = jtac(&repo, &["check", "--preview"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    for path in [".jtac/signers", ".github/workflows/jtac.yml"] {
+        assert!(
+            ran.stdout.contains(&format!("JT-PROT-001 minor {path}")),
+            "{}",
+            ran.stdout
+        );
+    }
+    assert!(
+        ran.stdout.contains("nothing was in force to protect"),
+        "{}",
+        ran.stdout
+    );
+    let major = |ran: Ran| {
+        assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+        assert!(
+            ran.stdout.contains("JT-PROT-001 major") && !ran.stdout.contains("in force to protect"),
+            "{}",
+            ran.stdout
+        );
+    };
+    repo.write(".github/workflows/jtac.yml", b"on: push\n");
+    repo.commit("edit the workflow");
+    major(jtac(&repo, &["check", "--preview"]));
+    repo.write(".jtac/signers", b"dev@example.com ssh-ed25519 BBBB\n");
+    repo.commit("edit the trust");
+    major(jtac(&repo, &["check", "--preview"]));
+    repo.git(&["switch", "-q", "-c", "late", &before]);
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-gpg-sign",
+        "-m",
+        "took trust",
+        &adopt,
+    ]);
+    major(jtac(&repo, &["check", "--preview", "--base", &before]));
+}

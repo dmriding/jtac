@@ -76,6 +76,9 @@ pub struct InitArgs {
     /// per-clone settings file
     #[arg(long, value_name = "NAME")]
     pub agent: Option<String>,
+    /// Write this forge's CI workflow, the first `.jtac/signers` and a CI key (`github`)
+    #[arg(long, value_name = "FORGE")]
+    pub ci: Option<String>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -303,6 +306,7 @@ mod tests {
                 remote: Some("up".into()),
                 keep_hook: false,
                 agent: None,
+                ci: None,
                 json: false,
             }))
         );
@@ -407,5 +411,15 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "check", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn init_ci_names_a_forge_and_needs_a_value() {
+        let cli = Cli::try_parse_from(["jtac", "init", "--ci", "github"]).unwrap();
+        let Some(Command::Init(a)) = cli.command else {
+            panic!("init")
+        };
+        assert_eq!(a.ci.as_deref(), Some("github"));
+        assert!(Cli::try_parse_from(["jtac", "init", "--ci"]).is_err());
     }
 }

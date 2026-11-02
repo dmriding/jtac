@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # The tag must sit on main, match the workspace version, and have its changelog section.
+      # The tag must sit on main, match the workspace version and the action's, and have its changelog section.
       - run: |
           set -eu
           tag="${GITHUB_REF_NAME#v}"
@@ -39,6 +39,7 @@ jobs:
             echo "Fix: move the Unreleased entries under '## [$tag] - YYYY-MM-DD' in a release pull request."
             exit 1
           fi
+          sh scripts/action-version.sh
 
   build:
     needs: [gates, version]

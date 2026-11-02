@@ -14,11 +14,12 @@ use jtac_core::{
     Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, Sha256Digest, SignedLever,
     Ts, Verdict, gate,
 };
-use jtac_policy::{INTEGRITY_CHECK_ID, facts};
+use jtac_policy::{INTEGRITY_CHECK_ID, POLICY_PATH, facts};
 
 use crate::policy::Loaded;
 use crate::refuse::Refusal;
 use crate::repo::{self, Base, Head, RepoError};
+use crate::trust::TRUST_PATH;
 
 /// Everything one verdict was computed from.
 pub struct Judged {
@@ -60,13 +61,15 @@ pub struct Offered {
     pub adoption: Adoption,
 }
 
-/// Decision 38's fact: no parent of `head`, and nothing behind any of them, ever held
-/// `.jtac/policy.toml`. Read from history, never from the diff's base, which `--base` lets
-/// the pusher choose; every parent, since a merge whose first parent never held a policy
-/// would otherwise weaken the one its second parent holds; through `rev-list`, since `log`
-/// reads `log.follow` and `log.showRoot` from the pusher's own config and either hides the hit
-/// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`). A root commit
-/// has no parent and no diff to judge.
+/// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
+/// held `.jtac/policy.toml`, or `.jtac/signers` while `head` brings one. Read from history,
+/// never from the diff's base, which `--base` lets the pusher choose; every parent, since a
+/// merge whose first parent never held a policy would otherwise weaken the one its second
+/// parent holds; through `rev-list`, since `log` reads `log.follow` and `log.showRoot` from
+/// the pusher's own config and either hides the hit
+/// (`adopting_jtac_passes_the_first_check_and_the_next_policy_edit_is_major`,
+/// `adopting_the_trust_file_makes_every_protected_finding_minor_once`). A root commit has no
+/// parent and no diff to judge.
 pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
     let git = |e: RepoError| Refusal::repository(&e);
     let parents = repo::probe(
@@ -79,11 +82,20 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
     if parents.is_empty() {
         return Ok(Adoption::None);
     }
-    let mut args = vec!["rev-list", "-1", "--full-history"];
-    args.extend(parents.lines());
-    args.extend(["--", jtac_policy::POLICY_PATH]);
-    let touched = repo::probe(repo, &args, 128).map_err(git)?;
-    Ok(if touched.is_some_and(|t| t.is_empty()) {
+    let never_held = |path: &str| -> Result<bool, Refusal> {
+        let mut args = vec!["rev-list", "-1", "--full-history"];
+        args.extend(parents.lines());
+        args.extend(["--", path]);
+        let touched = repo::probe(repo, &args, 128).map_err(git)?;
+        Ok(touched.is_some_and(|t| t.is_empty()))
+    };
+    let trust = format!("{}:{TRUST_PATH}", head.commit.hex());
+    let brings_trust = repo::probe(repo, &["rev-parse", "--verify", "-q", &trust], 1)
+        .map_err(git)?
+        .is_some();
+    Ok(if brings_trust && never_held(TRUST_PATH)? {
+        Adoption::Trust
+    } else if never_held(POLICY_PATH)? {
         Adoption::Policy
     } else {
         Adoption::None

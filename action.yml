@@ -1,0 +1,139 @@
+# The jtac CI gate (DESIGN.md section 15): `jtac ci` on a pull request, the merge root on a
+# push to the default branch; the event decides. The workflow `jtac init --ci github` writes
+# supplies the checkout, the environment, the secret and the permissions (docs/CI.md).
+name: jtac
+description: Provenance gate for AI-written code. Verifies the roots a pull request pushed and signs the merge root.
+
+inputs:
+  key:
+    description: The CI private key, from the environment secret. The push job alone.
+    required: false
+    default: ""
+  principal:
+    description: user.email of the roots CI signs, the principal of its line in .jtac/signers.
+    required: false
+    default: jtac-ci@users.noreply.github.com
+  require-local-root:
+    description: Fail a pull request whose head has no root this gate can compare.
+    required: false
+    default: "false"
+  binary:
+    description: A built jtac to run instead of the pinned release.
+    required: false
+    default: ""
+  remote:
+    description: The remote roots are fetched from and the merge root is pushed to.
+    required: false
+    default: origin
+
+runs:
+  using: composite
+  steps:
+    - name: jtac binary
+      shell: bash
+      env:
+        VERSION: v0.2.7
+        BINARY: ${{ inputs.binary }}
+      run: |
+        set -eu
+        if [ -n "$BINARY" ]; then
+          bin="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
+        else
+          sh "$GITHUB_ACTION_PATH/install.sh" --to "$RUNNER_TEMP/jtac-bin" --version "$VERSION"
+          bin="$RUNNER_TEMP/jtac-bin/jtac"
+        fi
+        "$bin" --version
+        echo "JTAC_BIN=$bin" >> "$GITHUB_ENV"
+
+    # Full history for the walk, the roots from the repository the head lives in (a fork's
+    # are the fork's), and on a pull request the head itself: the checkout is the merge ref.
+    - name: history and roots
+      shell: bash
+      env:
+        REMOTE: ${{ inputs.remote }}
+        PR: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set -eu
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          git fetch -q --unshallow "$REMOTE"
+        fi
+        if [ -n "$HEAD_SHA" ]; then
+          git fetch -q "$REMOTE" "+refs/heads/$BASE_REF:refs/remotes/$REMOTE/$BASE_REF" "+refs/pull/$PR/head:refs/remotes/pull/$PR/head"
+          git fetch -q "$HEAD_REPO" "+refs/jtac/*:refs/jtac/*"
+          git checkout -q --detach "$HEAD_SHA"
+        else
+          git fetch -q "$REMOTE" "+refs/jtac/*:refs/jtac/*"
+        fi
+
+    - name: pull request gate
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        REMOTE: ${{ inputs.remote }}
+        BASE_REF: ${{ github.base_ref }}
+        REQUIRE: ${{ inputs.require-local-root }}
+      run: |
+        set -eu
+        flag=""
+        if [ "$REQUIRE" = true ]; then flag=--require-local-root; fi
+        code=0
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        "$JTAC_BIN" ci --base "refs/remotes/$REMOTE/$BASE_REF" $flag | tee -a "$GITHUB_STEP_SUMMARY" || code=$?
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+
+    # A merge commit on the default branch gets the CI root; a direct push, a squash or a
+    # rebase merge has no head the event names, so it reads as the developer's, and says so.
+    - name: merge root
+      if: github.event_name == 'push'
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+        PRINCIPAL: ${{ inputs.principal }}
+        REMOTE: ${{ inputs.remote }}
+        BEFORE: ${{ github.event.before }}
+      run: |
+        set -eu
+        say() { printf '%s\n' "$@" | tee -a "$GITHUB_STEP_SUMMARY" >&2; }
+        if [ -z "$KEY" ]; then
+          say "jtac: the CI key is not set, so no merge root can be signed." \
+              "A merge root is signed by the CI key from the environment secret; without it the job proves nothing, and a job that proves nothing must not pass." \
+              "Create the environment and run: gh secret set JTAC_CI_KEY --env jtac-ci < <ci key path>; then re-run this job."
+          exit 2
+        fi
+        if ! expr "$BEFORE" : '0*$' >/dev/null && git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then :; else
+          say "jtac: no CI root: this push created the branch, so there is no old tip to diff from." \
+              "The merge root judges the diff from the branch's old tip; the next merge gets one." \
+              "Nothing to do."
+          exit 0
+        fi
+        if ! head=$(git rev-parse -q --verify HEAD^2); then
+          say "jtac: no CI root: $(git rev-parse --short HEAD) is not a merge commit (a direct push, a squash or a rebase merge)." \
+              "A CI root stands for the pull request head it compared; this push names none, so the commit reads as the developer's root says, or absent." \
+              "Require merge commits in the ruleset; jtac waive <commit> --ci --reason records a merge made around CI."
+          exit 0
+        fi
+        keyfile="$RUNNER_TEMP/jtac-ci-key"
+        trap 'rm -f "$keyfile"' EXIT
+        umask 077
+        printf '%s\n' "$KEY" > "$keyfile"
+        git config user.email "$PRINCIPAL"
+        git config jtac.signingkey "$keyfile"
+        code=0
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        "$JTAC_BIN" check --from "$head" --base "$BEFORE" --push "$REMOTE" | tee -a "$GITHUB_STEP_SUMMARY" || code=$?
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+
+    # The nodes behind the verdict, for `jtac replay` on a downloaded store.
+    - name: evidence store
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: jtac-store-${{ github.job }}
+        path: .git/jtac
+        if-no-files-found: ignore
+        include-hidden-files: true
