@@ -104,9 +104,9 @@ runs:
     # A tip the forge names as a merged pull request's gets `check --from <its head>`, CI's one
     # verdict from the old tip with the head chain's waivers in scope, and a root; anything
     # else, a direct push or a fast-forward, gets `jtac ci` from the old tip and no root, so a
-    # bypass is judged and never signed over (decision 43). A tip that already carries a root
-    # is compared by `jtac ci` first, since a standing root is kept. A force push or an old
-    # tip the clone cannot fetch is refused: a gate that cannot anchor judges nothing.
+    # bypass is judged and never signed over (decision 43); a tip that already carries a root
+    # keeps it, which is what a re-run finds. A force push or an old tip the clone cannot
+    # fetch is refused: a gate that cannot anchor judges nothing.
     - name: merge root
       if: github.event_name == 'push'
       shell: bash
@@ -136,7 +136,7 @@ runs:
         if [ "$FORCED" = true ]; then
           say "jtac: refused: this push rewrote the branch, so the old tip $BEFORE is not an ancestor of the new one." \
               "The gate anchors every verdict at the old tip; a force push moves the anchor, and a check that cannot anchor must not pass." \
-              "Restore the old tip (git push --force-with-lease origin $BEFORE:$GITHUB_REF_NAME) and push the change as a pull request; deny force pushes in the ruleset."
+              "Restore the old tip (git push --force-with-lease $REMOTE $BEFORE:$GITHUB_REF_NAME) and push the change as a pull request; deny force pushes in the ruleset."
           exit 2
         fi
         git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null || git fetch -q "$REMOTE" "$BEFORE" || true
@@ -157,7 +157,7 @@ runs:
           gate ci --base "$BEFORE"; exit $?
         fi
         if [ "$head" = "$GITHUB_SHA" ]; then
-          say "jtac: no CI root: pull request #$number was merged by fast-forward, so the tip is its head and keeps the developer's root; it is judged below." \
+          say "jtac: no CI root: pull request #$number was merged by fast-forward, so the tip is its head and the evidence is the developer's, where it was pushed; it is judged below." \
               "A merge root stands for a commit the forge made; a fast-forward makes none. Require merge commits in the ruleset for CI-signed evidence." \
               "Nothing else to do."
           gate ci --base "$BEFORE"; exit $?
@@ -169,19 +169,19 @@ runs:
           exit 2
         fi
         git fetch -q "$REMOTE" "+refs/pull/$number/head:refs/remotes/pull/$number/head"
-        # The head repository's roots, only where this clone holds none: a fork never replaces
-        # a root the base holds, so the merge root's parent stays the branch's own.
+        # The head repository's roots for the pull request's own commits alone, where this clone
+        # holds none: a fork never supplies the old tip's root, so the merge root's parent stays
+        # the branch's own, and no other ref of the fork's enters the clone.
         if [ -n "$head_repo" ]; then
-          git fetch -q "$head_repo" "+refs/jtac/*:refs/jtac-head/*"
-          git for-each-ref --format='%(objectname) %(refname)' 'refs/jtac-head/' | while read -r oid ref; do
-            want="refs/jtac/${ref#refs/jtac-head/}"
-            git rev-parse -q --verify "$want" >/dev/null || git update-ref "$want" "$oid"
+          git fetch -q "$head_repo" "+refs/jtac/roots/*:refs/jtac-head/roots/*"
+          for c in $(git rev-list "$head" --not "$BEFORE"); do
+            from="refs/jtac-head/roots/${c:0:2}/$c"
+            want="refs/jtac/roots/${c:0:2}/$c"
+            if oid=$(git rev-parse -q --verify "$from") && ! git rev-parse -q --verify "$want" >/dev/null; then
+              git update-ref "$want" "$oid"
+            fi
           done
           git for-each-ref --format='delete %(refname)' 'refs/jtac-head/' | git update-ref --stdin
-        fi
-        if git rev-parse -q --verify "refs/jtac/roots/${GITHUB_SHA:0:2}/$GITHUB_SHA" >/dev/null; then
-          say "jtac: the tip already carries a root; it is compared first and stands, so this run writes none."
-          gate ci --base "$BEFORE"
         fi
         keyfile="$RUNNER_TEMP/jtac-ci-key"
         trap 'rm -f "$keyfile"' EXIT
