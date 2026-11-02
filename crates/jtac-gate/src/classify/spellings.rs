@@ -705,10 +705,151 @@ const DATA: &[(&str, &str)] = &[
     ("g=git; $g push", "unreadable Variable"),
     ("$HOME/bin/tool build", "unreadable Variable"),
     ("cat <<EOF > f\n$(git push)\nEOF", "push ?"),
-    ("cat 3<<'EOF'\ngit push\nEOF", ""),
+    ("cat 3<<'EOF'\ngit push\nEOF", "unreadable Syntax"),
     ("[[ -n x ]] && git push", "push ?"),
     ("(( 1 + 1 )); git push", "push ?"),
     ("exit 1; git push", "push ?"),
+    ("x=${a:-$( )}; echo $( # nothing\n)", ""),
+    ("x=$(\\\n); echo \\$(x) \"\\$(y)\" '$(z)' a\\`b", ""),
+    (
+        "git commit -m \"handle <(x) in the reader\"; echo \"usage: diff <(a) >(b)\"",
+        "",
+    ),
+    ("echo ${PWD#${PWD#${PWD#${PWD#$(git push)}}}}", "push ?"),
+    (
+        "tag=${BRANCH//\\//-}; echo \"${N:-\\$HOME}\" ${a:-\\*}; git push",
+        "push ?",
+    ),
+    (
+        "echo a\\\\b \"c\\\"d\" \"${x//\\\"/\\\\\\\"}\" ${x//\\\\/\\\\\\\\}; git push",
+        "push ?",
+    ),
+    ("x=\"${N:-\\$x}\"; git push", "push ?"),
+    (
+        "out=\"${x//\\\\/\\\\\\\\}\"; out=\"${out//\\\"/\\\\\\\"}\"; echo \"{\\\"m\\\":\\\"$out\\\"}\"; git push",
+        "push ?",
+    ),
+    (
+        "echo \"${x/#\\~/$HOME}\" \"${x//\\$/\\\\$}\"; git push",
+        "push ?",
+    ),
+    (
+        "echo \"\\\"$HOME\\\"\" \"{\\\"k\\\":\\\"${name}\\\",\\\"d\\\":\\\"$(date)\\\"}\"; git push",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"a\\\nb${x}\" \"\\\"${a@Q}\\\"\" \"\\\"${#a}\\\"\"; git push",
+        "push ?",
+    ),
+    ("echo \"${N:-'a'\\\"}\"; git push", "push ?"),
+    (
+        "curl -d \"{\\\"text\\\":\\\"${text//\\\"/\\\\\\\"}\\\",\\\"user\\\":\\\"$USER\\\"}\" https://example.com; git push",
+        "push ?",
+    ),
+    (
+        "echo \"${p//\\\\//}/$f\" \"Path: ${WIN//\\\\//} -> $DEST\"; sed \"s/${old//\\//\\\\/}/$new/\" f; git push",
+        "push ?",
+    ),
+    ("echo \"${a:-<(x)}\" \"${a:=<(y)}\" \"${a:+<(z)}\"", ""),
+    ("x=$((a>(b)?a:b)); cat <<EOF\n${a:-<(x)} <(y)\nEOF", ""),
+    (
+        "echo $(( ${a:-<(x)} )) ${PWD:${a:-<(x)}}; for ((i=${a:-<(x)};0;)); do :; done",
+        "",
+    ),
+    (
+        "(( ${a:-<(x)} )); echo ${PWD#\\/} ${PWD/x/y} 'm[${a:-<(x)}]' \"m[${a:-<(x)}]\"",
+        "",
+    ),
+    (
+        "git commit -m \"split on $'\\n'\"; echo $\"hi\" && git push",
+        "push ?",
+    ),
+    (
+        "grep -n \"^fn main$\" src/lib.rs; rg \"TODO$\"; sed -i \"/^$/d\" f",
+        "",
+    ),
+    (
+        "[[ $v =~ ^[a-z]+$ ]]; case $x in *$) :;; esac; ls [$]x; cat <<< \"a$\"",
+        "",
+    ),
+    (
+        "echo ${a:-$(git push)} ${b[$(git push)]} $(( $(git push) ))",
+        "push ? ; push ? ; push ?",
+    ),
+    (
+        "msg=\"\\\nHello $USER\nbye\"; echo \"\\\n$(date)\"; git push",
+        "push ?",
+    ),
+    ("cat <<-E\n\tx\n\tE\ngit push", "push ?"),
+    ("cat <<'E'\nx\\\nE\ngit push", "unreadable Syntax"),
+    ("echo \\$\\\n{y}; git push", "push ?"),
+    (
+        "curl -d \"{\\\"text\\\":\\\"$(cat $FILE)\\\"}\" https://example.com; git push",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"{\\\"k\\\":\\\"$(basename $PWD)\\\"}\" \"\\\"\\\"\\\"$(ls $HOME)\"; git push",
+        "unreadable Syntax",
+    ),
+    ("git push; cat <<'E'\nhello", "push ?"),
+    ("cat <<E; cat <<F\nx\nE\ny\nF\ngit push", "push ?"),
+    ("x=$(cat <<E\nx\nE\n); git push", "push ?"),
+    ("cat <<\\E\nx\nE\ngit push", "push ?"),
+    ("cat <<\\E\n$(x)\nE\ngit push", "push ?"),
+    ("cat <<EOF\nEOF)\nEOF\ngit push", "push ?"),
+    (
+        "cat <<'A'\n$(gi'\\\n't push)\nA\ngit push",
+        "unreadable Syntax",
+    ),
+    ("bash <<EOF\nr=\"\\$(git push)\"\nEOF", "push ?"),
+    ("bash <<A\ngi'\\\n't push\nA", "push ?"),
+    ("cat <<A\n$(echo a\n\tb)\nA\ngit push", "push ?"),
+    ("bash <<A\ngit pu\\\\sh\nA", "push ?"),
+    ("bash <<A >/dev/null\ngit push\nA", "push ?"),
+    ("bash <<A >>log 2>&1\ngit push\nA", "push ?"),
+    ("bash <<A &>/dev/null\ngit push\nA", "push ?"),
+    ("bash <<A {fd}>/dev/null\ngit push\nA", "push ?"),
+    ("bash <<'A'\ngit pu\\\\sh\nA", ""),
+    ("echo $(( 1 + 2 )) $(( )); git push", "push ?"),
+    ("bash <<A <&0\ngit push\nA", "unreadable ShellString"),
+    ("bash <<A 3<&0 <&3\ngit push\nA", "unreadable ShellString"),
+    ("bash <<A <&-\ngit push\nA", "unreadable ShellString"),
+    ("bash 3<<<x; git push", "unreadable Syntax"),
+    ("bash <<<'git push' {fd}</dev/null", "push ?"),
+    ("bash <&0", "unreadable ShellString"),
+    ("bash 0</dev/null", "unreadable ShellString"),
+    ("bash <&-", "unreadable ShellString"),
+    ("bash <<<'git push' 0>&0", "unreadable ShellString"),
+    ("bash <<<'git push' 3<&0 0>&3", "unreadable ShellString"),
+    (
+        "cat <<A >\"$(bash)\"\ngit push\nA",
+        "unreadable ShellString",
+    ),
+    ("cat <<<'git push' >\"$(bash)\"", "unreadable ShellString"),
+    ("cat 3<\"$(bash)\" <<<'git push'", "unreadable ShellString"),
+    ("git push > \"$(mktemp)\"", "push ?"),
+    ("echo 'git push' > >(bash)", "unreadable ShellString"),
+    ("bash < <(echo 'git push')", "unreadable ShellString"),
+    ("cp <(echo 'git push') >(bash)", "unreadable ShellString"),
+    ("cat <<\\\n-A\nx\nA\ngit push\n-A", "push ?"),
+    ("bash <<-A\n\tgi\\\n\tt push\n\tA", ""),
+    ("bash -c 'gi\\\nt push'", "push ?"),
+    ("echo 'a \\\nb' $'c\\\nd'", ""),
+    ("eval 'gi\\\nt push'", "push ?"),
+    ("bash <<A\ngit 'pu'\\\n'sh'\nA", "push ?"),
+    ("$'git'\\\n push", "push ?"),
+    ("echo `# c \\\ngit push\n`", ""),
+    ("cat <<E\n$( # c \\\ngit push\n)\nE", ""),
+    ("(( 2#1 \\\n+ 1 ))", ""),
+    ("echo a#b \\\ngit push", "unreadable Runner(echo)"),
+    ("python3<<EOF\nprint(1)\nEOF", ""),
+    ("cat file2<<EOF\nx\nEOF", ""),
+    (
+        "git commit -m \"Bump to $(cat VERSION) \\\"stable\\\"\"",
+        "",
+    ),
+    ("echo \"$(date) \\\"x\\\"\"", ""),
+    ("echo \"${N:-\\$HOME}\" ${M:-\\${HOME}}", ""),
 ];
 
 /// Unreadable syntax.
@@ -717,6 +858,295 @@ const SYNTAX: &[(&str, &str)] = &[
     ("git push 'x", "unreadable Syntax"),
     ("git push $(", "unreadable Syntax"),
     ("git push; fi", "unreadable Syntax"),
+    (
+        "x=${a:-$(git push; if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(git push; if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"${remote:-$(git push --no-verify origin HEAD; if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi)}\"",
+        "unreadable Syntax",
+    ),
+    (
+        "a[$(a[$(a[$(a[$(a[$(git push)]=1)]=1)]=1)]=1)]=1",
+        "unreadable Syntax",
+    ),
+    (
+        "echo $(( $(if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi; git push) ))",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${a/x/$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi; git push)}",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${a[$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi; git push)]}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then echo ${b:-$(git push)}; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then echo \"${b:-\"`git push --no-verify`\"}\"; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then (( $(git push) )); fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(cat <(git push; if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi))}",
+        "unreadable Syntax",
+    ),
+    ("(( $(git push) 1 ))", "unreadable Syntax"),
+    ("(( a[ $(git push) ))", "unreadable Syntax"),
+    ("cat ${b:-<(git push)}", "unreadable Syntax"),
+    ("x=${a:=<(cd /x && git push)}", "unreadable Syntax"),
+    (
+        "x=${a:-`git push; if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi`}",
+        "unreadable Syntax",
+    ),
+    (
+        "cat <<EOF\n${a:-$(git push; if :; then if :; then if :; then if :; then if :; then if :; then if :; then if :; then :; fi; fi; fi; fi; fi; fi; fi; fi)}\nEOF",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${PWD#${PWD#${PWD#${PWD#${PWD#$(git push)}}}}}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then echo ${b:-$\\\n(git push)}; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then echo ${b:-<\\\n(git push)}; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    (
+        "y='$(git push)'; x=${a:-$(if :; then if :; then if :; then if :; then if :; then if :; then if :; then echo ${b:-${y@P}}; fi; fi; fi; fi; fi; fi; fi)}",
+        "unreadable Syntax",
+    ),
+    ("echo ${b:-$\\\n(git push)}", "push ?"),
+    ("echo \"${PWD/x/<(git push)}\"", "unreadable Syntax"),
+    ("echo \"${PWD//x/>(git push)}\"", "unreadable Syntax"),
+    ("echo \"${PWD/#x/<(git push)}\"", "unreadable Syntax"),
+    ("echo \"${PWD#${a:-<(git push)}}\"", "unreadable Syntax"),
+    (
+        "echo \"${PWD,<(git push)}\" \"${PWD^^<(git push)}\"",
+        "unreadable Syntax",
+    ),
+    ("echo $(( ${PWD/x/<(git push)} ))", "unreadable Syntax"),
+    ("echo `echo ${a:-\\$(git push)}`", "unreadable Syntax"),
+    (
+        "echo `echo ${PWD#${PWD#${PWD#${PWD#${PWD#\\$(git push)}}}}}`",
+        "unreadable Syntax",
+    ),
+    ("echo `echo \\\\$(git push)`", "unreadable Syntax"),
+    (
+        "echo `echo \"\\\\\" '$(git push)' \"\\\\\"`",
+        "unreadable Syntax",
+    ),
+    ("[[ 1 -eq ${a:-<(git push)} ]]", "unreadable Syntax"),
+    ("[[ -v ${a:-<(git push)} ]]", "unreadable Syntax"),
+    ("m=([<(git push)]=1)", "unreadable Syntax"),
+    ("declare -A m; m[${a:-<(git push)}]=1", "unreadable Syntax"),
+    (
+        "declare -A m; echo \"${m[${a:-<(git push)}]}\"",
+        "unreadable Syntax",
+    ),
+    (
+        "declare -A m; (( m[${a:-<(git push)}] ))",
+        "unreadable Syntax",
+    ),
+    ("echo \"$(( m[${a:-<(git push)}] ))\"", "unreadable Syntax"),
+    (
+        "cat <<EOF\n${m[${a:-<(git push)}]}\nEOF",
+        "unreadable Syntax",
+    ),
+    ("echo ${PWD:${m[${a:-<(git push)}]}}", "unreadable Syntax"),
+    (
+        "declare -A m; cat <<EOF\n$(( m[${a:-<(git push)}] ))\nEOF",
+        "unreadable Syntax",
+    ),
+    (
+        "declare -A m; let 'm[${a:-<(git push)}]=1'",
+        "unreadable Syntax",
+    ),
+    ("unset 'm[${a:->(git push)}]'", "unreadable Syntax"),
+    ("[[ -v 'm[${a:-<(git push)}]' ]]", "unreadable Syntax"),
+    ("printf -v 'm[${a:-<(git push)}]' x", "unreadable Syntax"),
+    ("echo ${PWD/\\/$(git push)/y}", "unreadable Syntax"),
+    ("x=\"${PWD//\\/<(git push)/}\"", "unreadable Syntax"),
+    ("echo ${N:-\\$x$(git push)}", "unreadable Syntax"),
+    ("echo \"${N:-\\\\$(git push)}\"", "unreadable Syntax"),
+    ("echo \"${PWD#\\$x$(git push)}\"", "unreadable Syntax"),
+    ("echo ${N:-${M:-\\$x$(git push)}}", "unreadable Syntax"),
+    ("(echo ${PWD/\\/$(git push)/y})", "unreadable Syntax"),
+    ("echo ${PWD/#x/\\/$(git push)}", "push ?"),
+    ("echo \"${PWD/x/\\\\$(git push)}\"", "unreadable Syntax"),
+    (
+        "echo ${N:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)}",
+        "unreadable Syntax",
+    ),
+    (
+        "declare -A m; echo ${m[\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)]}",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${M:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\}${N:-$(git push)}",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${N:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)}\"x\"",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"${N:-'\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"'$(git push)}\"",
+        "unreadable Syntax",
+    ),
+    (
+        "echo ${x:-a}; echo ${N:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)}",
+        "unreadable Syntax",
+    ),
+    (
+        "case x in ${N:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)}) ;; esac",
+        "unreadable Syntax",
+    ),
+    (
+        "case x in y|${N:-\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\$(git push)}\"x\") ;; esac",
+        "unreadable Syntax",
+    ),
+    ("echo \"\\\"${X:-$(git push)}\\\"\"", "unreadable Syntax"),
+    ("echo \"a\\\nb${N:-$(git push)}\"", "push ?"),
+    ("echo $\"\\\"${N:-$(git push)}\"", "unreadable Syntax"),
+    (
+        "echo \"${N:-\\''\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"'$(git push)}\"",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"${N:-\"'\"'\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"'$(git push)}\"",
+        "unreadable Syntax",
+    ),
+    ("echo ${x:-a}\\\n\\\n${N:-$(git push)}", "push ?"),
+    (
+        "x=\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"${m[$(git push)]}\"",
+        "unreadable Syntax",
+    ),
+    (
+        "x=\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"$((1+$(git push)))\"",
+        "unreadable Syntax",
+    ),
+    ("echo \"\\\n${N:-$(git push)}\"", "push ?"),
+    ("echo \"${x}\\\n\\\n${N:-$(git push)}\"", "push ?"),
+    (
+        "echo \"\\\n\\\n\\\n\\\n\\\n\\\n\\\n\\\n\\\n\\\n`echo \\$(git push)`\"",
+        "unreadable Syntax",
+    ),
+    (
+        "echo \"\\\"$(echo a)é`echo \\$(git push)`\"",
+        "unreadable Syntax",
+    ),
+    ("echo \"$\\\n{y}${a[$(git push)]}\"", "push ?"),
+    ("echo $\\\n{y}${a[$(git push)]}\"z\"", "push ?"),
+    (
+        "echo \"\\\"\\\"\\\"\\\"\\\"z$[1+$(git push)]\"",
+        "unreadable Syntax",
+    ),
+    ("echo \"\\\"${a[$(git push)]}\"", "unreadable Syntax"),
+    ("echo \"\\\"$(date)\\\" `git push`\"", "unreadable Syntax"),
+    ("eval $\\\n(printf \"git push\")", "unreadable Eval"),
+    ("cat <<E\nx\\\nE\n: '$(git push)'\nE", "push ?"),
+    ("cat <<E\nx\nE \n: '$(git push)'\nE", "unreadable Syntax"),
+    (
+        "cat <<-E\n\tx\n\tE\t\n: '$(git push)'\nE",
+        "unreadable Syntax",
+    ),
+    (
+        "cat <<E; cat <<F\nx\nE\n$(git push)\nF",
+        "unreadable Syntax",
+    ),
+    ("cat <<{E}\n$(git push)\n{E}", "unreadable Syntax"),
+    ("cat <<EF\nE\\\nF\ngit push\nEF", "push ?"),
+    ("x=$(cat <<E\nx\nE)\ngit push\nE\n)", "unreadable Syntax"),
+    ("echo \"\\\n$${\\\nx}${x:-$(git push)}\"", "push ?"),
+    (
+        "echo \"$'a'$\"a\"\\\\\\\né\\\n${\\\nx}$[1+$(git push)]${x:-'\\\"'}$$\"",
+        "unreadable Syntax",
+    ),
+    ("cat <<\"E\\$\"\nx\nE$\ngit push\nE\\$", "unreadable Syntax"),
+    ("cat <<E\\\n\n$(git push)\nE\\", "unreadable Syntax"),
+    ("cat <<é\"\\$\"\nx\né$\ngit push", "unreadable Syntax"),
+    ("cat <<A\n$(gi'\\\n't push)\nA", "push ?"),
+    (
+        "cat <<-A\n$(cat <<B\n\tB\ngit push\nB\n)\nA",
+        "unreadable Syntax",
+    ),
+    ("echo `'gi\\\nt' push`", "push ?"),
+    ("cat <<A <<EF\na\nA\nE\\\nF\ngit push\nEF", "push ?"),
+    ("cat <<EF\nE\\\nF\ngit push", "push ?"),
+    (
+        "echo \"$(echo \"\\\"\")${x:-\\\"}\\\n\\\n\\\né$[1+$(git push)]${x:-\"\\\"\"}${\\\nx}\"",
+        "unreadable Syntax",
+    ),
+    ("echo ${x\\\n:-$(git push)}", "push ?"),
+    ("{\\\n git push; }", "push ?"),
+    ("cat <<A\n$((1+$(gi'\\\n't push)))\nA", "push ?"),
+    ("cat <<A\n${y\\\n:-$(git push)}\nA", "push ?"),
+    ("echo $((true) && git push)", "unreadable Syntax"),
+    ("cat <<A\n$((true) && git push)\nA", "unreadable Syntax"),
+    ("echo \"$(c\\\nase x in x) git push;; esac)\"", "push ?"),
+    ("bash <<-A\ngit\\\n\tpush\nA", "push ?"),
+    ("git 3<<<x push", "unreadable Syntax"),
+    ("bash <<A 3<<B\ngit push\nA\necho\nB", "unreadable Syntax"),
+    ("{ bash; } <<<'git push'", "unreadable ShellString"),
+    ("( bash ) <<A\ngit push\nA", "unreadable ShellString"),
+    (
+        "if true; then bash; fi <<A\ngit push\nA",
+        "unreadable ShellString",
+    ),
+    ("bash <&3", "unreadable ShellString"),
+    ("# note \\\ngit push", "unreadable Syntax"),
+    ("echo x # note \\\ngit push", "unreadable Syntax"),
+    ("[\\\n[ 'a[$(git push)]' -eq 1 ]]", "unreadable Syntax"),
+    ("(\\\n( x = 'a[$(git push)]' ))", "unreadable Syntax"),
+    ("x=$(\\\n( 1 )); git push", "push ?"),
+    ("echo \"$(x)\\\"b\"; git push", "push ?"),
+    ("echo \"${x:-\\$(git push)}\"", "unreadable Syntax"),
+    ("echo ${PWD/\\/$(git push)/y}", "unreadable Syntax"),
+    ("x=\"${PWD//\\/<(git push)/}\"", "unreadable Syntax"),
+    ("echo \"${PWD#\\$x$(git push)}\"", "unreadable Syntax"),
+    ("cat <<E\\$\ngit push\nE$", "unreadable Syntax"),
+    ("cat <<{E}\ngit push\n{E}", "unreadable Syntax"),
+    ("cat <<E\\\nF\ngit push\nEF", "unreadable Syntax"),
+    ("bash -c '# c\\\ngit push'", "unreadable Syntax"),
+    ("eval '# c\\\ngit push'", "unreadable Syntax"),
+    (
+        "cat <<<'git push' <<A\n$(bash)\nA",
+        "unreadable ShellString",
+    ),
+    ("x=( [0]=a # c \\\n[1]=$(git push)\n)", "unreadable Syntax"),
+    (
+        "declare -A m=( [k]=v # c \\\n[j]=$(git push)\n)",
+        "unreadable Syntax",
+    ),
+    ("m=( [k]=v # c \\\nx $(git push)\n)", "unreadable Syntax"),
+    ("#!/bin/sh \\\ngit push", "unreadable Syntax"),
+    ("echo ${M:-\\${$(git push)}", "unreadable Syntax"),
+    ("x=${M:-\\${x$(git push)}", "unreadable Syntax"),
+    ("echo ${M:-\\${#$(git push)}", "unreadable Syntax"),
+    ("export x=${M:-\\${!$(git push)}", "unreadable Syntax"),
+    (
+        "N=abc; echo \"${N/a/\\${$(git push)}\"",
+        "unreadable Syntax",
+    ),
+    ("N=abc; echo ${N^\\${$(git push)}", "unreadable Syntax"),
+    ("N=abc; echo ${N#\\${x$(git push)}", "unreadable Syntax"),
+    ("echo ${M:-$((1))\\${$(git push)}", "unreadable Syntax"),
+    ("eval $'git push #\\\n\\''", "unreadable Syntax"),
 ];
 
 /// Every row: (script, what it does). An empty second column is a script that does nothing this
@@ -762,32 +1192,32 @@ fn shells_nest_three_deep_and_the_fourth_is_unreadable() {
 /// The scan refuses before the parser runs, and closers the parser would not honour do not
 /// lower its count.
 #[test]
-fn substitutions_nest_sixteen_deep_and_deeper_is_unreadable_without_parsing() {
+fn substitutions_nest_twelve_deep_and_deeper_is_unreadable_without_parsing() {
     use crate::shell::scan::too_deep_or_long;
     let nest = |n: usize| format!("{}git push{}", "echo $(".repeat(n), ")".repeat(n));
-    assert_eq!(show(&classify(&nest(16))), "push ?");
-    assert_eq!(show(&classify(&nest(17))), "unreadable Syntax");
-    assert!(too_deep_or_long(&nest(16)).is_none());
-    assert!(too_deep_or_long(&nest(17)).is_some());
+    assert_eq!(show(&classify(&nest(12))), "push ?");
+    assert_eq!(show(&classify(&nest(13))), "unreadable Syntax");
+    assert!(too_deep_or_long(&nest(12)).is_none());
+    assert!(too_deep_or_long(&nest(13)).is_some());
     assert!(too_deep_or_long(&"(".repeat(2000)).is_some());
     for hidden in [
-        format!("echo {}git push{}", "$(: }} ".repeat(17), ")".repeat(17)),
+        format!("echo {}git push{}", "$(: }} ".repeat(13), ")".repeat(13)),
         format!(
             "echo \"'\"; echo {}git push{} #'",
-            "$(".repeat(17),
-            ")".repeat(17)
+            "$(".repeat(13),
+            ")".repeat(13)
         ),
         format!(
             "echo \" #\"; echo {}git push{}",
-            "$(".repeat(17),
-            ")".repeat(17)
+            "$(".repeat(13),
+            ")".repeat(13)
         ),
         format!(
             "cat <<'EOF'\r\nhi\r\nEOF\r\necho {}x{}",
-            "$(".repeat(17),
-            ")".repeat(17)
+            "$(".repeat(13),
+            ")".repeat(13)
         ),
-        format!("(( 1<<2 ))\na{}0{}=1", "[a".repeat(17), "]".repeat(17)),
+        format!("(( 1<<2 ))\na{}0{}=1", "[a".repeat(13), "]".repeat(13)),
         format!(
             "echo {}git push{}",
             "$(echo \")\" ".repeat(4097),
@@ -798,38 +1228,58 @@ fn substitutions_nest_sixteen_deep_and_deeper_is_unreadable_without_parsing() {
     }
 }
 
-/// Every shape the parser recurses on, filled to the size cap: the parser thread has the
-/// stack for each, and a plain long script is not refused for its length. Arithmetic and
-/// `${…}` bodies are the exception, capped because the parser is quadratic in them.
+/// Every shape the parser recurses on, filled to the size cap, is read or refused with a
+/// reason, never aborted, and a plain long script is not refused for its length. The parser
+/// stops an operator chain at 1000 links and keyword nesting at 100 in every build; between
+/// this reader's bracket cap and that, a debug build refuses on its stack budget where a
+/// release build reads, so nothing in that band is asserted. Arithmetic and `${…}` bodies
+/// are capped here because the parser is quadratic in them.
 #[test]
 fn every_shape_under_the_size_cap_parses_without_aborting() {
     let fill = |unit: &str, tail: &str| {
         let n = (super::MAX_BYTES - tail.len() - 1) / unit.len();
         format!("{}{tail}", unit.repeat(n))
     };
+    let chain = |unit: &str, n: usize| format!("{}git push", unit.repeat(n));
     assert_eq!(show(&classify(&fill("time ", "git push"))), "push ?");
-    assert_eq!(show(&classify(&fill("true && ", "git push"))), "push ?");
-    assert_eq!(show(&classify(&fill("true || ", "git push"))), "push ?");
-    assert_eq!(show(&classify(&fill("true | ", "git push"))), "push ?");
     assert_eq!(show(&classify(&fill("x=1;", "git push"))), "push ?");
+    assert_eq!(show(&classify(&fill("true; ", "git push"))), "push ?");
+    for unit in ["true && ", "true || ", "true | "] {
+        assert_eq!(show(&classify(&chain(unit, 1000))), "push ?", "{unit}");
+        assert_eq!(
+            show(&classify(&chain(unit, 1001))),
+            "unreadable Syntax",
+            "{unit}"
+        );
+        assert_eq!(
+            show(&classify(&fill(unit, "git push"))),
+            "unreadable Syntax"
+        );
+    }
+    let keyword = |n: usize| format!("{}git push{}", "if :; then ".repeat(n), ";fi".repeat(n));
+    assert_eq!(show(&classify(&keyword(12))), "push ?");
+    assert_eq!(show(&classify(&keyword(101))), "unreadable Syntax");
     let n = (super::MAX_BYTES - 16) / "if :; then ;fi".len();
     for shape in [
         fill("coproc ", "true"),
         fill("! ", "git push"),
-        format!("{}git push{}", "if :; then ".repeat(n), ";fi".repeat(n)),
+        keyword(n),
         format!("if :; then\n{}fi", "echo a | cat\n".repeat(4000)),
     ] {
         assert!(shape.len() <= super::MAX_BYTES);
         classify(&shape);
     }
     let arith = |unit: &str, n: usize| format!("(( {}1 ))", unit.repeat(n));
-    assert_eq!(show(&classify(&arith("1+", 2000))), "");
-    assert_eq!(show(&classify(&arith("a=", 2000))), "");
+    assert_eq!(show(&classify(&arith("1+", 1000))), "");
+    assert_eq!(show(&classify(&arith("a=", 100))), "");
     assert_eq!(
-        show(&classify(&format!("x=${{a:{}1}}", "1+".repeat(2000)))),
+        show(&classify(&format!("x=${{a:{}1}}", "1+".repeat(1000)))),
         ""
     );
     for over in [
+        arith("1+", 1001),
+        arith("a=", 101),
+        format!("x=${{a:{}1}}", "1+".repeat(1001)),
         arith("1+", 2100),
         arith("a?", 2100),
         arith("!", 4200),
@@ -837,9 +1287,9 @@ fn every_shape_under_the_size_cap_parses_without_aborting() {
         format!("x=${{a:{}1}}", "1+".repeat(30000)),
         format!("echo ${{a[{}1]}}", "1+".repeat(2100)),
         format!("(( ${{x:-]}} + {}1 ))", "1+".repeat(2100)),
-        format!("(( {}0{} ))", "a[".repeat(17), "]".repeat(17)),
-        format!("echo ${{{}0{}}}", "a[".repeat(17), "]".repeat(17)),
-        format!("cat <<EOF\n{}x{}\nEOF", "$(".repeat(17), ")".repeat(17)),
+        format!("(( {}0{} ))", "a[".repeat(13), "]".repeat(13)),
+        format!("echo ${{{}0{}}}", "a[".repeat(13), "]".repeat(13)),
+        format!("cat <<EOF\n{}x{}\nEOF", "$(".repeat(13), ")".repeat(13)),
     ] {
         assert_eq!(show(&classify(&over)), "unreadable Syntax", "{over}");
     }

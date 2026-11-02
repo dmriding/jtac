@@ -4,24 +4,26 @@
 //! each one runs; a pipe's sides and a backgrounded command are subshells, as in bash.
 
 use shuck_ast::{
-    ArithmeticExpr, ArithmeticExprNode, ArithmeticLvalue, ArrayElem, AssignmentValue, BinaryOp,
-    BourneParameterExpansion, BuiltinCommand, Command, CommandSubstitutionSyntax, CompoundCommand,
-    ConditionalBinaryOp, ConditionalExpr, ConditionalUnaryOp, DeclClause, DeclOperand,
-    HeredocBodyPart, ParameterExpansion, ParameterExpansionSyntax, ParameterOp, Pattern,
-    PatternPart, Redirect, RedirectKind, RedirectTarget, SimpleCommand, Span, Stmt, StmtSeq,
-    StmtTerminator, VarRef, Word as AstWord, WordPart, static_command_name_text,
+    ArrayElem, AssignmentValue, BinaryOp, BourneParameterExpansion, BuiltinCommand, Command,
+    CommandSubstitutionSyntax, CompoundCommand, ConditionalBinaryOp, ConditionalExpr,
+    ConditionalUnaryOp, DeclClause, DeclOperand, ParameterExpansion, ParameterExpansionSyntax,
+    ParameterOp, Pattern, PatternPart, PatternPartNode, SimpleCommand, Span, Stmt, StmtSeq,
+    StmtTerminator, VarRef, Word as AstWord, WordPart, WordPartNode, static_command_name_text,
 };
 use shuck_parser::parser::{ParseStatus, Parser};
 
-use super::quote::{ansi_decode, spells_a_substitution, unescape};
+use super::comment::commented;
+use super::join::{cut_within, join_continuations, original_span};
+use super::laid::{framed, placed, runs};
+use super::reread::{evaluates, quoted_substitution, slice, static_text};
 use super::scan::{MAX_SUBSHELLS, too_deep_or_long};
 
 use super::{Item, Simple, Word};
 
-/// The parser recurses once per nested construct and the hook's own stack is not ours to
-/// size. The deepest shape under [`crate::classify::MAX_BYTES`] (`time` repeated) takes about
-/// 4 KiB of stack per byte in a debug build; this reserves twice that, virtual and untouched
-/// until a script needs it (`every_shape_under_the_size_cap_parses_without_aborting`).
+/// The parser recurses once per nested construct, its stack budget does not meter every
+/// recursion, and the hook's stack is not ours to size. `time` repeated to the size cap takes
+/// about 7 KiB of stack per byte in a debug build, 440 MiB; this is the margin, virtual and
+/// untouched until needed; `every_shape_under_the_size_cap_parses_without_aborting` aborts past it.
 const PARSER_STACK: usize = 512 << 20;
 
 /// The script's commands in run order, or why they cannot be read. A parser panic or a
@@ -30,48 +32,21 @@ pub(crate) fn read(script: &str) -> Result<Vec<Item>, String> {
     if let Some(why) = too_deep_or_long(script) {
         return Err(why);
     }
-    let owned = script.to_string();
+    let original = script.to_string();
     std::thread::Builder::new()
         .name("jtac-shell-parser".to_string())
         .stack_size(PARSER_STACK)
-        .spawn(move || parse(&owned))
+        .spawn(move || {
+            let (joined, cuts) = join_continuations(&original);
+            parse(&joined, &cuts, &original)
+        })
         .map_err(|e| format!("the parser could not start a thread: {e}"))?
         .join()
         .map_err(|_| "the parser panicked".to_string())?
 }
 
-// bash reads these words again as arithmetic or as an array name, so a quoted `$(…)` in one
-// runs: `let 'a[$(cmd)]++'`, `unset 'a[$(cmd)]'`, `printf -v 'a[$(cmd)]' x`, `test -v`.
-fn evaluates(prog: &str, args: &[Word], quoted: &[bool]) -> bool {
-    let any = quoted.contains(&true);
-    let flag = |c: char| {
-        args.iter()
-            .take_while(|a| a.text.starts_with('-'))
-            .any(|a| a.text.contains(c))
-    };
-    match prog {
-        "let" | "unset" | "read" | "compgen" | "wait" => any,
-        "printf" => args.iter().enumerate().any(|(k, a)| {
-            a.text.strip_prefix("-v").is_some_and(|rest| {
-                if rest.is_empty() {
-                    quoted.get(k + 1) == Some(&true)
-                } else {
-                    quoted[k]
-                }
-            })
-        }),
-        "test" | "[" => any && args.iter().any(|a| matches!(a.text.as_str(), "-v" | "-R")),
-        "declare" | "typeset" | "local" | "readonly" => args.iter().zip(quoted).any(|(a, q)| {
-            let (name, value) = a.text.split_once('=').unwrap_or((&a.text, ""));
-            let scalar = prog != "readonly" && (name.contains('[') || flag('i'));
-            *q && !a.text.starts_with('-')
-                && (scalar || (flag('a') || flag('A')) && value.starts_with('('))
-        }),
-        _ => false,
-    }
-}
-
-fn parse(script: &str) -> Result<Vec<Item>, String> {
+// `script` is `original` with its line continuations joined; `cuts` says where.
+fn parse(script: &str, cuts: &[usize], original: &str) -> Result<Vec<Item>, String> {
     let parsed = Parser::new(script).parse();
     if parsed.status != ParseStatus::Clean {
         return Err(parsed.diagnostics.first().map_or_else(
@@ -81,13 +56,9 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
     }
     let mut walk = Walk {
         source: script,
-        out: Vec::new(),
-        depth: 0,
-        too_deep: false,
-        escaped_backtick: false,
-        quoted_arith: false,
-        prompt_expansion: false,
-        piped: false,
+        cuts,
+        original,
+        ..Walk::default()
     };
     walk.seq(&parsed.file.body, false);
     if walk.too_deep {
@@ -95,8 +66,25 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
             "it nests subshells or substitutions more than {MAX_SUBSHELLS} deep"
         ));
     }
+    if walk.hollow {
+        return Err(
+            "it holds a substitution, operand or arithmetic the parser read as nothing".to_string(),
+        );
+    }
     if walk.escaped_backtick {
-        return Err("it escapes a backtick inside a backtick body".to_string());
+        return Err("it escapes a backtick, dollar or backslash in a backtick body".to_string());
+    }
+    if walk.laid {
+        return Err(
+            "it escapes a quote, dollar or backslash inside a `${…}` operand or before a substitution in the same `\"…\"`, and the parser lays what follows off the source"
+                .to_string(),
+        );
+    }
+    if commented(script, cuts, &walk.seen, &walk.open) {
+        return Err("a line continuation ends a comment, and bash runs the next line".to_string());
+    }
+    if walk.cut {
+        return Err("it reads a heredoc or here-string other than bash does".to_string());
     }
     if walk.quoted_arith {
         return Err(
@@ -113,20 +101,43 @@ fn parse(script: &str) -> Result<Vec<Item>, String> {
     Ok(walk.out)
 }
 
-struct Walk<'a> {
-    source: &'a str,
+#[derive(Default)]
+pub(super) struct Walk<'a> {
+    /// The script with its line continuations joined, which every span indexes.
+    pub(super) source: &'a str,
+    /// Where a continuation was joined (`join_continuations`).
+    pub(super) cuts: &'a [usize],
+    /// The script as written, for the text of a `'…'` that holds a continuation.
+    original: &'a str,
+    /// Inside an unquoted heredoc body or a backtick body, which bash joins before it reads
+    /// any quote, so a `'…'` there is joined too.
+    pub(super) rejoined: bool,
     out: Vec<Item>,
-    depth: usize,
+    pub(super) depth: usize,
     too_deep: bool,
-    /// shuck keeps `\`` in a backtick body as text; bash opens a substitution there.
+    /// A body, operand, pattern or expression the parser dropped under a clean status.
+    pub(super) hollow: bool,
+    /// Where `<(` is text to bash: `"…"`, an arithmetic body without a subscript, a heredoc body.
+    pub(super) quoted: bool,
+    /// bash cooks `\``, `\$` and `\\` in a backtick body before it parses the body; shuck
+    /// keeps the first as text, and after the others its spans no longer match the source.
     escaped_backtick: bool,
+    /// A word, `"…"` segment or heredoc body whose parts do not tile its span (`laid::tiles`).
+    pub(super) laid: bool,
+    /// Every word, pattern, heredoc and backtick body span read, and every `$(…)` or `<(…)`
+    /// inside one that bash reads as a script again (`comment::commented`).
+    pub(super) seen: Vec<(usize, usize)>,
+    open: Vec<(usize, usize)>,
+    /// A heredoc or here-string read other than bash reads it (`redirect::heredoc`).
+    pub(super) cut: bool,
     /// `(( '$(cmd)' ))`, `a['$(cmd)']`: bash expands an arithmetic body or a subscript again
     /// when it evaluates it, so a quoted substitution there runs.
-    quoted_arith: bool,
+    pub(super) quoted_arith: bool,
     /// `${x@P}`: bash expands the value as a prompt, substitutions included.
     prompt_expansion: bool,
-    /// Stdin may be another command's output: every command on a pipe's right side.
-    piped: bool,
+    /// Stdin may be another command's output or anything else this text does not hold: a
+    /// pipe's right side, a redirect target, a process substitution, an unresolved stdin.
+    pub(super) piped: bool,
 }
 
 impl Walk<'_> {
@@ -144,8 +155,12 @@ impl Walk<'_> {
         }
     }
 
+    // Stdin handed to a compound command or a function reaches every command inside, as a
+    // pipe's does.
     fn stmt_here(&mut self, stmt: &Stmt, conditional: bool) {
+        let was = self.piped;
         let heredoc = self.redirects(&stmt.redirects);
+        self.piped |= heredoc.is_some();
         match &stmt.command {
             Command::Simple(c) => self.simple(c, stmt.span, conditional, heredoc),
             Command::Decl(d) => self.decl(d, stmt.span, conditional),
@@ -168,6 +183,7 @@ impl Walk<'_> {
                 self.stmt(&a.body, true);
             }
         }
+        self.piped = was;
     }
 
     fn compound(&mut self, c: &CompoundCommand, conditional: bool) {
@@ -198,8 +214,11 @@ impl Walk<'_> {
                 self.seq(&f.body, true);
             }
             CompoundCommand::ArithmeticFor(a) => {
-                for e in [&a.init_ast, &a.condition_ast, &a.step_ast] {
-                    self.arith(e.as_ref());
+                for e in [&a.init_ast, &a.condition_ast, &a.step_ast]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.arith_in(e.span, |w| w.arith(Some(e)));
                 }
                 self.seq(&a.body, true);
             }
@@ -237,50 +256,49 @@ impl Walk<'_> {
                 self.seq(&a.always_body, true);
             }
             CompoundCommand::Conditional(c) => self.conditional(&c.expression),
-            CompoundCommand::Arithmetic(a) => self.arith(a.expr_ast.as_ref()),
-        }
-    }
-
-    // `$(…)` is a primary of arithmetic too; every other node only holds more nodes.
-    fn arith(&mut self, node: Option<&ArithmeticExprNode>) {
-        let Some(node) = node else { return };
-        match &node.kind {
-            ArithmeticExpr::Number(_) | ArithmeticExpr::Variable(_) => {}
-            ArithmeticExpr::ShellWord(w) => {
-                self.arith_word(w);
-            }
-            ArithmeticExpr::Indexed { index: e, .. }
-            | ArithmeticExpr::Parenthesized { expression: e }
-            | ArithmeticExpr::Unary { expr: e, .. }
-            | ArithmeticExpr::Postfix { expr: e, .. } => self.arith(Some(e)),
-            ArithmeticExpr::Binary { left, right, .. } => {
-                self.arith(Some(left));
-                self.arith(Some(right));
-            }
-            ArithmeticExpr::Conditional {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
-                self.arith(Some(condition));
-                self.arith(Some(then_expr));
-                self.arith(Some(else_expr));
-            }
-            ArithmeticExpr::Assignment { target, value, .. } => {
-                if let ArithmeticLvalue::Indexed { index, .. } = target {
-                    self.arith(Some(index));
+            CompoundCommand::Arithmetic(a) => {
+                let text = a.expr_span.map_or_else(String::new, |s| self.slice(s));
+                self.hollow |= a.expr_ast.is_none() && !text.is_empty();
+                match a.expr_span {
+                    Some(span) => {
+                        self.seen.push((span.start.offset(), span.end.offset()));
+                        self.arith_in(span, |w| w.arith(a.expr_ast.as_ref()));
+                    }
+                    None => self.arith(a.expr_ast.as_ref()),
                 }
-                self.arith(Some(value));
             }
         }
     }
 
-    // A `\`` in a backtick body is a nested substitution shuck keeps as text.
-    fn substitution(&mut self, body: &StmtSeq, syntax: CommandSubstitutionSyntax, span: Span) {
-        if syntax == CommandSubstitutionSyntax::Backtick && self.slice(span).contains("\\`") {
-            self.escaped_backtick = true;
+    pub(super) fn degraded(&mut self, span: Span) {
+        let text = self.source.get(span.start.offset()..span.end.offset());
+        self.hollow |= text.is_none_or(|t| super::hollow::degraded(t, self.quoted));
+    }
+
+    pub(super) fn substitution(
+        &mut self,
+        body: &StmtSeq,
+        syntax: CommandSubstitutionSyntax,
+        span: Span,
+    ) {
+        let (from, to) = (span.start.offset(), span.end.offset());
+        let Some(text) = self.source.get(from..to).map(str::trim) else {
+            self.hollow = true;
+            return;
+        };
+        self.escaped_backtick |= syntax == CommandSubstitutionSyntax::Backtick
+            && ["\\`", "\\$", "\\\\"].iter().any(|e| text.contains(e));
+        let comments = body.leading_comments.len() + body.trailing_comments.len();
+        self.hollow |= super::hollow::hollow(body.stmts.len(), comments, text);
+        let joined = self.rejoined;
+        if syntax == CommandSubstitutionSyntax::Backtick {
+            self.rejoined = true;
+            self.seen.push((from, to));
+        } else if !self.rejoined {
+            self.open.push((from, to));
         }
         self.child(|w| w.seq(body, false));
+        self.rejoined = joined;
     }
 
     // Every stage of a pipeline is a sibling subshell, however the tree nests them.
@@ -305,17 +323,21 @@ impl Walk<'_> {
         }
         let mut child = Walk {
             source: self.source,
-            out: Vec::new(),
+            cuts: self.cuts,
+            original: self.original,
+            rejoined: self.rejoined,
             depth: self.depth + 1,
-            too_deep: false,
-            escaped_backtick: false,
-            quoted_arith: false,
-            prompt_expansion: false,
             piped: self.piped,
+            ..Walk::default()
         };
         walk(&mut child);
         self.too_deep |= child.too_deep;
+        self.hollow |= child.hollow;
         self.escaped_backtick |= child.escaped_backtick;
+        self.laid |= child.laid;
+        self.seen.extend(child.seen);
+        self.open.extend(child.open);
+        self.cut |= child.cut;
         self.quoted_arith |= child.quoted_arith;
         self.prompt_expansion |= child.prompt_expansion;
         self.out.push(Item::Subshell(child.out));
@@ -382,6 +404,13 @@ impl Walk<'_> {
     }
 
     fn pattern(&mut self, p: &Pattern) {
+        let text = |n: &PatternPartNode| matches!(n.kind, PatternPart::Literal(_));
+        let parts = p
+            .parts
+            .iter()
+            .map(|n| (!text(n), (n.span.start.offset(), n.span.end.offset())));
+        self.laid |= !placed(parts, p.span.start.offset());
+        self.seen.push((p.span.start.offset(), p.span.end.offset()));
         for part in &p.parts {
             match &part.kind {
                 PatternPart::Word(w) => {
@@ -392,6 +421,7 @@ impl Walk<'_> {
                         self.pattern(p);
                     }
                 }
+                PatternPart::Literal(_) => self.degraded(part.span),
                 _ => {}
             }
         }
@@ -404,7 +434,11 @@ impl Walk<'_> {
         }
         let name = self.word(&c.name);
         let args: Vec<Word> = c.args.iter().map(|w| self.word(w)).collect();
-        let quoted: Vec<bool> = c.args.iter().map(|w| self.quoted_substitution(w)).collect();
+        let quoted: Vec<bool> = c
+            .args
+            .iter()
+            .map(|w| quoted_substitution(self.source, w))
+            .collect();
         let all: Vec<&Word> = std::iter::once(&name).chain(args.iter()).collect();
         let mut i = 0;
         while all
@@ -437,9 +471,9 @@ impl Walk<'_> {
         let mut quoted = Vec::with_capacity(d.operands.len());
         for op in &d.operands {
             quoted.push(match op {
-                DeclOperand::Dynamic(w) => self.quoted_substitution(w),
+                DeclOperand::Dynamic(w) => quoted_substitution(self.source, w),
                 DeclOperand::Assignment(a) => {
-                    matches!(&a.value, AssignmentValue::Scalar(w) if self.quoted_substitution(w))
+                    matches!(&a.value, AssignmentValue::Scalar(w) if quoted_substitution(self.source, w))
                 }
                 DeclOperand::Flag(_) | DeclOperand::Name(_) => false,
             });
@@ -510,11 +544,19 @@ impl Walk<'_> {
 
     // A substitution inside a word is a subshell that runs before the command does. The
     // static text is the command-name decoding, which is the shell's rule for every word.
-    fn word(&mut self, w: &AstWord) -> Word {
+    pub(super) fn word(&mut self, w: &AstWord) -> Word {
+        self.laid |= !placed(spans(&w.parts), w.span.start.offset());
+        self.seen.push((w.span.start.offset(), w.span.end.offset()));
         for (part, span) in w.parts_with_spans() {
             self.part(part, span);
         }
         match static_command_name_text(w, self.source) {
+            Some(_) if self.quoted_continuation(w) => Word {
+                text: static_text(self.source, w, &|span, dollar| {
+                    self.single_quoted(span, dollar)
+                }),
+                unresolved: false,
+            },
             Some(text) if !w.has_active_brace_expansion() => Word {
                 text: text.into_owned(),
                 unresolved: false,
@@ -526,22 +568,56 @@ impl Walk<'_> {
         }
     }
 
+    // bash keeps `\<newline>` inside `'…'`, so such a word is read from the original text.
+    fn quoted_continuation(&self, w: &AstWord) -> bool {
+        !self.rejoined
+            && !w.has_active_brace_expansion()
+            && w.parts.iter().any(|p| {
+                matches!(p.kind, WordPart::SingleQuoted { .. })
+                    && cut_within(self.cuts, p.span.start.offset(), p.span.end.offset())
+            })
+    }
+
+    fn single_quoted(&self, span: Span, dollar: bool) -> String {
+        let (from, to) = original_span(self.cuts, span.start.offset(), span.end.offset());
+        let from = from + 1 + usize::from(dollar);
+        self.original
+            .get(from..to.saturating_sub(1))
+            .unwrap_or("")
+            .to_string()
+    }
+
     fn part(&mut self, part: &WordPart, span: Span) {
+        let text = self.source.get(span.start.offset()..span.end.offset());
+        self.laid |= text.is_none_or(|t| !framed(t, part));
         match part {
             WordPart::CommandSubstitution { body, syntax } => {
                 self.substitution(body, *syntax, span);
             }
-            WordPart::ProcessSubstitution { body, .. } => self.child(|w| w.seq(body, false)),
-            WordPart::DoubleQuoted { parts, .. } => {
+            // `>(cmd)` reads what is written to it; `<(cmd)` inherits a stdin this text may
+            // not hold either.
+            WordPart::ProcessSubstitution { body, .. } => {
+                let was = std::mem::replace(&mut self.piped, true);
+                self.substitution(body, CommandSubstitutionSyntax::DollarParen, span);
+                self.piped = was;
+            }
+            WordPart::DoubleQuoted { parts, dollar } => {
+                let was = std::mem::replace(&mut self.quoted, true);
+                let from = span.start.offset() + 1 + usize::from(*dollar);
+                self.laid |= !placed(spans(parts), from);
                 for p in parts {
                     self.part(&p.kind, p.span);
                 }
+                self.quoted = was;
             }
             WordPart::ArithmeticExpansion {
                 expression_word_ast,
+                expression_ast,
                 ..
             } => {
-                self.arith_word(expression_word_ast);
+                let text = self.slice(span);
+                self.hollow |= expression_ast.is_none() && super::hollow::hollow(0, 0, &text);
+                self.arith_body(expression_word_ast);
             }
             WordPart::Parameter(p) => self.parameter(p),
             WordPart::ParameterExpansion {
@@ -551,8 +627,7 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.op(operator);
-                self.optional(operand_word_ast.as_deref());
+                self.op(operator, operand_word_ast.as_deref());
             }
             WordPart::IndirectExpansion {
                 reference,
@@ -561,10 +636,10 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                if let Some(o) = operator {
-                    self.op(o);
+                match operator {
+                    Some(o) => self.op(o, operand_word_ast.as_deref()),
+                    None => self.optional(operand_word_ast.as_deref()),
                 }
-                self.optional(operand_word_ast.as_deref());
             }
             WordPart::Length(r)
             | WordPart::ArrayAccess(r)
@@ -585,16 +660,17 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.arith_word(offset_word_ast);
+                self.arith_body(offset_word_ast);
                 if let Some(l) = length_word_ast {
-                    self.arith_word(l);
+                    self.arith_body(l);
                 }
             }
+            WordPart::Literal(_) => self.degraded(span),
             _ => {}
         }
     }
 
-    fn parameter(&mut self, p: &ParameterExpansion) {
+    pub(super) fn parameter(&mut self, p: &ParameterExpansion) {
         let ParameterExpansionSyntax::Bourne(b) = &p.syntax else {
             return;
         };
@@ -621,10 +697,10 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                if let Some(o) = operator {
-                    self.op(o);
+                match operator {
+                    Some(o) => self.op(o, operand_word_ast.as_deref()),
+                    None => self.optional(operand_word_ast.as_deref()),
                 }
-                self.optional(operand_word_ast.as_deref());
             }
             BourneParameterExpansion::Operation {
                 reference,
@@ -633,13 +709,12 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.op(operator);
                 self.prompt_expansion |= reference.name.as_ref() == "PS4"
                     && matches!(**operator, ParameterOp::AssignDefault)
                     && operand_word_ast
                         .as_deref()
-                        .is_some_and(|w| self.quoted_substitution(w));
-                self.optional(operand_word_ast.as_deref());
+                        .is_some_and(|w| quoted_substitution(self.source, w));
+                self.op(operator, operand_word_ast.as_deref());
             }
             BourneParameterExpansion::Slice {
                 reference,
@@ -648,17 +723,22 @@ impl Walk<'_> {
                 ..
             } => {
                 self.reference(reference);
-                self.arith_word(offset_word_ast);
+                self.arith_body(offset_word_ast);
                 if let Some(l) = length_word_ast {
-                    self.arith_word(l);
+                    self.arith_body(l);
                 }
             }
             BourneParameterExpansion::PrefixMatch { .. } => {}
         }
     }
 
-    // `${a//x/$(cmd)}`, `${a#$(cmd)}`: the pattern and the replacement run.
-    fn op(&mut self, o: &ParameterOp) {
+    // `${a//x/$(cmd)}`, `${a#$(cmd)}`, `${a^$(cmd)}`: a pattern, a replacement or a case
+    // operand runs, expanded unquoted even inside `"…"`, where `"${a:-<(cmd)}"` is text.
+    fn op(&mut self, o: &ParameterOp, operand: Option<&AstWord>) {
+        use ParameterOp::{AssignDefault, Error, UseDefault, UseReplacement};
+        let text = matches!(o, UseDefault | AssignDefault | UseReplacement | Error);
+        let was = self.quoted;
+        self.quoted = was && text;
         match o {
             ParameterOp::RemovePrefixShort { pattern }
             | ParameterOp::RemovePrefixLong { pattern }
@@ -679,58 +759,27 @@ impl Walk<'_> {
             }
             _ => {}
         }
+        self.optional(operand);
+        self.quoted = was;
     }
 
-    // A subscript runs too: `a[$(cmd)]=1`, `${a[$(cmd)]}`. True when it holds an expansion.
+    // A subscript runs too: `a[$(cmd)]=1`, `${a[$(cmd)]}`. True when it holds an expansion. An
+    // associative array expands its subscript as a word, so `<(` runs there even in `"…"`.
     fn reference(&mut self, r: &VarRef) -> bool {
         let Some(sub) = r.subscript.as_deref() else {
             return false;
         };
-        match (sub.word_ast(), sub.arithmetic_ast.as_ref()) {
+        let was = std::mem::replace(&mut self.quoted, false);
+        let expands = match (sub.word_ast(), sub.arithmetic_ast.as_ref()) {
             (Some(w), _) => self.arith_word(w).unresolved,
             (None, Some(a)) => {
                 self.arith(Some(a));
                 true
             }
             (None, None) => false,
-        }
-    }
-
-    // A word read as arithmetic is expanded again, quotes or not.
-    fn arith_word(&mut self, w: &AstWord) -> Word {
-        self.quoted_arith |= self.quoted_substitution(w);
-        self.word(w)
-    }
-
-    // Text now, a substitution when bash expands the word again. Judged on the word's static
-    // text joined and decoded, with every expansion a placeholder, so `$''(`, `\\$\\(` and
-    // `$'\\x24'"("` all show the `$(` they spell.
-    fn quoted_substitution(&self, w: &AstWord) -> bool {
-        let mut text = String::new();
-        for (p, span) in w.parts_with_spans() {
-            self.static_part(p, span, &mut text);
-        }
-        spells_a_substitution(&text)
-    }
-
-    fn static_part(&self, p: &WordPart, span: Span, out: &mut String) {
-        match p {
-            WordPart::Literal(_) => out.push_str(&unescape(&self.slice(span))),
-            WordPart::SingleQuoted { value, dollar } => {
-                let inner = value.slice(self.source);
-                if *dollar {
-                    out.push_str(&ansi_decode(inner));
-                } else {
-                    out.push_str(inner);
-                }
-            }
-            WordPart::DoubleQuoted { parts, .. } => {
-                for n in parts {
-                    self.static_part(&n.kind, n.span, out);
-                }
-            }
-            _ => out.push('\u{1}'),
-        }
+        };
+        self.quoted = was;
+        expands
     }
 
     fn optional(&mut self, w: Option<&AstWord>) {
@@ -739,61 +788,13 @@ impl Walk<'_> {
         }
     }
 
-    // The heredoc or here-string on stdin is the only redirect this reader keeps; a
-    // substitution in any target or body still runs.
-    fn redirects(&mut self, redirects: &[Redirect]) -> Option<Word> {
-        let mut stdin = None;
-        for r in redirects {
-            let on_stdin = r.fd.is_none_or(|fd| fd == 0);
-            match &r.target {
-                RedirectTarget::Word(w) => {
-                    let w = self.word(w);
-                    if on_stdin {
-                        stdin = (r.kind == RedirectKind::HereString).then_some(w);
-                    }
-                }
-                RedirectTarget::Heredoc(h) => {
-                    let mut unresolved = false;
-                    for (part, span) in h.body.parts_with_spans() {
-                        match part {
-                            HeredocBodyPart::Literal(_) => {}
-                            HeredocBodyPart::CommandSubstitution { body, syntax } => {
-                                unresolved = true;
-                                self.substitution(body, *syntax, span);
-                            }
-                            HeredocBodyPart::ArithmeticExpansion {
-                                expression_word_ast,
-                                ..
-                            } => {
-                                unresolved = true;
-                                self.arith_word(expression_word_ast);
-                            }
-                            HeredocBodyPart::Parameter(p) => {
-                                unresolved = true;
-                                self.parameter(p);
-                            }
-                            HeredocBodyPart::Variable(_) => unresolved = true,
-                        }
-                    }
-                    if on_stdin {
-                        stdin = Some(Word {
-                            text: h.body.render(self.source),
-                            unresolved,
-                        });
-                    }
-                }
-            }
-        }
-        stdin
+    pub(super) fn slice(&self, span: Span) -> String {
+        slice(self.source, span)
     }
+}
 
-    fn slice(&self, span: Span) -> String {
-        self.source
-            .get(span.start.offset()..span.end.offset())
-            .unwrap_or("")
-            .trim()
-            .trim_end_matches(['&', '|', ';'])
-            .trim()
-            .to_string()
-    }
+fn spans(parts: &[WordPartNode]) -> impl Iterator<Item = (bool, (usize, usize))> + '_ {
+    parts
+        .iter()
+        .map(|p| (runs(&p.kind), (p.span.start.offset(), p.span.end.offset())))
 }

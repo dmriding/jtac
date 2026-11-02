@@ -4,7 +4,14 @@
 //! module that knows the parser's syntax tree.
 
 mod adapt;
+mod arith;
+mod comment;
+mod hollow;
+mod join;
+mod laid;
 pub(crate) mod quote;
+mod redirect;
+mod reread;
 pub(crate) mod scan;
 
 pub(crate) use adapt::read;

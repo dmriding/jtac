@@ -11,8 +11,8 @@ publish.workspace = true
 
 [dependencies]
 jtac-core = { workspace = true }
-shuck-ast = { version = "0.2.4", default-features = false }
-shuck-parser = { version = "0.2.4", default-features = false }
+shuck-ast = { version = "0.2.7", default-features = false }
+shuck-parser = { version = "0.2.7", default-features = false }
 
 [lints]
 workspace = true

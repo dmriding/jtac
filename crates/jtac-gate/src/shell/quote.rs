@@ -57,7 +57,9 @@ pub(crate) fn unescape(s: &str) -> String {
     out
 }
 
-/// Does decoded text spell a substitution bash would run on a second read?
+/// Does decoded text spell a substitution bash would run on a second read? `$(`, a backtick,
+/// or `${` with a `<(` or `>(` anywhere in the word, as an associative subscript expands them.
 pub(crate) fn spells_a_substitution(decoded: &str) -> bool {
-    decoded.contains("$(") || decoded.contains('`')
+    let process = decoded.contains("<(") || decoded.contains(">(");
+    decoded.contains("$(") || decoded.contains('`') || (decoded.contains("${") && process)
 }
