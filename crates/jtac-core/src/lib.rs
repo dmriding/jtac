@@ -24,14 +24,15 @@ pub use digest::{ParseError, Sha256Digest};
 pub use from::FromHead;
 pub use merkle::{InclusionProof, MerkleError, merkle_root, prove};
 pub use node::{
-    Action, Body, Capture, CheckBody, FindingBody, Kind, LeverBody, Node, Outcome, Scope, Severity,
+    Action, Body, Capture, CheckBody, FindingBody, Gate, Kind, LeverBody, Node, Outcome, Scope,
+    Severity,
 };
 pub use oid::GitOid;
 pub use root::{
     Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError,
     SignedLever, State,
 };
-pub use schema::{RootVersion, V1};
+pub use schema::{NodeVersion, RootVersion, V1};
 pub use signer::Signer;
 pub use time::{Ts, TsError};
 pub use verdict::{CheckSpec, Facts, Reason, Verdict, gate};

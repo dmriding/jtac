@@ -121,9 +121,9 @@ pub struct CheckArgs {
         conflicts_with = "preview"
     )]
     pub from: Option<String>,
-    /// Push the merge root, and the head's root when it agreed, to REMOTE through the hook's
-    /// guard; a push that fails warns
-    #[arg(long, value_name = "REMOTE", requires = "from")]
+    /// Push the root HEAD stands with, and under `--from` the head's root when it agreed, to
+    /// REMOTE through the hook's guard; a push that fails warns
+    #[arg(long, value_name = "REMOTE", conflicts_with = "preview")]
     pub push: Option<String>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
@@ -154,6 +154,10 @@ pub struct WaiveArgs {
     /// The commit to turn the gate off for; its root reads `declared_off`
     #[arg(value_name = "REV")]
     pub rev: Option<String>,
+    /// The CI gate, not the local one: REV was merged without CI's root, on purpose; the root
+    /// `jtac check` writes on REV carries the reason and the CI gate reads declared off
+    #[arg(long, requires = "rev")]
+    pub ci: bool,
     /// The rule to waive, with `--path`; the root stays `covered`
     #[arg(long, value_name = "RULE")]
     pub rule: Option<String>,
@@ -241,6 +245,18 @@ pub struct JsonArg {
 mod tests {
     use super::*;
 
+    /// `--ci` needs a commit; `--push` never rides with `--preview`.
+    #[test]
+    fn a_ci_waiver_and_a_push_without_from_parse() {
+        let cli = Cli::try_parse_from(["jtac", "waive", "HEAD", "--ci", "--reason", "x"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Waive(WaiveArgs { ci: true, .. }))
+        ));
+        assert!(Cli::try_parse_from(["jtac", "waive", "--ci", "--reason", "x"]).is_err());
+        assert!(Cli::try_parse_from(["jtac", "check", "--preview", "--push", "origin"]).is_err());
+    }
+
     #[test]
     fn check_flags_parse_and_unknown_commands_land_in_other() {
         let cli = Cli::try_parse_from(["jtac", "check", "--preview", "--base", "main", "--json"])
@@ -270,7 +286,7 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "check", "--from", "abc"]).is_err());
-        assert!(Cli::try_parse_from(["jtac", "check", "--push", "origin", "--base", "x"]).is_err());
+        assert!(Cli::try_parse_from(["jtac", "check", "--push", "origin"]).is_ok());
         assert!(
             Cli::try_parse_from(["jtac", "check", "--from", "a", "--base", "b", "--preview"])
                 .is_err()
@@ -324,6 +340,7 @@ mod tests {
             cli.command,
             Some(Command::Waive(WaiveArgs {
                 rev: Some("HEAD".into()),
+                ci: false,
                 rule: None,
                 path: None,
                 expires: Some("3d".into()),

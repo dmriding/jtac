@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use jtac_core::{GitOid, Sha256Digest, Signer, State};
+use jtac_core::{GitOid, Scope, Sha256Digest, Signer, State};
 use jtac_gate::{CommitFact, Row, Trust, Via};
 use jtac_store::Store;
 use serde::Serialize;
@@ -108,6 +108,10 @@ pub struct RowOut {
     /// For a merge root of the commit's own: its head (DESIGN.md section 15).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head: Option<HeadOut>,
+    /// `declared_off` when the commit's own root carries a CI waiver naming it and is not
+    /// CI's (DESIGN.md section 9.5); absent otherwise, since the CI gate is read by its roots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci: Option<&'static str>,
 }
 
 /// One waiver a valid root in the range applies, as shown.
@@ -180,6 +184,10 @@ impl Survey {
                         (Some(Via::Own), Some(i)) => self.heads[i].clone(),
                         _ => None,
                     },
+                    ci: match (&r.via, r.root) {
+                        (Some(Via::Own), Some(i)) => self.ci_state(i, &r.commit),
+                        _ => None,
+                    },
                 }
             })
             .collect()
@@ -203,6 +211,21 @@ impl Survey {
             }
         }
         out
+    }
+
+    fn ci_state(&self, i: usize, commit: &GitOid) -> Option<&'static str> {
+        let stored = self.ledger.stored[i]
+            .as_ref()
+            .filter(|_| self.ledger.roots[i].invalid.is_none())?;
+        let names = |l: &jtac_core::SignedLever| match &l.node.body {
+            jtac_core::Body::Lever(b) => {
+                b.gate().is_some()
+                    && matches!(&b.scope, Some(Scope::Commit { commit: c, .. }) if c == commit)
+            }
+            _ => false,
+        };
+        (stored.root.from.is_none() && stored.root.levers.iter().any(names))
+            .then_some("declared_off")
     }
 
     /// Valid roots whose signer, or any of whose waivers' signers, no trust file names.

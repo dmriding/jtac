@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
 use crate::digest::Sha256Digest;
 use crate::oid::GitOid;
-use crate::schema::V1;
+use crate::schema::NodeVersion;
 use crate::signer::Signer;
 use crate::time::Ts;
 
@@ -25,6 +25,15 @@ pub struct Node {
 }
 
 impl Node {
+    /// Version 2 exactly when the body is a waiver naming a gate, so one content has one id
+    /// (`a_node_is_version_2_exactly_when_its_scope_names_a_gate`).
+    pub fn version(&self) -> NodeVersion {
+        match &self.body {
+            Body::Lever(b) if b.gate().is_some() => NodeVersion::V2,
+            _ => NodeVersion::V1,
+        }
+    }
+
     /// The kind the body carries.
     pub fn kind(&self) -> Kind {
         match self.body {
@@ -193,6 +202,24 @@ pub struct LeverBody {
     pub agent: Option<String>,
 }
 
+impl LeverBody {
+    /// The gate a commit scope names; `None` for the local gate and for every other scope.
+    pub fn gate(&self) -> Option<Gate> {
+        match &self.scope {
+            Some(Scope::Commit { gate, .. }) => *gate,
+            _ => None,
+        }
+    }
+}
+
+/// A gate other than the local one that a commit waiver may name (DESIGN.md section 15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gate {
+    /// The CI gate: the waiver records a merge made without its root, and no verdict applies it.
+    Ci,
+}
+
 /// Lever actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -211,10 +238,13 @@ pub enum Action {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Scope {
-    /// The whole commit.
+    /// The whole commit, on the local gate or the one `gate` names.
     Commit {
         /// The commit.
         commit: GitOid,
+        /// Node version 2: the gate the waiver speaks for; absent, the local one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gate: Option<Gate>,
     },
     /// One rule under one path.
     Rule {
@@ -230,7 +260,7 @@ pub enum Scope {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire<B> {
-    v: V1,
+    v: NodeVersion,
     kind: Kind,
     tree: GitOid,
     policy: Sha256Digest,
@@ -241,7 +271,7 @@ struct Wire<B> {
 impl Serialize for Node {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         Wire {
-            v: V1,
+            v: self.version(),
             kind: self.kind(),
             tree: self.tree,
             policy: self.policy,
@@ -261,12 +291,19 @@ impl<'de> Deserialize<'de> for Node {
             Kind::Lever => serde_json::from_value(w.body).map(Body::Lever),
         }
         .map_err(serde::de::Error::custom)?;
-        Ok(Node {
+        let node = Node {
             tree: w.tree,
             policy: w.policy,
             ts: w.ts,
             body,
-        })
+        };
+        if node.version() != w.v {
+            return Err(serde::de::Error::custom(match w.v {
+                NodeVersion::V1 => "a version 1 node names a gate",
+                NodeVersion::V2 => "a version 2 node is a waiver naming a gate, and this is not",
+            }));
+        }
+        Ok(node)
     }
 }
 
@@ -332,6 +369,17 @@ pub(crate) mod tests {
         waiver(
             Scope::Commit {
                 commit: COMMIT_ONE.parse().unwrap(),
+                gate: None,
+            },
+            None,
+        )
+    }
+
+    pub(crate) fn ci_waiver() -> Node {
+        waiver(
+            Scope::Commit {
+                commit: COMMIT_ONE.parse().unwrap(),
+                gate: Some(Gate::Ci),
             },
             None,
         )
@@ -398,6 +446,7 @@ pub(crate) mod tests {
             check_node(),
             finding_node(),
             commit_waiver(),
+            ci_waiver(),
             rule_waiver(),
             lever(Action::Init),
         ] {
@@ -437,10 +486,19 @@ pub(crate) mod tests {
         }
         let commit = Scope::Commit {
             commit: COMMIT_ONE.parse().unwrap(),
+            gate: None,
         };
         assert_eq!(
             serde_json::to_string(&commit).unwrap(),
             r#"{"commit":"sha1:0000000000000000000000000000000000000001"}"#
+        );
+        let ci = Scope::Commit {
+            commit: COMMIT_ONE.parse().unwrap(),
+            gate: Some(Gate::Ci),
+        };
+        assert_eq!(
+            serde_json::to_string(&ci).unwrap(),
+            r#"{"commit":"sha1:0000000000000000000000000000000000000001","gate":"ci"}"#
         );
         let rule = Scope::Rule {
             rule: "JT-SUP-001".into(),
@@ -449,6 +507,61 @@ pub(crate) mod tests {
         assert_eq!(
             serde_json::to_string(&rule).unwrap(),
             r#"{"rule":"JT-SUP-001","path":"src/"}"#
+        );
+    }
+
+    /// One content, one id: a gated waiver is version 2 and nothing else is, and a reader
+    /// refuses a `v` that disagrees with the body either way.
+    #[test]
+    fn a_node_is_version_2_exactly_when_its_scope_names_a_gate() {
+        assert_eq!(ci_waiver().version(), NodeVersion::V2);
+        for node in [
+            check_node(),
+            commit_waiver(),
+            rule_waiver(),
+            lever(Action::Init),
+        ] {
+            assert_eq!(node.version(), NodeVersion::V1);
+        }
+        let v1 = String::from_utf8(commit_waiver().canonical_bytes().unwrap()).unwrap();
+        let v2 = String::from_utf8(ci_waiver().canonical_bytes().unwrap()).unwrap();
+        assert!(
+            v1.ends_with(r#""v":1}"#) && v2.ends_with(r#""v":2}"#),
+            "{v1}\n{v2}"
+        );
+        let gated_v1 = v2.replace(r#""v":2}"#, r#""v":1}"#);
+        let ungated_v2 = v1.replace(r#""v":1}"#, r#""v":2}"#);
+        for (name, doc, want) in [
+            ("gated v1", gated_v1, "a version 1 node names a gate"),
+            (
+                "ungated v2",
+                ungated_v2,
+                "a version 2 node is a waiver naming a gate",
+            ),
+        ] {
+            assert!(from_canonical::<Node>(doc.as_bytes()).is_err(), "{name}");
+            let err = serde_json::from_str::<Node>(&doc).unwrap_err().to_string();
+            assert!(err.contains(want), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn node_v2_id_known_answer() {
+        // DESIGN.md section 9.2. Changing these bytes changes every CI waiver's id.
+        let want = concat!(
+            r#"{"body":{"action":"waive","reason":"example reason","scope":{"commit":"sha1:0000000000000000000000000000000000000001","gate":"ci"},"#,
+            r#""signer":{"fingerprint":"SHA256:AAAA","principal":"dev@example.com"}},"kind":"lever","#,
+            r#""policy":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","#,
+            r#""tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":2}"#
+        );
+        let node = ci_waiver();
+        assert_eq!(
+            String::from_utf8(node.canonical_bytes().unwrap()).unwrap(),
+            want
+        );
+        assert_eq!(
+            node.id().unwrap().to_string(),
+            "sha256:26e125af62c32f0afebd37d2424e3b8e857fc3951aad464f207443de115f8715"
         );
     }
 

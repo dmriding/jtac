@@ -6,6 +6,16 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Added
+
+- (0.2.5) The CI waiver (DESIGN.md section 15, decision 48, M16c): `jtac waive <commit> --ci
+  --reason` records that a commit was merged without CI's root, on purpose. It is a commit
+  waiver whose scope names the gate, node version 2 with a version 1 reader, carried unapplied
+  by the root `jtac check` writes on that commit, and read by `audit` as the CI gate's
+  `declared_off` beside the local state. `jtac check --push <remote>` now works without
+  `--from` and sends HEAD's root. `--ci` is refused with `--rule`, `--path` or `--expires`,
+  and when this clone already holds a root for the commit.
+
 ### Changed
 
 - (0.2.4) shuck-parser and shuck-ast 0.2.4 to 0.2.7, which bound their own nesting, chain

@@ -28,6 +28,37 @@ impl<'de> Deserialize<'de> for V1 {
     }
 }
 
+/// A node's `v`: 2 only on a waiver whose commit scope names a gate (DESIGN.md section 9.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeVersion {
+    /// The v0.1 shape.
+    V1,
+    /// Version 1 plus `scope.gate`.
+    V2,
+}
+
+impl Serialize for NodeVersion {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeVersion {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match u64::deserialize(d)? {
+            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
+            other => Err(serde::de::Error::custom(UnsupportedVersion {
+                got: other,
+                reads: "versions 1 and 2",
+            })),
+        }
+    }
+}
+
 /// The `"v"` field of a root: 1, or 2 with `base` and `from` (DESIGN.md sections 9.4 and
 /// 15). Any other number is refused at the reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +129,20 @@ mod tests {
                 "{bad}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn a_node_version_is_one_or_two_and_nothing_else() {
+        assert_eq!(serde_json::to_string(&NodeVersion::V1).unwrap(), "1");
+        assert_eq!(serde_json::to_string(&NodeVersion::V2).unwrap(), "2");
+        assert_eq!(
+            serde_json::from_str::<NodeVersion>("2").unwrap(),
+            NodeVersion::V2
+        );
+        let err = serde_json::from_str::<NodeVersion>("3")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("versions 1 and 2"), "{err}");
     }
 
     #[test]

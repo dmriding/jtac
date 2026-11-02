@@ -171,7 +171,7 @@ fn unjudged_after(
     let Body::Lever(body) = &lever.node.body else {
         return Ok(None);
     };
-    let Some(Scope::Commit { commit }) = &body.scope else {
+    let Some(Scope::Commit { commit, gate: None }) = &body.scope else {
         return Ok(None);
     };
     if *commit == head.commit || !in_range.contains(commit) {

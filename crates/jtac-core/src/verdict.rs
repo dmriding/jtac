@@ -45,7 +45,8 @@ pub struct Verdict {
     /// Why it would fail, in order: checks in policy order, unknown check ids in node order,
     /// then findings in node order. A commit waiver keeps them so the root stays loud.
     pub reasons: Vec<Reason>,
-    /// Positions in `nodes` of the waivers that changed the outcome.
+    /// Positions in `nodes` of the levers the root carries: the waivers that changed the
+    /// outcome, and a CI waiver naming the commit, which changes nothing (DESIGN.md 11.2).
     pub applied: Vec<usize>,
 }
 
@@ -158,7 +159,7 @@ pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
     }
     let state = if waivers
         .iter()
-        .any(|(_, w)| matches!(w.scope, Some(Scope::Commit { .. })))
+        .any(|(_, w)| matches!(w.scope, Some(Scope::Commit { gate: None, .. })))
     {
         State::DeclaredOff
     } else {
@@ -177,7 +178,9 @@ pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::tests::{COMMIT_ONE, EMPTY, TS, check_node, commit_waiver, rule_waiver};
+    use crate::node::tests::{
+        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, rule_waiver,
+    };
     use crate::node::{CheckBody, FindingBody};
 
     const OTHER_TREE: &str = "sha1:0000000000000000000000000000000000000009";
@@ -480,12 +483,34 @@ mod tests {
         assert!(verdict.applied.is_empty());
     }
 
+    /// The CI waiver changes no verdict (DESIGN.md 11.2): a failing run still fails and a
+    /// passing one stays `covered`; either way the lever is carried in `applied`.
+    #[test]
+    fn a_ci_waiver_is_carried_and_never_applied() {
+        let f = facts(&[("test", true)], Severity::Major);
+        let verdict = run(&f, vec![check("test", Outcome::Error), ci_waiver()]);
+        assert_eq!((verdict.pass, verdict.state), (false, State::Covered));
+        assert_eq!(verdict.applied, vec![1]);
+        let verdict = run(&f, vec![check("test", Outcome::Pass), ci_waiver()]);
+        assert_eq!((verdict.pass, verdict.state), (true, State::Covered));
+        assert_eq!(verdict.applied, vec![1]);
+        let verdict = run(
+            &f,
+            vec![check("test", Outcome::Pass), ci_waiver(), commit_waiver()],
+        );
+        assert_eq!(verdict.state, State::DeclaredOff);
+        assert_eq!(verdict.applied, vec![1, 2]);
+    }
+
     #[test]
     fn a_commit_waiver_on_a_waivable_commit_declares_off_and_on_another_does_not() {
         let elsewhere: GitOid = OTHER_TREE.parse().unwrap();
         let mut other = commit_waiver();
         if let Body::Lever(b) = &mut other.body {
-            b.scope = Some(Scope::Commit { commit: elsewhere });
+            b.scope = Some(Scope::Commit {
+                commit: elsewhere,
+                gate: None,
+            });
         }
         let mut f = facts(&[("test", true)], Severity::Major);
         let nodes = vec![check("test", Outcome::Error), other];
