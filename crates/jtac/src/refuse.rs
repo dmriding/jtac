@@ -455,6 +455,39 @@ impl Refusal {
         )
     }
 
+    /// `--ci` beside `--rule`, `--path` or `--expires`.
+    pub fn ci_flags(rev: Option<&str>, reason: &str) -> Self {
+        Self::new(
+            "`--ci` takes a commit alone: no `--rule`, `--path` or `--expires`.",
+            "A CI waiver says one merge went in without CI's root; it covers no rule, and an \
+             explanation does not expire (DESIGN.md section 15).",
+            format!(
+                "Run `jtac waive {} --ci --reason {}`.",
+                quoted(rev.unwrap_or("<merge>"), "REV"),
+                quoted(reason, "TEXT")
+            ),
+        )
+    }
+
+    /// `--ci` names a commit this clone already holds a root for.
+    pub fn ci_root_stands(rev: &str, reason: &str, commit: &jtac_core::GitOid) -> Self {
+        let rev = quoted(rev, "REV");
+        Self::new(
+            format!(
+                "{rev} already has a root, and only the root written on a commit carries its CI waiver."
+            ),
+            "A root stands once written (decision 33), so a waiver written after it has nothing \
+             to travel in and no other clone would ever see the reason.",
+            format!(
+                "If that root is yours and unpushed, run `git update-ref -d {}`, then `jtac waive \
+                 {rev} --ci --reason {}` and `jtac check --push <remote>`; a pushed root stands, \
+                 and the reason goes in the next merge's message.",
+                jtac_store::ref_name(commit),
+                quoted(reason, "TEXT")
+            ),
+        )
+    }
+
     /// `--reason`, `--rule` or `--path` is blank or holds a control character, which a
     /// terminal would act on.
     pub fn waive_text(flag: &str) -> Self {
@@ -671,6 +704,15 @@ mod tests {
             Refusal::commit_expires("HEAD~1", "base only\nnegotiation: forged"),
             Refusal::waive_text("--reason"),
             Refusal::waive_path("JT-SUP-001", "../x", "x"),
+            Refusal::ci_flags(None, "x"),
+            Refusal::ci_flags(Some("HEAD\nnegotiation: forged"), "x"),
+            Refusal::ci_root_stands(
+                "HEAD\nnegotiation: forged",
+                "x",
+                &"sha1:0000000000000000000000000000000000000001"
+                    .parse()
+                    .unwrap(),
+            ),
             Refusal::signers_file(
                 "verify",
                 std::path::Path::new("/workspace/s"),

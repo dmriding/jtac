@@ -839,3 +839,130 @@ fn a_waiver_whose_signature_does_not_hold_invalidates_the_root_that_carries_it()
 fn jtac_canonical(v: &Value) -> String {
     v.to_string()
 }
+
+/// The CI waiver (DESIGN.md section 15, decision 48): a commit pushed around CI has no CI
+/// root; `waive --ci` records why, `check --push` writes the root that carries it and sends
+/// it, the verdict stays `covered`, and a second clone's `audit` reads the CI gate declared
+/// off with the reason beside it. `--ci` with another flag, or after a root stands, is refused.
+#[test]
+fn a_ci_waiver_rides_in_the_root_on_its_commit_and_audit_reads_the_ci_gate_declared_off() {
+    let a = adopting();
+    let repo = &a.repo;
+    repo.write(".jtac/signers", a.signers.as_bytes());
+    repo.commit("adopt");
+    let ran = jtac(
+        repo,
+        &[
+            "waive",
+            "--rule",
+            "JT-PROT-001",
+            "--path",
+            ".jtac/",
+            "--expires",
+            "14d",
+            "--reason",
+            "adopting",
+        ],
+    );
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let ran = jtac(repo, &["check", "--push", "origin"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    repo.write("src/b.rs", b"fn b() {}\n");
+    let merge = repo.commit("merged around CI");
+    repo.git(&["push", "-q", "origin", "main"]);
+
+    let ran = jtac(
+        repo,
+        &["waive", "HEAD", "--ci", "--expires", "3d", "--reason", "x"],
+    );
+    assert_ne!(ran.code, 0);
+    assert!(
+        ran.stderr.contains("`--ci` takes a commit alone"),
+        "{}",
+        ran.stderr
+    );
+    let ran = jtac(repo, &["waive", "HEAD", "--ci", "--reason", "runners out"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stdout
+            .starts_with(&format!("WAIVED ci gate on commit {merge}: lever sha256:")),
+        "{}",
+        ran.stdout
+    );
+    assert!(
+        ran.stdout.contains("  expires none (covers one commit)")
+            && ran.stdout.contains("jtac check --push <remote>"),
+        "{}",
+        ran.stdout
+    );
+
+    let (code, v) = json(repo, &["check", "--preview", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["state"], "covered");
+    assert_eq!(v["waivers"][0]["scope"]["gate"], "ci");
+    let ran = jtac(repo, &["check", "--push", "origin", "--json"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let v: Value = serde_json::from_str(&ran.stdout).unwrap();
+    assert_eq!(v["state"], "covered");
+    assert_eq!(v["waivers"][0]["reason"], "runners out");
+    let root_ref = format!("refs/jtac/roots/{}/{merge}", &merge[..2]);
+    assert!(
+        v["notes"]
+            .to_string()
+            .contains(&format!("origin holds {root_ref}")),
+        "{v}"
+    );
+    let ran = jtac(repo, &["replay", "HEAD"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let ran = jtac(repo, &["waive", "HEAD", "--ci", "--reason", "again"]);
+    assert_ne!(ran.code, 0);
+    assert!(
+        ran.stderr.contains("already has a root")
+            && ran
+                .stderr
+                .contains(&format!("git update-ref -d {root_ref}")),
+        "{}",
+        ran.stderr
+    );
+
+    let origin = Repo::empty();
+    origin.git(&[
+        "clone",
+        "-q",
+        "--",
+        &repo.git(&["remote", "get-url", "origin"]),
+        ".",
+    ]);
+    origin.git(&["fetch", "-q", "origin", "+refs/jtac/*:refs/jtac/*"]);
+    let (code, v) = json(&origin, &["audit", "main", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    let row = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["commit"] == format!("sha1:{merge}"))
+        .unwrap();
+    assert_eq!(row["state"], "covered");
+    assert_eq!(row["ci"], "declared_off");
+    assert_eq!(row["trust"], "trusted");
+    let waiver = v["waivers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["scope"]["gate"] == "ci")
+        .unwrap();
+    assert_eq!(waiver["reason"], "runners out");
+    assert_eq!(waiver["trust"], "trusted");
+    let text = jtac(&origin, &["audit", "main"]).stdout;
+    assert!(
+        text.contains("ci declared_off: a waiver this root carries")
+            && text.contains(&format!(
+                "ci gate on commit {merge} by dev@example.com: runners out (trusted)"
+            )),
+        "{text}"
+    );
+    let (code, v) = json(&origin, &["verify", "main", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unknown_signers"], 0);
+    assert_eq!(v["roots"], 2);
+}

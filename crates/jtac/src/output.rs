@@ -1,7 +1,9 @@
 //! The one structure a verdict is shown from: `--json` prints it, `render` writes the text
 //! from it (DESIGN.md section 7.1). Versioned with `v`, so a reader can pin what it parses.
 
-use jtac_core::{Body, GitOid, Outcome, Scope, Severity, Sha256Digest, SignedLever, State, Ts};
+use jtac_core::{
+    Body, Gate, GitOid, Outcome, Scope, Severity, Sha256Digest, SignedLever, State, Ts,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::judge::Judged;
@@ -106,7 +108,11 @@ impl WaiverOut {
     /// One line: scope, signer, marker, reason, every word through [`plain`].
     pub fn line(&self) -> String {
         let scope = match &self.scope {
-            Scope::Commit { commit } => format!("commit {}", commit.hex()),
+            Scope::Commit { commit, gate: None } => format!("commit {}", commit.hex()),
+            Scope::Commit {
+                commit,
+                gate: Some(Gate::Ci),
+            } => format!("ci gate on commit {}", commit.hex()),
             Scope::Rule { rule, path } => format!("{} under {}", plain(rule), plain(path)),
         };
         let agent = self.agent.as_deref().map_or(String::new(), |m| {

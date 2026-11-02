@@ -14,7 +14,8 @@ use crate::judge::Judged;
 use crate::refuse::Refusal;
 use crate::survey::state_name;
 use crate::{
-    Printed, chain, identity, judge, lever, merge, output, render, repo, root, state, write,
+    Printed, chain, identity, judge, lever, merge, output, render, repo, root, rootpush, state,
+    write,
 };
 
 /// The rendered verdict. A root, once written, is reported even when `state.json` is not.
@@ -99,9 +100,21 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     };
     let chain = || chain::chain(&repo, &store, &covered, &head, &j.base.commit);
     let root_id = site.commit(&j, chain, &mut notes)?.map(|w| w.id);
+    let sent = match (&a.push, root_id) {
+        (Some(remote), Some(_)) => Some(rootpush::send(&store, remote, &[head.commit])),
+        (Some(_), None) => {
+            notes.push("nothing was pushed: this run left no root to send".to_owned());
+            None
+        }
+        (None, _) => None,
+    };
+    if let (Some(remote), Some(s)) = (&a.push, &sent) {
+        notes.extend(s.held.iter().map(|r| format!("{remote} holds {r}")));
+    }
     let out = output::output(&j, notes, false, root_id);
     let mut printed = Printed::verdict(render::render(&out, a.json)?, out.pass);
     printed.warn = state::write(&store, &out).err();
+    printed.note = sent.map(|s| s.text).filter(|t| !t.is_empty());
     Ok(printed)
 }
 

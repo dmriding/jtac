@@ -137,6 +137,9 @@ fn render(o: &AuditOut) -> String {
         if let Some(h) = &r.head {
             let _ = writeln!(s, "          {}", h.line());
         }
+        if let Some(ci) = r.ci {
+            let _ = writeln!(s, "          ci {ci}: a waiver this root carries");
+        }
     }
     for w in &o.waivers {
         let _ = writeln!(s, "  waiver  {}", w.line());

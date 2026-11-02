@@ -55,6 +55,8 @@ impl Waivable<'_> {
 }
 
 /// The waiver in `node` when it applies to `commit`, or a commit `waivable` names, at `now`.
+/// A gated waiver names its own commit alone, since it rides only in the root written there
+/// (DESIGN.md section 15).
 pub fn scope_at<'a>(
     node: &'a Node,
     commit: &GitOid,
@@ -75,9 +77,14 @@ pub fn scope_at<'a>(
     }
     match &body.scope {
         None => return Err(OutOfScope::NoScope),
-        Some(Scope::Commit { commit: waived }) if !waivable.names(commit, waived) => {
-            return Err(OutOfScope::OtherCommit);
-        }
+        Some(Scope::Commit {
+            commit: waived,
+            gate: None,
+        }) if !waivable.names(commit, waived) => return Err(OutOfScope::OtherCommit),
+        Some(Scope::Commit {
+            commit: waived,
+            gate: Some(_),
+        }) if waived != commit => return Err(OutOfScope::OtherCommit),
         Some(Scope::Rule { .. }) if body.expires.is_none() => return Err(OutOfScope::NoExpiry),
         Some(_) => {}
     }
@@ -130,7 +137,9 @@ fn clean(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::tests::{COMMIT_ONE, TS, check_node, commit_waiver, lever, rule_waiver};
+    use crate::node::tests::{
+        COMMIT_ONE, TS, check_node, ci_waiver, commit_waiver, lever, rule_waiver,
+    };
     use crate::node::{Body, Severity};
 
     fn at(node: &Node, commit: &str, now: &str) -> Result<(), OutOfScope> {
@@ -174,6 +183,27 @@ mod tests {
         }
         let rule = rule_waiver();
         assert!(scope_at(&rule, &other, Waivable::Tip, now).is_ok());
+    }
+
+    /// A CI waiver is in scope on its own commit alone: no `Waivable` widens it, since it rides
+    /// only in the root on that commit (DESIGN.md section 15).
+    #[test]
+    fn a_ci_waiver_names_its_commit_exactly_and_no_waivable_widens_it() {
+        let other: GitOid = "sha1:0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let own: GitOid = COMMIT_ONE.parse().unwrap();
+        let now: Ts = TS.parse().unwrap();
+        let names = [own];
+        let ci = ci_waiver();
+        assert!(scope_at(&ci, &own, Waivable::Tip, now).is_ok());
+        for waivable in [Waivable::Tip, Waivable::Commits(&names), Waivable::Any] {
+            assert_eq!(
+                scope_at(&ci, &other, waivable, now).map(|_| ()),
+                Err(OutOfScope::OtherCommit),
+                "{waivable:?}"
+            );
+        }
     }
 
     #[test]

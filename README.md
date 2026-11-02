@@ -111,13 +111,13 @@ refusal: the gate could not answer.
 | Command | Does |
 | --- | --- |
 | `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec. `--dry-run` writes nothing |
-| `jtac check` | The gate on HEAD; a pass writes a signed root. `--preview` writes nothing and is the one mode that runs on a dirty tree |
+| `jtac check` | The gate on HEAD; a pass writes a signed root, and `--push <remote>` sends it. `--preview` writes nothing and is the one mode that runs on a dirty tree |
 | `jtac status` | Whether a push would pass; unpushed commits by coverage; waivers in effect |
 | `jtac why` | The last verdict's reasons, each with its rule, why, and the fix |
-| `jtac waive` | The signed off-switch: one commit, or one rule under one path for up to 30 days, with a reason |
+| `jtac waive` | The signed off-switch: one commit, one rule under one path for up to 30 days, or with `--ci` the CI gate on a commit merged without it, with a reason |
 | `jtac verify [range]` | Every root bearing on the range: tree, signature, waivers, chain; exit 1 on an invalid one, or on an absent commit with `--require-coverage` |
 | `jtac replay <commit>` | Recomputes a root's Merkle root, counts and verdict from the local nodes, on the machine that ran the check |
-| `jtac audit [range]` | The coverage table: covered, declared off, absent, by which root, signed by whom |
+| `jtac audit [range]` | The coverage table: covered, declared off, absent, by which root, signed by whom; a `ci` tag where a CI waiver stands in for CI's root |
 | `jtac show [range]` | The root refs a push would send, byte for byte |
 | `jtac bench` | The public proof: ten controls attacked through their real path in a scratch repository, each row quoting the gate |
 | `jtac init --agent claude-code` | Registers the advisory `PreToolUse` hook: Claude Code is told about a fence or a missing root before it pushes, and is never blocked |

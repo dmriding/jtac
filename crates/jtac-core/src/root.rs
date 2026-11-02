@@ -208,7 +208,7 @@ pub struct SignedLever {
 
 impl SignedLever {
     fn covers_commit(&self) -> bool {
-        matches!(&self.node.body, Body::Lever(b) if matches!(b.scope, Some(Scope::Commit { .. })))
+        matches!(&self.node.body, Body::Lever(b) if matches!(b.scope, Some(Scope::Commit { gate: None, .. })))
     }
 }
 
@@ -427,10 +427,11 @@ pub(crate) mod tests {
     use super::*;
     use crate::canonical::from_canonical;
     use crate::compare::Compared;
-    use crate::node::Action;
     use crate::node::tests::{
-        COMMIT_ONE, EMPTY, TS, check_node, commit_waiver, lever, rule_waiver, signer, waiver,
+        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, lever, rule_waiver, signer,
+        waiver,
     };
+    use crate::node::{Action, Gate};
 
     const COMMIT_ZERO: &str = "sha1:0000000000000000000000000000000000000000";
 
@@ -646,6 +647,14 @@ pub(crate) mod tests {
         let other_commit = waiver(
             Scope::Commit {
                 commit: COMMIT_ZERO.parse().unwrap(),
+                gate: None,
+            },
+            None,
+        );
+        let ci_elsewhere = waiver(
+            Scope::Commit {
+                commit: COMMIT_ZERO.parse().unwrap(),
+                gate: Some(Gate::Ci),
             },
             None,
         );
@@ -658,6 +667,21 @@ pub(crate) mod tests {
                 Ok(()),
             ),
             ("declared_off with commit waiver", declared_off(), Ok(())),
+            (
+                "ci waiver keeps covered",
+                with(vec![ci_waiver()], State::Covered),
+                Ok(()),
+            ),
+            (
+                "ci waiver alone does not declare off",
+                with(vec![ci_waiver()], State::DeclaredOff),
+                Err(RootError::DeclaredOffWithoutWaiver),
+            ),
+            (
+                "ci waiver for another commit",
+                with(vec![ci_elsewhere], State::Covered),
+                Err(RootError::WaiverCommit { index: 0 }),
+            ),
             (
                 "check node as lever",
                 with(vec![commit_waiver(), check_node()], State::DeclaredOff),
@@ -1115,6 +1139,7 @@ pub(crate) mod tests {
                 commit: "sha1:0000000000000000000000000000000000000007"
                     .parse()
                     .unwrap(),
+                gate: None,
             },
             None,
         );

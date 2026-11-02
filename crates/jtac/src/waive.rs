@@ -6,7 +6,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use jtac_core::{
-    Action, Body, GitOid, LeverBody, Node, Scope, Sha256Digest, Signer, Ts, clean_prefix,
+    Action, Body, Gate, GitOid, LeverBody, Node, Scope, Sha256Digest, Signer, Ts, clean_prefix,
 };
 use jtac_policy::facts;
 use jtac_sign::{Namespace, sign};
@@ -55,14 +55,27 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
             return Err(Refusal::waive_text(flag));
         }
     }
+    if a.ci && (a.rule.is_some() || a.path.is_some() || a.expires.is_some()) {
+        return Err(Refusal::ci_flags(a.rev.as_deref(), &a.reason));
+    }
+    let store = Store::open(&repo).map_err(Refusal::store)?;
     let (scope, tree, expires) = match (&a.rev, &a.rule, &a.path) {
         (Some(rev), None, None) => {
             if a.expires.is_some() {
                 return Err(Refusal::commit_expires(rev, &a.reason));
             }
             let target = repo::peel(&repo, &format, rev).map_err(|_| Refusal::rev("waive", rev))?;
+            if a.ci
+                && store
+                    .root(&target.commit)
+                    .map_err(Refusal::store)?
+                    .is_some()
+            {
+                return Err(Refusal::ci_root_stands(rev, &a.reason, &target.commit));
+            }
             let scope = Scope::Commit {
                 commit: target.commit,
+                gate: a.ci.then_some(Gate::Ci),
             };
             (scope, target.tree, None)
         }
@@ -83,7 +96,6 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
     };
     let loaded = policy::load(&repo, &head)?;
     let id = identity::identity(&repo)?;
-    let store = Store::open(&repo).map_err(Refusal::store)?;
     let marker = agent::here();
     let node = Node {
         tree,
@@ -138,10 +150,21 @@ fn expiry(now: Ts, given: Option<&str>) -> Option<Result<Ts, Refusal>> {
 fn render(o: &WaiveOut) -> String {
     let mut s = String::new();
     let (what, next) = match &o.scope {
-        Scope::Commit { commit } => (
+        Scope::Commit { commit, gate: None } => (
             format!("commit {}", commit.hex()),
             format!(
                 "run `jtac check` with {} checked out; its root reads declared off",
+                short(commit)
+            ),
+        ),
+        Scope::Commit {
+            commit,
+            gate: Some(Gate::Ci),
+        } => (
+            format!("ci gate on commit {}", commit.hex()),
+            format!(
+                "run `jtac check --push <remote>` with {} checked out; its root carries this, \
+                 stays covered, and the CI gate reads declared off",
                 short(commit)
             ),
         ),
