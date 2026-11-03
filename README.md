@@ -118,6 +118,7 @@ refusal: the gate could not answer.
 | `jtac replay <commit>` | Recomputes a root's Merkle root, counts and verdict from the local nodes, on the machine that ran the check |
 | `jtac audit [range]` | The coverage table: covered, declared off, absent, by which root, signed by whom; a `ci` tag where a CI waiver stands in for CI's root |
 | `jtac show [range]` | The root refs a push would send, byte for byte |
+| `jtac release <tag>` | The release gate: every commit since the previous attested release (or `--from`) covered or declared off by a root the tag's tree trusts, else refused naming each; `--require-ci` holds the first-parent line to CI's roots; `--push <remote>` signs the attestation in `jtac-release-v1` and sends it; `--verify` holds a tag's attestation to this clone's roots |
 | `jtac bench` | The public proof: ten controls attacked through their real path in a scratch repository, each row quoting the gate |
 | `jtac init --agent claude-code` | Registers the advisory `PreToolUse` hook: Claude Code is told about a fence or a missing root before it pushes, and is never blocked |
 
@@ -132,6 +133,7 @@ Only roots and signatures travel. In any clone:
 git fetch origin '+refs/jtac/*:refs/jtac/*'   # jtac init adds this refspec
 jtac verify main                               # exit 1 on a bad root
 jtac audit main                                # the coverage table
+jtac release v0.2.8 --verify                   # the release attestation against the roots
 ```
 
 ```

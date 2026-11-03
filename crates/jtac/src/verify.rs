@@ -65,7 +65,7 @@ pub struct Invalid {
 
 /// Gather and render.
 pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
-    let s = survey(cwd, "verify", &a.range, a.signers.as_deref())?;
+    let s = survey(cwd, "verify", &a.range, a.signers.as_deref(), None)?;
     let (covered, declared_off, absent) = s.totals();
     let invalid: Vec<Invalid> = s
         .ledger

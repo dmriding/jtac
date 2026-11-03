@@ -3,10 +3,10 @@
 
 use jtac_checks::{Cache, CacheKey, lookup, store};
 use jtac_core::{
-    Body, Capture, CheckBody, Counts, Covers, GateRef, GitOid, Node, Outcome, PolicyRef,
-    PolicySource, Root, RootVersion, Sha256Digest, Signer, State, Ts,
+    Body, Capture, CheckBody, Counts, Covers, From, GateRef, GitOid, Node, Outcome, PolicyRef,
+    PolicySource, Release, Root, RootVersion, Sha256Digest, Signer, State, Ts, V1,
 };
-use jtac_store::{PushOutcome, Store, StoreError, ref_name};
+use jtac_store::{PushOutcome, Store, StoreError, ref_name, release_ref};
 use jtac_testkit::Repo;
 
 const EMPTY: &str = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -550,4 +550,124 @@ fn roots_skips_a_ref_the_writer_would_not_write_with_a_note() {
             "{note}"
         );
     }
+}
+
+/// A tag `v1` on HEAD, annotated, and the attestation over a one-commit range from HEAD^.
+fn release(repo: &Repo, tag: &str) -> Release {
+    Release {
+        v: V1,
+        tag: tag.into(),
+        object: oid(repo, &format!("refs/tags/{tag}")),
+        commit: oid(repo, "HEAD^{commit}"),
+        tree: oid(repo, "HEAD^{tree}"),
+        ts: TS.parse().unwrap(),
+        from: From {
+            commit: oid(repo, "HEAD^"),
+            tag: None,
+        },
+        commits: 1,
+        covered: 1,
+        declared_off: 0,
+        waived: vec![],
+        roots: vec![EMPTY.parse().unwrap()],
+        ci: false,
+        artifacts: vec![],
+        gate: GateRef {
+            version: "0.2.8".into(),
+            binary: EMPTY.parse().unwrap(),
+        },
+        signer: Signer {
+            principal: "ci@example.com".into(),
+            fingerprint: "SHA256:AAAA".into(),
+        },
+    }
+}
+
+#[test]
+fn a_release_written_on_one_clone_is_pushed_fetched_and_read_on_another() {
+    let origin = Repo::bare(&[]);
+    let a = Repo::clone_of(&origin);
+    a.write("README.md", b"example\n");
+    a.commit("first");
+    a.write("CHANGELOG.md", b"example\n");
+    a.commit("second");
+    a.git(&["tag", "-a", "-m", "v1", "v1"]);
+    a.git(&["push", "-q", "origin", "main", "v1"]);
+    let store_a = Store::open(a.path()).unwrap();
+    let r = release(&a, "v1");
+    let id = store_a.put_release(&r, SIG).unwrap();
+    assert_eq!(id, r.id().unwrap());
+    let name = release_ref("v1");
+    let object = a.git(&["cat-file", "-p", &name]);
+    assert!(!object.contains("parent "), "{object}");
+    assert!(object.ends_with(&id.to_string()), "{object}");
+    assert_eq!(
+        a.git(&["ls-tree", "--name-only", &name]),
+        "release.json\nrelease.sig"
+    );
+    assert!(store_a.roots().unwrap().listed.is_empty());
+    assert!(store_a.roots().unwrap().skipped.is_empty());
+    assert_eq!(
+        store_a.push_release("origin", "v1").unwrap().outcome,
+        PushOutcome::Sent
+    );
+    assert_eq!(
+        store_a.push_release("origin", "v1").unwrap().outcome,
+        PushOutcome::UpToDate
+    );
+
+    let b = Repo::clone_of(&origin);
+    let store_b = Store::open(b.path()).unwrap();
+    assert_eq!(store_b.release("v1").unwrap(), None);
+    b.git(&["fetch", "-q", "origin", REFSPEC]);
+    let got = store_b.release("v1").unwrap().unwrap();
+    assert_eq!(got.release, r);
+    assert_eq!(got.sig, SIG);
+    let err = store_b.put_release(&r, SIG).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Exists { name: n } if *n == name),
+        "{err}"
+    );
+}
+
+#[test]
+fn put_release_refuses_what_would_not_read_back_and_a_ref_that_holds_something_else() {
+    let repo = with_commit(&[]);
+    repo.write("CHANGELOG.md", b"example\n");
+    repo.commit("second");
+    repo.git(&["tag", "v1"]);
+    let s = Store::open(repo.path()).unwrap();
+    let invalid = |e: &StoreError| matches!(e, StoreError::Invalid { .. });
+    let good = release(&repo, "v1");
+    let mut counts = good.clone();
+    counts.covered = 2;
+    let mut unknown = good.clone();
+    unknown.object = "sha1:0000000000000000000000000000000000000001"
+        .parse()
+        .unwrap();
+    let mut bad_name = good.clone();
+    bad_name.tag = "v1..2".into();
+    for r in [&counts, &unknown, &bad_name] {
+        let err = s.put_release(r, SIG).unwrap_err();
+        assert!(invalid(&err), "{err}");
+        assert_eq!(s.release(&r.tag).unwrap(), None, "{err}");
+    }
+    let early = Release {
+        ts: "1969-12-31T23:59:59Z".parse().unwrap(),
+        ..good.clone()
+    };
+    assert!(invalid(&s.put_release(&early, SIG).unwrap_err()));
+    repo.git(&["update-ref", &release_ref("v1"), "HEAD"]);
+    let err = s.release("v1").unwrap_err();
+    assert!(refused(&err), "{err}");
+    repo.git(&["update-ref", "-d", &release_ref("v1")]);
+    s.put_release(&good, SIG).unwrap();
+    let mut other = good;
+    other.tag = "v2".into();
+    repo.git(&["update-ref", &release_ref("v2"), &release_ref("v1")]);
+    let err = s.release("v2").unwrap_err();
+    assert!(
+        refused(&err) && err.to_string().contains("is for v1"),
+        "{err}"
+    );
 }

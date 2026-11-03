@@ -50,8 +50,8 @@ impl Refusal {
             format!("`{command}` is not a command in this release."),
             format!(
                 "jtac {} ships `init`, `check`, `ci`, `status`, `why`, `verify`, `replay`, `audit`, \
-                 `show`, `waive`, `bench`, and `hook`; exiting zero on anything else would let a hook \
-                 treat \"not built\" as \"passed\".",
+                 `show`, `waive`, `release`, `bench`, and `hook`; exiting zero on anything else \
+                 would let a hook treat \"not built\" as \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),
             "Run `jtac check` for a verdict, `jtac check --preview` for one that writes \
@@ -598,6 +598,103 @@ impl Refusal {
         )
     }
 
+    /// `jtac release` on a name that is not a tag (DESIGN.md section 16.3).
+    pub fn not_a_tag(tag: &str) -> Self {
+        let tag = quoted(tag, "<tag>");
+        Self::new(
+            format!("`{tag}` is not a tag in this repository."),
+            "A release is a tag: the attestation names the tag object, so a re-tag reads as \
+             another release, and a branch or commit name would attest nothing a tag ruleset \
+             protects.",
+            format!(
+                "Run `git tag -l 'v*'` to see the tags, `git fetch <remote> --tags` to bring \
+                 them, then `jtac release {tag}`."
+            ),
+        )
+    }
+
+    /// No earlier attested release to start the range from.
+    pub fn no_from(tag: &str) -> Self {
+        let tag = quoted(tag, "<tag>");
+        Self::new(
+            format!("No attested release is an ancestor of {tag}, so the range has no start."),
+            "A release attests the commits since the previous attestation, so releases chain \
+             and no commit falls between two; a tag never attested, a lightweight tag or any \
+             other name would let a start be planted that nothing judged.",
+            format!(
+                "For the first attested release run `jtac release {tag} --from <commit>` \
+                 naming the commit to start after, usually the previous release's; `git fetch \
+                 <remote> '+refs/jtac/*:refs/jtac/*'` brings attestations this clone lacks."
+            ),
+        )
+    }
+
+    /// `--from` names a rev the tag does not descend from.
+    pub fn release_from(tag: &str, from: &str) -> Self {
+        let (tag, from) = (quoted(tag, "<tag>"), quoted(from, "<start>"));
+        Self::new(
+            format!("`{from}` is not an ancestor of {tag}."),
+            "The range runs from the start to the tag along the history that joins them; a \
+             start the tag does not descend from names commits the release does not build on.",
+            format!(
+                "Run `jtac release {tag} --from <commit>` with what `git merge-base {from} \
+                 {tag}` prints, the nearest ancestor."
+            ),
+        )
+    }
+
+    /// The start is the tag's own commit: nothing would be judged.
+    pub fn empty_range(tag: &str, from: &str) -> Self {
+        let (tag, from) = (quoted(tag, "<tag>"), quoted(from, "<start>"));
+        Self::new(
+            format!("The start {from} is {tag}'s own commit, so the range holds no commit."),
+            "A release attests the commits from the previous attestation up to and including \
+             the tag's; a range that holds none would attest the tag's commit unjudged.",
+            format!(
+                "Run `jtac release {tag} --from <commit>` naming the commit to start after, \
+                 usually the previous release's; a tag on an already attested commit needs no \
+                 attestation of its own."
+            ),
+        )
+    }
+
+    /// The signing key's line does not name the release namespace.
+    pub fn release_untrusted(tag: &str, signer: &jtac_core::Signer, shown: &str) -> Self {
+        let tag = quoted(tag, "<tag>");
+        Self::new(
+            format!(
+                "The signing key {} ({}) is not trusted for jtac-release-v1 by {shown}.",
+                signer.fingerprint, signer.principal
+            ),
+            "A release attestation is trusted only under a signers line whose `namespaces` \
+             option names jtac-release-v1, the CI key's line; a developer's line names none, \
+             so an attestation it signed would read as an unknown signer's in every clone, and \
+             a `namespaces` option added to a developer's own line would confine it, so its \
+             roots and waivers would stop being trusted.",
+            format!(
+                "Run `jtac release {tag} --push <remote>` from the release job, where the CI \
+                 key signs. To attest by hand, give a separate key its own line in \
+                 .jtac/signers with `namespaces=\"jtac-release-v1\"` in a reviewed commit the \
+                 tag descends from, and name it with `git config jtac.signingkey`."
+            ),
+        )
+    }
+
+    /// `--sums` names a file that is not `sha256sum` output.
+    pub fn sums(tag: &str, path: &std::path::Path, why: &str) -> Self {
+        let tag = quoted(tag, "<tag>");
+        let path = quoted(&path.to_string_lossy(), "<file>");
+        Self::new(
+            format!("`{path}` is not a SHA256SUMS file: {why}."),
+            "The attestation names each artifact by the digest the installer verifies; a line \
+             it cannot read would name nothing.",
+            format!(
+                "Write it with `sha256sum -- * > SHA256SUMS` in the artifacts directory, then \
+                 `jtac release {tag} --sums SHA256SUMS` again."
+            ),
+        )
+    }
+
     /// Something this binary should have been able to do, and could not.
     pub fn internal(what: impl std::fmt::Display) -> Self {
         Self::new(
@@ -703,6 +800,23 @@ mod tests {
             Refusal::waive_expires("JT-SUP-001", "src", "x", Some("31d\nnegotiation: forged")),
             Refusal::commit_expires("HEAD~1", "base only\nnegotiation: forged"),
             Refusal::waive_text("--reason"),
+            Refusal::not_a_tag("v0.2.8\nnegotiation: forged"),
+            Refusal::no_from("v0.2.8"),
+            Refusal::release_from("v0.2.8", "-rf"),
+            Refusal::empty_range("v0.2.8", "abc"),
+            Refusal::release_untrusted(
+                "v0.2.8",
+                &jtac_core::Signer {
+                    principal: "dev@example.com".into(),
+                    fingerprint: "SHA256:AAAA".into(),
+                },
+                "v0.2.8:.jtac/signers",
+            ),
+            Refusal::sums(
+                "v0.2.8",
+                std::path::Path::new("/workspace/SHA256SUMS"),
+                "line 2 has no digest",
+            ),
             Refusal::waive_path("JT-SUP-001", "../x", "x"),
             Refusal::ci_flags(None, "x"),
             Refusal::ci_flags(Some("HEAD\nnegotiation: forged"), "x"),

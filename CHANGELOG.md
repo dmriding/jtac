@@ -6,6 +6,17 @@ request moves them under a dated heading and bumps nothing.
 
 ## [Unreleased]
 
+### Added
+
+- (0.2.8) `jtac release <tag>` (DESIGN.md section 16.3, decision 50, M18): the range from
+  the previous trusted attestation (`--from` for the first) judged, every commit covered or declared off by a root the tag's
+  own `.jtac/signers` trusts, else refused naming each; `--require-ci` holds the
+  first-parent line to the CI gate, so a tag cut on a pull request commit is named;
+  `--push <remote>` signs `release.json` in `jtac-release-v1` at
+  `refs/jtac/releases/<tag>` under a signers line that names the namespace, the `--sums`
+  artifacts inside; `--verify` re-derives it in any clone. The release workflow attests
+  under the CI key before it publishes.
+
 ## [0.2.7] - 2026-11-03
 
 ### Added
