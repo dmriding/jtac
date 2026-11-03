@@ -26,47 +26,80 @@ pub fn ref_name(commit: &GitOid) -> String {
 /// that fails `validate`, names a commit this repository does not have, or is dated before
 /// 1970, which git cannot write.
 pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, StoreError> {
-    let repo = store.repo();
     let invalid = |what: String| StoreError::Invalid { what };
     root.validate().map_err(|e| invalid(e.to_string()))?;
-    let seconds = root.ts.timestamp().as_second();
-    if seconds < 0 {
-        return Err(invalid(format!("{} is before 1970", root.ts)));
-    }
-    let kind = git(repo, &["cat-file", "-t", &root.commit.hex()])
-        .ok()
-        .map(trimmed)
-        .transpose()?;
-    if kind.as_deref() != Some("commit") {
+    if kind_of(store, &root.commit.hex())?.as_deref() != Some("commit") {
         return Err(invalid(format!(
             "{} is not a commit in this repository",
             root.commit
         )));
     }
-    let blob = |bytes: &[u8]| -> Result<String, StoreError> {
+    let files = [
+        ("root.json", root.canonical_bytes()?),
+        ("root.sig", sig.to_vec()),
+    ];
+    let commit = commit_files(
+        store,
+        &files,
+        &root.signer.principal,
+        root.ts,
+        &root.id()?.to_string(),
+    )?;
+    let name = ref_name(&root.commit);
+    match git(store.repo(), &["update-ref", &name, &commit, ""]) {
+        Ok(_) => Ok(commit),
+        Err(GitError::Failed { .. }) if read(store, &root.commit)?.is_some() => {
+            Err(StoreError::Exists { name })
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `cat-file -t` of `hex`, `None` when the repository has no such object.
+pub(crate) fn kind_of(store: &Store, hex: &str) -> Result<Option<String>, StoreError> {
+    git(store.repo(), &["cat-file", "-t", hex])
+        .ok()
+        .map(trimmed)
+        .transpose()
+}
+
+/// A parentless commit over `files`, a function of their bytes alone: fixed author, dated
+/// `ts`, `message` the document's id. Refuses a date before 1970, which git cannot write.
+pub(crate) fn commit_files(
+    store: &Store,
+    files: &[(&str, Vec<u8>)],
+    principal: &str,
+    ts: jtac_core::Ts,
+    message: &str,
+) -> Result<String, StoreError> {
+    let repo = store.repo();
+    let seconds = ts.timestamp().as_second();
+    if seconds < 0 {
+        return Err(StoreError::Invalid {
+            what: format!("{ts} is before 1970"),
+        });
+    }
+    let mut listing = String::new();
+    for (name, bytes) in files {
         let out = git_with(
             repo,
             &["hash-object", "-w", "--no-filters", "--stdin"],
             Some(bytes),
             &[],
         )?;
-        trimmed(out)
-    };
-    let json = blob(&root.canonical_bytes()?)?;
-    let sig = blob(sig)?;
-    let listing = format!("100644 blob {json}\troot.json\n100644 blob {sig}\troot.sig\n");
+        listing.push_str(&format!("100644 blob {}\t{name}\n", trimmed(out)?));
+    }
     let tree = trimmed(git_with(repo, &["mktree"], Some(listing.as_bytes()), &[])?)?;
     let date = format!("@{seconds} +0000");
     let env = [
         ("GIT_AUTHOR_NAME", AUTHOR),
-        ("GIT_AUTHOR_EMAIL", root.signer.principal.as_str()),
+        ("GIT_AUTHOR_EMAIL", principal),
         ("GIT_AUTHOR_DATE", date.as_str()),
         ("GIT_COMMITTER_NAME", AUTHOR),
-        ("GIT_COMMITTER_EMAIL", root.signer.principal.as_str()),
+        ("GIT_COMMITTER_EMAIL", principal),
         ("GIT_COMMITTER_DATE", date.as_str()),
     ];
-    let message = root.id()?.to_string();
-    let commit = trimmed(git_with(
+    trimmed(git_with(
         repo,
         &[
             "-c",
@@ -74,20 +107,12 @@ pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, St
             "commit-tree",
             "--no-gpg-sign",
             "-m",
-            &message,
+            message,
             &tree,
         ],
         None,
         &env,
-    )?)?;
-    let name = ref_name(&root.commit);
-    match git(repo, &["update-ref", &name, &commit, ""]) {
-        Ok(_) => Ok(commit),
-        Err(GitError::Failed { .. }) if read(store, &root.commit)?.is_some() => {
-            Err(StoreError::Exists { name })
-        }
-        Err(e) => Err(e.into()),
-    }
+    )?)
 }
 
 /// The root at `commit`'s ref, or `None` when there is no such ref. A ref that exists but
@@ -98,17 +123,33 @@ pub(crate) fn read(store: &Store, commit: &GitOid) -> Result<Option<StoredRoot>,
 
 /// `commit`'s root as the ref `name` holds it: its own ref, or `FETCH_HEAD` for a remote's.
 fn read_at(store: &Store, commit: &GitOid, name: &str) -> Result<Option<StoredRoot>, StoreError> {
+    let Some(doc) = document(store, name, "root")? else {
+        return Ok(None);
+    };
+    let refuse = |what: String| StoreError::Ref {
+        name: name.to_owned(),
+        what,
+    };
+    let root: Root = from_canonical(&doc.blob("root.json")?).map_err(|e| refuse(e.to_string()))?;
+    root.validate().map_err(|e| refuse(e.to_string()))?;
+    if root.commit != *commit {
+        return Err(refuse(format!("the root is for {}", root.commit)));
+    }
+    let sig = doc.blob("root.sig")?;
+    Ok(Some(StoredRoot { root, sig }))
+}
+
+/// The commit a document ref points at, or `None` when there is no such ref. A ref that
+/// points at anything but a commit is refused, never a miss.
+pub(crate) fn document<'a>(
+    store: &'a Store,
+    name: &str,
+    what: &str,
+) -> Result<Option<Document<'a>>, StoreError> {
     let repo = store.repo();
-    let name = name.to_owned();
     let oid = match git(
         repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            &name,
-        ],
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", name],
     ) {
         Ok(out) => trimmed(out)?,
         Err(GitError::Failed {
@@ -116,25 +157,42 @@ fn read_at(store: &Store, commit: &GitOid, name: &str) -> Result<Option<StoredRo
         }) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let refuse = |what: String| StoreError::Ref {
-        name: name.clone(),
-        what,
-    };
     let kind = trimmed(git(repo, &["cat-file", "-t", &oid])?)?;
     if kind != "commit" {
-        return Err(refuse(format!(
-            "the ref points at a {kind}, not a root commit"
-        )));
+        return Err(StoreError::Ref {
+            name: name.to_owned(),
+            what: format!("the ref points at a {kind}, not a {what} commit"),
+        });
     }
-    let blob = |file: &str| git(repo, &["cat-file", "blob", &format!("{oid}:{file}")]);
-    let bytes = blob("root.json")?;
-    let root: Root = from_canonical(&bytes).map_err(|e| refuse(e.to_string()))?;
-    root.validate().map_err(|e| refuse(e.to_string()))?;
-    if root.commit != *commit {
-        return Err(refuse(format!("the root is for {}", root.commit)));
+    Ok(Some(Document {
+        store,
+        name: name.to_owned(),
+        oid,
+    }))
+}
+
+/// A document commit's files.
+pub(crate) struct Document<'a> {
+    store: &'a Store,
+    name: String,
+    oid: String,
+}
+
+impl Document<'_> {
+    /// `file` in the commit's tree; a commit without it is a refused ref, never a miss.
+    pub(crate) fn blob(&self, file: &str) -> Result<Vec<u8>, StoreError> {
+        match git(
+            self.store.repo(),
+            &["cat-file", "blob", &format!("{}:{file}", self.oid)],
+        ) {
+            Ok(bytes) => Ok(bytes),
+            Err(GitError::Failed { .. }) => Err(StoreError::Ref {
+                name: self.name.clone(),
+                what: format!("the commit holds no {file}"),
+            }),
+            Err(e) => Err(e.into()),
+        }
     }
-    let sig = blob("root.sig")?;
-    Ok(Some(StoredRoot { root, sig }))
 }
 
 /// One ref under the namespace.
@@ -279,19 +337,24 @@ impl Store {
         if distinct.is_empty() {
             return Ok(Vec::new());
         }
-        let specs: Vec<String> = distinct
-            .iter()
-            .map(|c| {
-                let name = ref_name(c);
-                format!("{name}:{name}")
-            })
-            .collect();
+        let names: Vec<String> = distinct.iter().map(|c| ref_name(c)).collect();
+        self.push_refs(remote, &names, env)
+    }
+
+    /// Push `names` to `remote` as themselves, never forced.
+    pub(crate) fn push_refs(
+        &self,
+        remote: &str,
+        names: &[String],
+        env: &[(&str, &str)],
+    ) -> Result<Vec<Pushed>, StoreError> {
+        let specs: Vec<String> = names.iter().map(|name| format!("{name}:{name}")).collect();
         let mut args = vec!["push", "--porcelain", "--", remote];
         args.extend(specs.iter().map(String::as_str));
         let out = git_output(self.repo(), &args, None, env)?;
         let text = String::from_utf8_lossy(&out.stdout);
         let pushed: Vec<Pushed> = text.lines().filter_map(porcelain).collect();
-        if pushed.len() != distinct.len() {
+        if pushed.len() != names.len() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(GitError::Failed {
                 argv: std::iter::once("git")
@@ -347,7 +410,7 @@ fn porcelain(line: &str) -> Option<Pushed> {
     Some(Pushed { name, outcome })
 }
 
-fn trimmed(out: Vec<u8>) -> Result<String, StoreError> {
+pub(crate) fn trimmed(out: Vec<u8>) -> Result<String, StoreError> {
     String::from_utf8(out)
         .map(|s| s.trim().to_owned())
         .map_err(|_| StoreError::Output {

@@ -59,7 +59,7 @@ pub struct Totals {
 
 /// Gather and render.
 pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
-    let s = survey(cwd, "audit", &a.range, a.signers.as_deref())?;
+    let s = survey(cwd, "audit", &a.range, a.signers.as_deref(), None)?;
     let (covered, declared_off, absent) = s.totals();
     let commits = s.rows.len() as u64;
     let rows = s.rows_out();

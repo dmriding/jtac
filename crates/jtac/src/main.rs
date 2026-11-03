@@ -31,6 +31,7 @@ mod range;
 mod reason;
 mod refspec;
 mod refuse;
+mod release;
 mod render;
 mod replay;
 mod repo;
@@ -163,6 +164,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         Some(Command::Audit(a)) => Run::verdict(audit::audit(&a, cwd), a.json),
         Some(Command::Show(a)) => Run::verdict(show::show(&a, cwd), a.json),
         Some(Command::Waive(a)) => Run::verdict(waive::waive(&a, cwd), a.json),
+        Some(Command::Release(a)) => Run::verdict(release::release(&a, cwd), a.json),
         Some(Command::Bench(a)) => Run::verdict(bench::bench(a.json), a.json),
     }
 }
@@ -210,8 +212,9 @@ mod tests {
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 10] = [
+        let rows: [(&[&str], &str); 11] = [
             (&["--help"], "check"),
+            (&["release", "--help"], "--require-ci"),
             (&["ci", "--help"], "--require-local-root"),
             (&["--help"], "bench"),
             (&["--help"], "audit"),

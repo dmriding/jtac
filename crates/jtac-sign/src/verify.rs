@@ -46,7 +46,7 @@ pub enum Trust<'a> {
 /// Verify `sig` over `msg` in `ns` as `signer`, with the keys in `trust` judged at `at`.
 /// The key ssh-keygen names must be the signer's. A named trust file that is not a plain
 /// readable file is an error; ssh-keygen is given a private copy of the bytes that passed
-/// that check, confined to the lines that name the CI namespace when `ns` is it.
+/// that check, confined to the lines that name `ns` when `ns.confined()` says so.
 pub fn verify(
     tool: &Tool,
     trust: Trust<'_>,
@@ -61,9 +61,9 @@ pub fn verify(
         Trust::Bytes(bytes) => Some(bytes.to_vec()),
         Trust::None => None,
     };
-    let confined = match ns {
-        Namespace::CiRoot => read.as_deref().map(|bytes| confine(bytes, ns.as_str())),
-        _ => None,
+    let confined = match ns.confined() {
+        Some(_) => read.as_deref().map(|bytes| confine(bytes, ns.as_str())),
+        None => None,
     };
     let trust = match confined.as_deref().or(read.as_deref()) {
         Some(bytes) => Some(temp("jtac-trust-", bytes)?),
@@ -86,8 +86,8 @@ pub fn verify(
     };
     let confined_why = |why: String| Verified::Unknown {
         why: format!(
-            "{why}; a root with `from` is trusted only under a signers line whose `namespaces` \
-             option names {}",
+            "{why}; {} is trusted only under a signers line whose `namespaces` option names {}",
+            ns.confined().unwrap_or("this document"),
             ns.as_str()
         ),
     };

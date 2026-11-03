@@ -9,6 +9,7 @@ mod fs;
 mod levers;
 mod objects;
 mod refs;
+mod releases;
 mod roots;
 mod state;
 
@@ -20,6 +21,7 @@ use jtac_core::{CanonicalError, ReadError};
 pub use batch::Read;
 pub use cache::FileCache;
 pub use refs::{Listed, PushOutcome, Pushed, Roots, ref_name};
+pub use releases::{StoredRelease, release_ref};
 pub use roots::StoredRoot;
 
 /// One clone's store: `<git common dir>/jtac/`, shared by every linked worktree.

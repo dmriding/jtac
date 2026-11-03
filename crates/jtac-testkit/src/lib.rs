@@ -134,9 +134,8 @@ impl Repo {
         self.git(&["rev-parse", "HEAD"])
     }
 
-    /// Replace `commit`'s root ref with `json` and `sig`, or with a fresh signature by `key`
-    /// in `namespace` when `sig` is `None`. `json` must be canonical: the reader verifies the
-    /// signature over the bytes it recomputes from the parsed root.
+    /// Plant `json` as `commit`'s root at its ref, signed with `key` in `namespace` unless
+    /// `sig` is given verbatim.
     pub fn put_root(
         &self,
         key: &Path,
@@ -145,7 +144,34 @@ impl Repo {
         json: &str,
         sig: Option<&str>,
     ) {
-        let json_path = self.write(".git/forged/root.json", json.as_bytes());
+        let root_ref = format!("refs/jtac/roots/{}/{commit}", &commit[..2]);
+        self.put_signed(key, namespace, &root_ref, "root", json, sig);
+    }
+
+    /// Plant `json` as `tag`'s attestation at its ref, signed with `key` in `namespace`
+    /// unless `sig` is given verbatim. Replaces what the ref held.
+    pub fn put_release(
+        &self,
+        key: &Path,
+        namespace: &str,
+        tag: &str,
+        json: &str,
+        sig: Option<&str>,
+    ) {
+        let name = format!("refs/jtac/releases/{tag}");
+        self.put_signed(key, namespace, &name, "release", json, sig);
+    }
+
+    fn put_signed(
+        &self,
+        key: &Path,
+        namespace: &str,
+        name: &str,
+        stem: &str,
+        json: &str,
+        sig: Option<&str>,
+    ) {
+        let json_path = self.write(".git/forged/doc.json", json.as_bytes());
         let sig = match sig {
             Some(s) => s.to_owned(),
             None => {
@@ -165,10 +191,10 @@ impl Repo {
                 std::fs::read_to_string(sig_path).unwrap()
             }
         };
-        let sig_path = self.write(".git/forged/root.sig", sig.as_bytes());
+        let sig_path = self.write(".git/forged/doc.sig", sig.as_bytes());
         let j = self.git(&["hash-object", "-w", "--", json_path.to_str().unwrap()]);
         let s = self.git(&["hash-object", "-w", "--", sig_path.to_str().unwrap()]);
-        let listing = format!("100644 blob {j}\troot.json\n100644 blob {s}\troot.sig\n");
+        let listing = format!("100644 blob {j}\t{stem}.json\n100644 blob {s}\t{stem}.sig\n");
         let mut child = Command::new("git")
             .args(["mktree"])
             .current_dir(self.path())
@@ -183,7 +209,6 @@ impl Repo {
         assert!(out.status.success(), "git mktree");
         let tree = String::from_utf8(out.stdout).unwrap().trim().to_owned();
         let forged = self.git(&["commit-tree", &tree, "-m", "forged"]);
-        let root_ref = format!("refs/jtac/roots/{}/{commit}", &commit[..2]);
-        self.git(&["update-ref", &root_ref, &forged]);
+        self.git(&["update-ref", name, &forged]);
     }
 }

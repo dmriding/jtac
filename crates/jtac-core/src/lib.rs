@@ -10,6 +10,7 @@ pub mod from;
 pub mod merkle;
 pub mod node;
 pub mod oid;
+pub mod release;
 pub mod root;
 pub mod schema;
 pub mod signer;
@@ -28,6 +29,7 @@ pub use node::{
     Severity,
 };
 pub use oid::GitOid;
+pub use release::{Artifact, From, Release, ReleaseError};
 pub use root::{
     Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError,
     SignedLever, State,

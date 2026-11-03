@@ -51,6 +51,17 @@ gates itself from its own tree before a release carries the change. The `root` j
 up to a hundred runs per branch (`queue: max`); a run dropped beyond that is re-run from
 the Actions tab with its own event, which restores the root.
 
+## The release job
+
+`release.yml` runs `jtac release <tag> --sums SHA256SUMS --require-ci --push origin` under
+the CI key between the build and the publish (DESIGN.md section 16.3): every commit since
+the previous attestation covered or declared off by a key the tag's `.jtac/signers` names, every
+first-parent commit under CI's root, else no release and the commits named. The attestation,
+`release.json` and `release.sig` at `refs/jtac/releases/<tag>`, is published beside the
+archives; `jtac release <tag> --verify` in any clone that fetched `refs/jtac/*` holds it to
+the clone's roots. The CI key's line names `jtac-release-v1` and a developer's does not, so
+only the job attests. A rerun finds the attestation standing.
+
 ## What the check says about the pushed root
 
 | The head's root | `jtac ci` |

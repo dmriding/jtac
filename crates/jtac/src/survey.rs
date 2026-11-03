@@ -31,12 +31,14 @@ pub struct Survey {
     pub heads: Vec<Option<HeadOut>>,
 }
 
-/// Gather for `command`. An empty `range` is `HEAD`.
+/// Gather for `command`. An empty `range` is `HEAD`; trust is HEAD's tree, or `at`'s, shown
+/// by its name, when a command stands on another commit (a release reads the tag's).
 pub fn survey(
     cwd: &Path,
     command: &str,
     range: &[String],
     signers: Option<&Path>,
+    at: Option<(&repo::Head, &str)>,
 ) -> Result<Survey, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
     if let Some(path) = repo::grafted(&repo).map_err(|e| Refusal::repository(&e))? {
@@ -46,7 +48,11 @@ pub fn survey(
     let head = repo::head(&repo).map_err(|e| Refusal::no_head(&e))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let tool = coverage::verifier(&repo)?;
-    let signers = Signers::gather(&repo, &head, signers)?;
+    let signers = match (signers, at) {
+        (Some(path), _) => Signers::File(path.to_path_buf()),
+        (None, Some((at, shown))) => Signers::at(&repo, at, shown)?,
+        (None, None) => Signers::gather(&repo, &head, None)?,
+    };
     let range: Vec<String> = if range.is_empty() {
         vec!["HEAD".to_owned()]
     } else {
@@ -213,7 +219,9 @@ impl Survey {
         out
     }
 
-    fn ci_state(&self, i: usize, commit: &GitOid) -> Option<&'static str> {
+    /// `declared_off` when root `i`, the commit's own and not CI's, carries a CI waiver
+    /// naming the commit (DESIGN.md section 9.5).
+    pub fn ci_state(&self, i: usize, commit: &GitOid) -> Option<&'static str> {
         let stored = self.ledger.stored[i]
             .as_ref()
             .filter(|_| self.ledger.roots[i].invalid.is_none())?;

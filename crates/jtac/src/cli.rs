@@ -48,6 +48,9 @@ pub enum Command {
     Show(ShowArgs),
     /// The signed off-switch: waive one commit, or one rule under one path for up to 30 days
     Waive(WaiveArgs),
+    /// The release gate: every commit since the previous release covered or declared off by
+    /// a trusted root, attested in `jtac-release-v1`, or refused naming the commits
+    Release(ReleaseArgs),
     /// The public proof: attack every control through its real path in a scratch
     /// repository; exit 1 when one does not hold
     Bench(JsonArg),
@@ -174,6 +177,37 @@ pub struct WaiveArgs {
     #[arg(long, value_name = "TEXT")]
     pub reason: String,
     /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `jtac release <tag>` judges the range from the previous release; `--push` attests it and
+/// sends the attestation; `--verify` reads the attestation the tag already has.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct ReleaseArgs {
+    /// The tag's short name.
+    #[arg(value_name = "TAG")]
+    pub tag: String,
+    /// Where the range starts; default the nearest earlier `v*` tag.
+    #[arg(long, value_name = "REV", conflicts_with = "verify")]
+    pub from: Option<String>,
+    /// A `SHA256SUMS` file whose lines the attestation names as artifacts.
+    #[arg(long, value_name = "FILE", conflicts_with = "verify")]
+    pub sums: Option<PathBuf>,
+    /// Every first-parent commit must be covered or declared off under the CI gate.
+    #[arg(long, conflicts_with = "verify")]
+    pub require_ci: bool,
+    /// Sign, store and push the attestation to this remote.
+    #[arg(long, value_name = "REMOTE", conflicts_with = "verify")]
+    pub push: Option<String>,
+    /// Verify the attestation the tag has instead of writing one.
+    #[arg(long)]
+    pub verify: bool,
+    /// Trust this file instead of `.jtac/signers` in the tag's tree; a verifier's own, so
+    /// it never decides what is signed.
+    #[arg(long, value_name = "FILE", conflicts_with = "push")]
+    pub signers: Option<PathBuf>,
+    /// Machine-readable output.
     #[arg(long)]
     pub json: bool,
 }
@@ -411,6 +445,66 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "check", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn release_takes_a_tag_and_verify_excludes_the_writing_flags() {
+        let cli = Cli::try_parse_from([
+            "jtac",
+            "release",
+            "v0.2.8",
+            "--from",
+            "v0.2.7",
+            "--sums",
+            "SHA256SUMS",
+            "--require-ci",
+            "--push",
+            "origin",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Release(ReleaseArgs {
+                tag: "v0.2.8".into(),
+                from: Some("v0.2.7".into()),
+                sums: Some("SHA256SUMS".into()),
+                require_ci: true,
+                push: Some("origin".into()),
+                verify: false,
+                signers: None,
+                json: true,
+            }))
+        );
+        let cli = Cli::try_parse_from(["jtac", "release", "v0.2.8", "--signers", "s"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Release(ReleaseArgs {
+                signers: Some(_),
+                ..
+            }))
+        ));
+        assert!(
+            Cli::try_parse_from(["jtac", "release", "v0.2.8", "--signers", "s", "--push", "o"])
+                .is_err(),
+            "an override trust file never decides what is signed"
+        );
+        let cli = Cli::try_parse_from(["jtac", "release", "v0.2.8", "--verify"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Release(ReleaseArgs { verify: true, .. }))
+        ));
+        assert!(Cli::try_parse_from(["jtac", "release"]).is_err());
+        for flag in [
+            &["--push", "origin"][..],
+            &["--from", "x"],
+            &["--sums", "f"],
+            &["--require-ci"],
+        ] {
+            let mut args = vec!["jtac", "release", "v1", "--verify"];
+            args.extend(flag);
+            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
+        }
     }
 
     #[test]
