@@ -26,9 +26,11 @@ Nothing is "released" because it merged.
    must equal the manifest. Merge it.
 3. Tag the merge commit, never the pull request's own commit: the release gate holds the
    first-parent line to CI's roots, and a pull request commit carries the developer's alone.
-   Then push the tag:
+   A tag cannot be deleted or moved and is never reused, so the check comes before the tag,
+   on the commit, and only its last line earns the next two commands:
 
    ```
+   scripts/release-check.sh vX.Y.Z
    git tag -s vX.Y.Z -m "jtac vX.Y.Z"
    git push origin vX.Y.Z
    ```
@@ -40,7 +42,8 @@ Nothing is "released" because it merged.
    starts at `v0.2.7`, named in the workflow until an attestation exists), and publishes a GitHub release
    with the changelog section as its notes and the attestation beside the
    archives. A failed workflow means no release; fix on `main` and tag the
-   next patch. Tags are never reused. A commit the gate names as absent takes
+   next patch. Tags are never reused. When the spent tag's version is still the manifest's,
+   the next release pull request bumps it: the one case where one does. A commit the gate names as absent takes
    `jtac waive <commit> --ci --reason` on `main` before the next tag.
 
 ## Version policy
