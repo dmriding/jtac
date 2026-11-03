@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use jtac_checks::diff::git::quoted;
 use jtac_policy::{Detected, Js, Runner, default_policy, policy_hash};
 use jtac_testkit::Repo;
 use serde_json::Value;
@@ -988,7 +989,7 @@ fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
         "environment: `gh api -X PUT repos/example-org/example-app/environments/jtac-ci",
         &format!(
             "gh secret set JTAC_CI_KEY --env jtac-ci < {}",
-            slashes(&key)
+            quoted(&slashes(&key), "<key path>")
         ),
         "require the `jtac` check on `main`",
     ] {
