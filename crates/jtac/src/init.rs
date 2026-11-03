@@ -1,5 +1,5 @@
-//! `jtac init` (DESIGN.md section 11.7): key, store, policy, hook, refspec, lever node, in
-//! that order. Every fact is gathered and every refusal raised before the first write, so a
+//! `jtac init` (DESIGN.md section 11.7): key, store, policy, hook, refspec, the agent and
+//! CI opt-ins, lever node, in that order. Every fact is gathered and every refusal raised before the first write, so a
 //! refusal leaves nothing half done; `--dry-run` reports the same plan and writes nothing; a
 //! second run finds nothing to do and writes no lever node.
 
@@ -20,7 +20,7 @@ use crate::keydir::Key;
 use crate::refspec::REFSPEC;
 use crate::refuse::Refusal;
 use crate::repo::RepoError;
-use crate::{Printed, agentcfg, detect, hookfile, keydir, refspec, render, repo};
+use crate::{Printed, agentcfg, cicfg, detect, hookfile, keydir, refspec, render, repo};
 
 /// Everything init found, before it writes anything.
 struct Plan {
@@ -35,6 +35,7 @@ struct Plan {
     script: String,
     install: Install,
     agent: Option<agentcfg::Planned>,
+    ci: Option<cicfg::Planned>,
     lever: Option<(GitOid, Sha256Digest)>,
 }
 
@@ -47,6 +48,7 @@ impl Plan {
             || !matches!(self.install, Install::Keep | Install::Foreign)
             || (self.remote.is_some() && !self.refspec_there)
             || self.agent.as_ref().is_some_and(agentcfg::Planned::writes)
+            || self.ci.as_ref().is_some_and(cicfg::Planned::writes)
     }
 }
 
@@ -89,6 +91,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     let install = hookfile::judge(&hookfile::read(&hook)?, &script, a.keep_hook)
         .ok_or_else(|| Refusal::init_foreign_hook(&hook, &exe))?;
     let agent = agentcfg::plan(&repo, &exe, a.agent.as_deref())?;
+    let ci = cicfg::plan(&repo, remote.as_deref(), a.ci.as_deref(), &key)?;
     let mut plan = Plan {
         store_there: store.dir().is_dir(),
         repo,
@@ -101,6 +104,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
         script,
         install,
         agent,
+        ci,
         lever: None,
     };
     if plan.writes() {
@@ -130,7 +134,7 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
         None => out.kept("policy", format!("policy {POLICY_PATH}")),
         Some(new) => {
             if !dry {
-                write_new(&p.repo.join(POLICY_PATH), &new.text)?;
+                write_new("the policy", &p.repo.join(POLICY_PATH), &new.text)?;
             }
             let found = &new.languages;
             out.wrote(
@@ -190,6 +194,7 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
         }
     }
     agentcfg::apply(&mut out, p.agent.as_ref(), &p.repo, dry)?;
+    cicfg::apply(&mut out, p.ci.as_ref(), dry)?;
     lever_step(&mut out, p, id.as_ref(), dry)?;
     Ok(out)
 }
@@ -247,8 +252,8 @@ fn key_step(out: &mut InitOutput, p: &Plan, dry: bool) -> Result<Option<Identity
     if id.is_some() {
         out.notes.push(format!(
             "the allowed signer line{unread} is for `.jtac/signers`, where `jtac verify` reads \
-             trusted keys: add it there and commit it to trust this key; init does not write \
-             that file"
+             trusted keys: add it there and commit it to trust this key; init writes that file \
+             only with `--ci github`"
         ));
     }
     Ok(id)
@@ -307,8 +312,8 @@ fn tree(repo: &Path) -> Result<GitOid, Refusal> {
 }
 
 /// Write a file that must not exist yet, creating its directory.
-fn write_new(path: &Path, text: &str) -> Result<(), Refusal> {
-    let io = |e: std::io::Error| Refusal::init_io("the policy", path, &e);
+pub(crate) fn write_new(what: &str, path: &Path, text: &str) -> Result<(), Refusal> {
+    let io = |e: std::io::Error| Refusal::init_io(what, path, &e);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }

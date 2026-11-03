@@ -11,7 +11,7 @@ use std::path::Path;
 
 use jtac_checks::git::{git, quoted};
 use jtac_core::GitOid;
-use jtac_store::{PushOutcome, Store, ref_name};
+use jtac_store::{PushOutcome, Pushed, Store, ref_name};
 
 use crate::repo::oid;
 
@@ -47,6 +47,8 @@ pub struct Sent {
     pub text: String,
     /// Sent or already there; a rejected ref is not among them.
     pub held: Vec<String>,
+    /// The refs the remote refused.
+    pub rejected: Vec<String>,
 }
 
 /// Push the root refs of `commits` to `remote` under the hook's guard; the merge job's own
@@ -61,33 +63,42 @@ pub fn send(store: &Store, remote: &str, commits: &[GitOid]) -> Sent {
             return Sent {
                 text,
                 held: Vec::new(),
+                rejected: Vec::new(),
             };
         }
     };
-    let held = pushed
+    let (refused, kept): (Vec<&Pushed>, Vec<&Pushed>) = pushed
         .iter()
-        .filter(|p| !matches!(p.outcome, PushOutcome::Rejected { .. }))
-        .map(|p| p.name.clone())
-        .collect();
-    let rejected: Vec<String> = pushed
-        .iter()
-        .filter_map(|p| match &p.outcome {
-            PushOutcome::Rejected { summary } => Some(format!("{} {summary}", p.name)),
-            PushOutcome::Sent | PushOutcome::UpToDate => None,
-        })
-        .collect();
-    if !rejected.is_empty() {
-        text.push_str(&warning(remote, &rejected, "the remote refused them"));
-        return Sent { text, held };
+        .partition(|p| matches!(p.outcome, PushOutcome::Rejected { .. }));
+    let held = kept.iter().map(|p| p.name.clone()).collect();
+    let rejected: Vec<String> = refused.iter().map(|p| p.name.clone()).collect();
+    if !refused.is_empty() {
+        let lines: Vec<String> = refused
+            .iter()
+            .filter_map(|p| match &p.outcome {
+                PushOutcome::Rejected { summary } => Some(format!("{} {summary}", p.name)),
+                PushOutcome::Sent | PushOutcome::UpToDate => None,
+            })
+            .collect();
+        text.push_str(&warning(remote, &lines, "the remote refused them"));
+        return Sent {
+            text,
+            held,
+            rejected,
+        };
     }
-    let sent = pushed
+    let sent = kept
         .iter()
         .filter(|p| p.outcome == PushOutcome::Sent)
         .count();
     if sent > 0 {
         let _ = writeln!(text, "jtac: sent {sent} root(s) to {remote}");
     }
-    Sent { text, held }
+    Sent {
+        text,
+        held,
+        rejected,
+    }
 }
 
 /// Commits in each range that have a root here, then the commit whose root covered its tip,

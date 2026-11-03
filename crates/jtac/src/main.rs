@@ -8,6 +8,8 @@ mod bench;
 mod chain;
 mod check;
 mod ci;
+mod cicfg;
+mod ciwf;
 mod cli;
 mod coverage;
 mod detect;

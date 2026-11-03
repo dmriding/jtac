@@ -93,8 +93,13 @@ pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, St
 /// The root at `commit`'s ref, or `None` when there is no such ref. A ref that exists but
 /// does not hold a root for `commit` is refused, never a miss.
 pub(crate) fn read(store: &Store, commit: &GitOid) -> Result<Option<StoredRoot>, StoreError> {
+    read_at(store, commit, &ref_name(commit))
+}
+
+/// `commit`'s root as the ref `name` holds it: its own ref, or `FETCH_HEAD` for a remote's.
+fn read_at(store: &Store, commit: &GitOid, name: &str) -> Result<Option<StoredRoot>, StoreError> {
     let repo = store.repo();
-    let name = ref_name(commit);
+    let name = name.to_owned();
     let oid = match git(
         repo,
         &[
@@ -219,6 +224,40 @@ impl Store {
             }
         }
         Ok(roots)
+    }
+
+    /// The root `remote` holds for `commit`, or `None` when it holds no ref for it: fetched
+    /// into `FETCH_HEAD` alone, `--refmap=` keeping a configured `refs/jtac/*` refspec from
+    /// replacing the local ref on the way, and read as the local ref is.
+    pub fn remote_root(
+        &self,
+        remote: &str,
+        commit: &GitOid,
+    ) -> Result<Option<StoredRoot>, StoreError> {
+        let name = ref_name(commit);
+        match git(
+            self.repo(),
+            &["ls-remote", "--exit-code", "--", remote, &name],
+        ) {
+            Ok(_) => {}
+            Err(GitError::Failed {
+                status: Some(2), ..
+            }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        git(
+            self.repo(),
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--refmap=",
+                "--",
+                remote,
+                &name,
+            ],
+        )?;
+        read_at(self, commit, "FETCH_HEAD")
     }
 
     /// Push the root refs for `commits` to `remote`, never forced, with `env` on the child git

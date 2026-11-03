@@ -1,0 +1,204 @@
+# The jtac CI gate (DESIGN.md section 15, decision 43): `jtac ci` on a pull request; on a push
+# to the default branch the merge root when the forge names the tip as a pull request's merge,
+# else `jtac ci` from the old tip. The workflow `jtac init --ci github` writes supplies the checkout, the
+# environment, the secret and the permissions (docs/CI.md).
+name: jtac
+description: Provenance gate for AI-written code. Verifies the roots a pull request pushed and signs the merge root.
+
+inputs:
+  key:
+    description: The CI private key, from the environment secret. The push job alone.
+    required: false
+    default: ""
+  principal:
+    description: user.email of the roots CI signs, the principal of its line in .jtac/signers.
+    required: false
+    default: jtac-ci@users.noreply.github.com
+  require-local-root:
+    description: Fail a pull request whose head has no root this gate can compare.
+    required: false
+    default: "false"
+  binary:
+    description: A built jtac to run instead of the pinned release.
+    required: false
+    default: ""
+  remote:
+    description: The remote roots are fetched from and the merge root is pushed to.
+    required: false
+    default: origin
+
+runs:
+  using: composite
+  steps:
+    # Any other event would run no gate and pass; pull_request_target would also check out
+    # the pull request head with the repository's own secrets in reach.
+    - name: event
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$GITHUB_EVENT_NAME" in
+          pull_request|push) ;;
+          *)
+            printf '%s\n' "jtac: no gate runs on a $GITHUB_EVENT_NAME event." \
+              "The action judges a pull request and a push to the default branch; any other event would pass without judging anything, and pull_request_target hands the pull request head the repository's secrets." \
+              "Trigger the workflow on pull_request and push alone, as the one jtac init --ci github writes does." >&2
+            exit 2 ;;
+        esac
+
+    - name: jtac binary
+      shell: bash
+      env:
+        VERSION: v0.2.7
+        BINARY: ${{ inputs.binary }}
+      run: |
+        set -euo pipefail
+        if [ -n "$BINARY" ]; then
+          bin="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
+        else
+          sh "$GITHUB_ACTION_PATH/install.sh" --to "$RUNNER_TEMP/jtac-bin" --version "$VERSION"
+          bin="$RUNNER_TEMP/jtac-bin/jtac"
+        fi
+        "$bin" --version
+        echo "JTAC_BIN=$bin" >> "$GITHUB_ENV"
+
+    # Full history for the walk, the roots from the repository the head lives in (a fork's
+    # are the fork's), and on a pull request the head itself: the checkout is the merge ref.
+    - name: history and roots
+      shell: bash
+      env:
+        REMOTE: ${{ inputs.remote }}
+        PR: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          git fetch -q --unshallow "$REMOTE"
+        fi
+        if [ -n "$HEAD_SHA" ]; then
+          git fetch -q "$REMOTE" "+refs/heads/$BASE_REF:refs/remotes/$REMOTE/$BASE_REF" "+refs/pull/$PR/head:refs/remotes/pull/$PR/head"
+          git fetch -q --no-tags "${HEAD_REPO:-$REMOTE}" "+refs/jtac/*:refs/jtac/*"
+          git checkout -q --detach "$HEAD_SHA"
+        else
+          git fetch -q "$REMOTE" "+refs/jtac/*:refs/jtac/*"
+        fi
+
+    - name: pull request gate
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        REMOTE: ${{ inputs.remote }}
+        BASE_REF: ${{ github.base_ref }}
+        REQUIRE: ${{ inputs.require-local-root }}
+      run: |
+        set -euo pipefail
+        flag=""
+        if [ "$REQUIRE" = true ]; then flag=--require-local-root; fi
+        code=0
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        "$JTAC_BIN" ci --base "refs/remotes/$REMOTE/$BASE_REF" $flag | tee -a "$GITHUB_STEP_SUMMARY" || code=$?
+        printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+        exit "$code"
+
+    # A tip the forge names as a merged pull request's gets `check --from <its head>`, CI's one
+    # verdict from the old tip with the head chain's waivers in scope, and a root; anything
+    # else, a direct push or a fast-forward, gets `jtac ci` from the old tip and no root, so a
+    # bypass is judged and never signed over (decision 43); a root on the tip, at the fetch
+    # or on the remote when the job's push is refused, stands only as CI's own for this head.
+    # A force push or an old tip the clone cannot fetch is refused: a gate that cannot anchor
+    # judges nothing.
+    - name: merge root
+      if: github.event_name == 'push'
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+        PRINCIPAL: ${{ inputs.principal }}
+        REMOTE: ${{ inputs.remote }}
+        BEFORE: ${{ github.event.before }}
+        FORCED: ${{ github.event.forced }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        say() { printf '%s\n' "$@" | tee -a "$GITHUB_STEP_SUMMARY" >&2; }
+        gate() {
+          code=0
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+          "$JTAC_BIN" "$@" | tee -a "$GITHUB_STEP_SUMMARY" || code=$?
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+          return "$code"
+        }
+        if expr "$BEFORE" : '0*$' >/dev/null; then
+          say "jtac: nothing judged: this push created the branch, so there is no old tip to diff from." \
+              "The gate judges the diff from the branch's old tip and the merge root records it; the next push has one." \
+              "Nothing to do."
+          exit 0
+        fi
+        if [ "$FORCED" = true ]; then
+          say "jtac: refused: this push rewrote the branch, so the old tip $BEFORE is not an ancestor of the new one." \
+              "The gate anchors every verdict at the old tip; a force push moves the anchor, and a check that cannot anchor must not pass." \
+              "Restore the old tip (git push --force-with-lease $REMOTE $BEFORE:$GITHUB_REF_NAME) and push the change as a pull request; deny force pushes in the ruleset."
+          exit 2
+        fi
+        git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null || git fetch -q "$REMOTE" "$BEFORE" || true
+        if ! git rev-parse -q --verify "$BEFORE^{commit}" >/dev/null; then
+          say "jtac: refused: the old tip $BEFORE is not in this clone and $REMOTE does not serve it." \
+              "The gate anchors every verdict at the old tip; without it nothing can be judged, and a check that did not run must not pass." \
+              "Re-run the job once the remote serves the commit, or push the change again as a pull request."
+          exit 2
+        fi
+        pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+          --jq "[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\")][0] | select(. != null) | \"\(.number) \(.head.sha) \(.head.repo.clone_url // \"\")\"")
+        number=""; head=""; head_repo=""
+        if [ -n "$pr" ]; then read -r number head head_repo <<< "$pr"; fi
+        if [ -z "$pr" ]; then
+          say "jtac: no CI root: the forge names no merged pull request for $(git rev-parse --short HEAD), so this is a direct push; it is judged below and signed over by nothing." \
+              "A CI root stands for the pull request head it compared; a direct push has none. Require pull requests in the ruleset." \
+              "jtac waive <commit> --ci --reason records a merge made around CI."
+          gate ci --base "$BEFORE"; exit $?
+        fi
+        if [ "$head" = "$GITHUB_SHA" ]; then
+          say "jtac: no CI root: pull request #$number was merged by fast-forward, so the tip is its head and the evidence is the developer's, where it was pushed; it is judged below." \
+              "A merge root stands for a commit the forge made; a fast-forward makes none. Require merge commits in the ruleset for CI-signed evidence." \
+              "Nothing else to do."
+          gate ci --base "$BEFORE"; exit $?
+        fi
+        if [ -z "$KEY" ]; then
+          say "jtac: the CI key is not set, so the merge root for pull request #$number cannot be signed." \
+              "A merge root is signed by the CI key from the environment secret; without it the job proves nothing, and a job that proves nothing must not pass." \
+              "Run jtac init --ci github in a clone: it prints the environment and gh secret set commands with the key path filled in; then re-run this job."
+          exit 2
+        fi
+        git fetch -q "$REMOTE" "+refs/pull/$number/head:refs/remotes/pull/$number/head"
+        # The head repository's roots for the pull request's own commits alone, where this clone
+        # holds none, and no tags: a fork never supplies the old tip's root, so the merge root's
+        # parent stays the branch's own. A root already on the tip is `check --from`'s to judge.
+        if [ -n "$head_repo" ]; then
+          git fetch -q --no-tags "$head_repo" "+refs/jtac/roots/*:refs/jtac-head/roots/*"
+          added=$(git rev-list "$head" --not "$BEFORE")
+          for c in $added; do
+            from="refs/jtac-head/roots/${c:0:2}/$c"
+            want="refs/jtac/roots/${c:0:2}/$c"
+            if oid=$(git rev-parse -q --verify "$from") && ! git rev-parse -q --verify "$want" >/dev/null; then
+              git update-ref "$want" "$oid"
+            fi
+          done
+          git for-each-ref --format='delete %(refname)' 'refs/jtac-head/' | git update-ref --stdin
+        fi
+        keyfile="$RUNNER_TEMP/jtac-ci-key"
+        trap 'rm -f "$keyfile"' EXIT
+        umask 077
+        printf '%s\n' "$KEY" > "$keyfile"
+        git config user.email "$PRINCIPAL"
+        git config jtac.signingkey "$keyfile"
+        gate check --from "$head" --base "$BEFORE" --push "$REMOTE"
+
+    # The nodes behind the verdict, for `jtac replay` on a downloaded store.
+    - name: evidence store
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: jtac-store-${{ github.job }}
+        path: .git/jtac
+        if-no-files-found: ignore
+        include-hidden-files: true

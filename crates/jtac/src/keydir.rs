@@ -107,7 +107,7 @@ pub fn create(
 }
 
 /// `ssh-keygen` with no passphrase and stdin closed, into a directory only the user reads.
-fn generate(program: &Path, email: &str, path: &Path) -> Result<(), Refusal> {
+pub(crate) fn generate(program: &Path, email: &str, path: &Path) -> Result<(), Refusal> {
     let dir = path.parent().expect("the key path has a parent");
     private_dir(dir).map_err(|e| Refusal::init_io("the key directory", dir, &e))?;
     let comment = format!("jtac {email}");

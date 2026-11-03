@@ -18,8 +18,9 @@ pub enum Adoption {
     /// No parent's history held a policy (decision 38): `.jtac/**` is minor when the change
     /// adds the policy file.
     Policy,
-    /// The base branch holds no `.jtac/signers` (decision 45, CI): every protected path is
-    /// minor, since with no trust no waiver could have cleared anything.
+    /// No `.jtac/signers` was in force (decision 45): the base branch holds none in CI, or
+    /// locally the commit brings the first policy and the first signers file together; every
+    /// protected path is minor, since with no trust no waiver could have cleared anything.
     Trust,
 }
 

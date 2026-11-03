@@ -10,9 +10,8 @@ slop out of `main`, and anyone with a clone can check the evidence offline.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
-**Status: v0.1, the local gate, is complete and released.** v0.2, a CI gate that
-re-runs the checks under its own identity, is next. `DESIGN.md` is the source of
-truth; `main` is the development line; a release is a signed `v*` tag
+**Status: v0.1, the local gate, is released; v0.2, the CI gate, is complete on
+`main` and ships with the next tag.** `DESIGN.md` is the source of truth; `main` is the development line; a release is a signed `v*` tag
 (`docs/RELEASING.md`).
 
 ## Install
@@ -110,7 +109,7 @@ refusal: the gate could not answer.
 
 | Command | Does |
 | --- | --- |
-| `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec. `--dry-run` writes nothing |
+| `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec; `--ci github` adds the CI workflow, the first `.jtac/signers` and a CI key (`docs/CI.md`). `--dry-run` writes nothing |
 | `jtac check` | The gate on HEAD; a pass writes a signed root, and `--push <remote>` sends it. `--preview` writes nothing and is the one mode that runs on a dirty tree |
 | `jtac status` | Whether a push would pass; unpushed commits by coverage; waivers in effect |
 | `jtac why` | The last verdict's reasons, each with its rule, why, and the fix |
@@ -150,6 +149,20 @@ any other change.
 binary with this policy on this tree and recorded these results. It does not
 prove the results are true; the CI gate in v0.2 exists to close that gap.
 
+## CI gate
+
+The same binary in a GitHub Action, under a key the developer does not hold:
+`jtac ci` judges every pull request again and compares the pushed root with its
+own run, and a merge commit gets a root the CI key signed. One command, one
+environment secret, one commit:
+
+```sh
+jtac init --ci github
+```
+
+`docs/CI.md` has the steps it prints, what the check says, fork pull requests,
+bypass merges, and what reads as the developer's.
+
 ## Numbers
 
 Measured on this repository, release build, Linux, 2026-10-19:
@@ -174,10 +187,10 @@ repository's language and the agent that wrote the code.
   roots, the `pre-push` hook, the shell command classifier, the advisory
   tool-call hook for Claude Code, `jtac bench`, the install script. `jtac
   policy` and `jtac scope` follow in v0.2.
-- **v0.2, CI gate.** The same binary in a GitHub Action: verifies the roots,
-  re-runs the gate on the same tree, fails the check when a local root lied,
-  signs a root for the merge commit under its own key. Then the release gate on
-  tags, and tiering by blast radius.
+- **v0.2, CI gate** (on `main`): the same binary in a GitHub Action verifies
+  the roots, re-runs the gate on the same tree, fails the check when a local
+  root lied, and signs a root for the merge commit under its own key. Then the
+  release gate on tags, and tiering by blast radius.
 - **v0.3, review round and packet.** Model reviewers against recorded
   evidence; a human sees only what could not be proven.
 - **v0.4, collector.** Optional, self-hosted, server to server. Developer

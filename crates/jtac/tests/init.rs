@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use jtac_checks::diff::git::quoted;
 use jtac_policy::{Detected, Js, Runner, default_policy, policy_hash};
 use jtac_testkit::Repo;
 use serde_json::Value;
@@ -910,5 +911,131 @@ fn a_symlinked_agent_directory_or_settings_file_is_refused_and_left_alone() {
         std::fs::read_to_string(&target).unwrap(),
         "{}",
         "left alone"
+    );
+}
+
+/// `--ci github` writes the workflow pinned to this release, the first trust file with the
+/// operator's line and the CI key's, and a CI key under the user config directory, never
+/// printed; it names the operator's four steps; a second run keeps everything; a dry run
+/// writes nothing; a remote off GitHub, a forge with no workflow or an unknown default
+/// branch is refused before any write.
+#[test]
+fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
+    let env = Env::new();
+    let ran = env.jtac(&["init", "--ci", "github"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("not a github.com repository")
+            && ran
+                .stderr
+                .contains("`jtac init --ci github --remote <name>`")
+            && ran.stderr.contains("negotiation: "),
+        "{}",
+        ran.stderr
+    );
+    assert!(!env.repo.path().join(".jtac").exists(), "nothing written");
+    let ran = env.jtac(&["init", "--ci", "gitlab"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(ran.stderr.contains("no workflow for"), "{}", ran.stderr);
+    env.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "git@github.com:example-org/example-app.git",
+    ]);
+    let ran = env.jtac(&["init", "--ci", "github"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr.contains("`git remote set-head origin --auto`"),
+        "{}",
+        ran.stderr
+    );
+    env.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    let key = env
+        .xdg()
+        .join("jtac")
+        .join("ci")
+        .join("example-org")
+        .join("example-app_ed25519");
+    let workflow = env
+        .repo
+        .path()
+        .join(".github")
+        .join("workflows")
+        .join("jtac.yml");
+    let signers = env.repo.path().join(".jtac").join("signers");
+
+    let ran = env.init(&["--ci", "github", "--dry-run"]);
+    for want in [
+        "would write CI signing key ",
+        "would write workflow .github/workflows/jtac.yml",
+        "would write trust file .jtac/signers (your line and the CI key's)",
+    ] {
+        assert!(ran.stdout.contains(want), "{want}: {}", ran.stdout);
+    }
+    assert!(!key.exists() && !workflow.exists() && !signers.exists());
+
+    let ran = env.init(&["--ci", "github"]);
+    let version = env!("CARGO_PKG_VERSION");
+    for want in [
+        "wrote CI signing key ",
+        &format!("wrote workflow .github/workflows/jtac.yml (pinned to v{version})"),
+        "wrote trust file .jtac/signers (your line and the CI key's)",
+        "CODEOWNERS: add `/.jtac/ @example-org`",
+        "environment: `gh api -X PUT repos/example-org/example-app/environments/jtac-ci",
+        &format!(
+            "gh secret set JTAC_CI_KEY --env jtac-ci < {}",
+            quoted(&slashes(&key), "<key path>")
+        ),
+        "require the `jtac` check on `main`",
+    ] {
+        assert!(ran.stdout.contains(want), "{want}: {}", ran.stdout);
+    }
+    assert!(!ran.stdout.contains("PRIVATE KEY"), "{}", ran.stdout);
+    let text = std::fs::read_to_string(&workflow).unwrap();
+    assert_eq!(
+        text.matches(&format!("uses: dmriding/jtac@v{version}"))
+            .count(),
+        2,
+        "{text}"
+    );
+    assert!(text.contains("environment: jtac-ci") && text.contains("branches: [main]"));
+    let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+    let blob = public.split_whitespace().nth(1).unwrap();
+    let trust = std::fs::read_to_string(&signers).unwrap();
+    let lines: Vec<&str> = trust.lines().collect();
+    assert_eq!(lines.len(), 2, "{trust}");
+    assert!(
+        lines[0].starts_with("dev@example.com ssh-ed25519 "),
+        "{trust}"
+    );
+    assert_eq!(
+        lines[1],
+        format!(
+            "jtac-ci@users.noreply.github.com namespaces=\"jtac-ci-root-v1,jtac-release-v1\" \
+             ssh-ed25519 {blob}"
+        )
+    );
+    assert!(!trust.contains("PRIVATE"), "{trust}");
+
+    let ran = env.init(&["--ci", "github", "--json"]);
+    let v: Value = serde_json::from_str(&ran.stdout).unwrap();
+    let steps: Vec<(&str, &str)> = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["step"].as_str().unwrap(), s["action"].as_str().unwrap()))
+        .collect();
+    for step in ["ci-key", "workflow", "signers"] {
+        assert!(steps.contains(&(step, "kept")), "{steps:?}");
+    }
+    assert!(
+        !ran.stdout.contains("add the CI key's line"),
+        "the trust file already names it: {}",
+        ran.stdout
     );
 }
