@@ -133,7 +133,7 @@ Only roots and signatures travel. In any clone:
 git fetch origin '+refs/jtac/*:refs/jtac/*'   # jtac init adds this refspec
 jtac verify main                               # exit 1 on a bad root
 jtac audit main                                # the coverage table
-jtac release v0.2.8 --verify                   # the release attestation against the roots
+jtac release v0.2.9 --verify                   # the release attestation against the roots
 ```
 
 ```

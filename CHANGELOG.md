@@ -2,9 +2,11 @@
 
 Keep a Changelog style, semver pre-1.0 as described in `docs/RELEASING.md`. Every pull request
 bumps the version and adds its entries under Unreleased, tagged with that version. A release pull
-request moves them under a dated heading and bumps nothing.
+request moves them under a dated heading and bumps nothing, unless a spent tag holds the version.
 
 ## [Unreleased]
+
+## [0.2.9] - 2026-11-03
 
 ### Added
 
@@ -16,6 +18,14 @@ request moves them under a dated heading and bumps nothing.
   `refs/jtac/releases/<tag>` under a signers line that names the namespace, the `--sums`
   artifacts inside; `--verify` re-derives it in any clone. The release workflow attests
   under the CI key before it publishes.
+
+### Changed
+
+- (0.2.9) Version bump alone: `v0.2.8` was tagged before its release pull request, so its
+  workflow refused the missing changelog section and published nothing. The tag is immutable
+  and stays unused. `scripts/release-check.sh vX.Y.Z` replays that job on the commit before
+  `git tag` and the job runs it too; the release gates now wait for it, so a spent tag costs one
+  short job, not the matrix.
 
 ## [0.2.7] - 2026-11-03
 

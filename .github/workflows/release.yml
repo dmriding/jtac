@@ -1,5 +1,5 @@
-# A release is a signed v* tag on main (docs/RELEASING.md). The full ci.yml gates run on the
-# tagged commit first; a red gate means no release.
+# A release is a signed v* tag on main (docs/RELEASING.md). The version check runs alone first,
+# then the full ci.yml gates on the tagged commit; a red job means no release and the tag is spent.
 name: release
 
 on:
@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   gates:
+    needs: version
     uses: ./.github/workflows/ci.yml
 
   version:
@@ -19,27 +20,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # The tag must sit on main, match the workspace version and the action's, and have its changelog section.
-      - run: |
-          set -eu
-          tag="${GITHUB_REF_NAME#v}"
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "tag $GITHUB_REF_NAME is not on main"
-            echo "Fix: delete nothing; tag a commit that is on main (docs/RELEASING.md)."
-            exit 1
-          fi
-          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "$tag" != "$manifest" ]; then
-            echo "tag v$tag does not match workspace version $manifest"
-            echo "Fix: bump Cargo.toml to $tag in a pull request, then tag the merge commit."
-            exit 1
-          fi
-          if ! grep -q "^## \[$tag\]" CHANGELOG.md; then
-            echo "CHANGELOG.md has no '## [$tag]' section"
-            echo "Fix: move the Unreleased entries under '## [$tag] - YYYY-MM-DD' in a release pull request."
-            exit 1
-          fi
-          sh scripts/action-version.sh
+      - run: sh scripts/release-check.sh "$GITHUB_REF_NAME"
 
   build:
     needs: [gates, version]
