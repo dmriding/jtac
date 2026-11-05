@@ -6,6 +6,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+### Changed
+
+- (0.2.10) The release workflow names no start: `refs/jtac/releases/` holds v0.2.9, so
+  `jtac release` chains from the previous attestation, and with none left refuses the tag
+  rather than falling back to `--from v0.2.7`.
+
 ## [0.2.9] - 2026-11-03
 
 ### Added

@@ -38,8 +38,7 @@ Nothing is "released" because it merged.
 4. The release workflow runs the full quality bars on the tagged commit,
    builds the binaries, attests the range with `jtac release` under the CI
    key (every commit since the previous attestation covered or declared off,
-   the first-parent line under CI; `docs/CI.md`; the first attested release
-   starts at `v0.2.7`, named in the workflow until an attestation exists), and publishes a GitHub release
+   the first-parent line under CI; `docs/CI.md`), and publishes a GitHub release
    with the changelog section as its notes and the attestation beside the
    archives. A failed workflow means no release; fix on `main` and tag the
    next patch. Tags are never reused. When the spent tag's version is still the manifest's,
