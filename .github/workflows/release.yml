@@ -83,7 +83,7 @@ jobs:
           set -eu
           (cd dist && sha256sum -- * > ../SHA256SUMS)
           cat SHA256SUMS
-      # The release gate (DESIGN.md section 16.3): every commit since the previous tag under
+      # The release gate (DESIGN.md section 16.3): every commit since the previous attestation under
       # a trusted root and the first-parent line under CI's, attested by the CI key with the
       # checksums inside, or no release. The musl build just made is the jtac that judges.
       - name: attest
@@ -100,11 +100,7 @@ jobs:
           printf '%s\n' "$KEY" > "$keyfile"
           git config user.email jtac-ci@users.noreply.github.com
           git config jtac.signingkey "$keyfile"
-          # Releases chain from the previous attestation; the first starts at the last
-          # unattested tag. Drop the two lines once refs/jtac/releases/ holds one.
-          from=""
-          if [ -z "$(git for-each-ref refs/jtac/releases/)" ]; then from="--from v0.2.7"; fi
-          "$RUNNER_TEMP/$name/jtac" release "$GITHUB_REF_NAME" $from --sums SHA256SUMS --require-ci --push origin | tee -a "$GITHUB_STEP_SUMMARY"
+          "$RUNNER_TEMP/$name/jtac" release "$GITHUB_REF_NAME" --sums SHA256SUMS --require-ci --push origin | tee -a "$GITHUB_STEP_SUMMARY"
           git cat-file blob "refs/jtac/releases/$GITHUB_REF_NAME:release.json" > jtac-release.json
           git cat-file blob "refs/jtac/releases/$GITHUB_REF_NAME:release.sig" > jtac-release.sig
       - name: release notes from the changelog section
