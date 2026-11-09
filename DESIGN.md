@@ -12,7 +12,7 @@ This document is the source of truth for building jtac. Sections 1 to 6 say what
 
 ## 1. Summary
 
-jtac is for solo developers and teams who work at AI speed and are bottlenecked by slop and pull request review. It is the quality and safety gate that lets them keep that speed without bloat or broken code reaching production: it proves quality and review with evidence, instead of trusting a model or a rubber stamp.
+jtac is for solo developers and teams who work at AI speed and are held back by pull request review and by code nothing independent has checked. It is the quality and safety gate that lets them keep that speed without bloat or broken code reaching production: it proves quality and review with evidence, instead of trusting a model or a rubber stamp.
 
 It works at three points on one evidence chain:
 
@@ -20,7 +20,7 @@ It works at three points on one evidence chain:
 2. **CI gate.** Verifies that evidence independently and decides: merge, human required, or reject.
 3. **Review packet.** Hands a human reviewer only what could not be proven.
 
-One sentence for the README: your agent cannot push slop, and you can prove it.
+One sentence for the README: jtac runs a repository's own checks before every push, signs the result, and stores it in git beside the commits.
 
 v0.1 is the local gate alone. It is complete and useful by itself for one developer, needs no account, no server, and no model.
 
@@ -28,7 +28,7 @@ v0.1 is the local gate alone. It is complete and useful by itself for one develo
 
 AI agents produce changes faster than people can read them, and review processes built for human-speed work have not adapted.
 
-- **Slop reaches main.** Code that passed a self-check is merged without anything independent looking at it.
+- **Unchecked code reaches main.** Code that passed a self-check is merged without anything independent looking at it.
 - **Human review collapses.** At high volume, reviewers click approve or point another agent at the diff.
 - **Audit evidence gets faked.** Under certification pressure, teams are tempted to let an agent approve under a colleague's account so the record shows a human.
 

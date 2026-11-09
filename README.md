@@ -2,18 +2,25 @@
 
 Provenance and verification for AI-written code.
 
-Your agent cannot push slop, and you can prove it. jtac is a gate that runs on
-the developer's machine before a push, and signed evidence that travels with the
-commits. It is for solo developers and teams who work at AI speed and are
-bottlenecked by slop and pull request review: the gate keeps the speed and keeps
-slop out of `main`, and anyone with a clone can check the evidence offline.
+[![ci](https://github.com/dmriding/jtac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/ci.yml)
+[![jtac](https://github.com/dmriding/jtac/actions/workflows/jtac.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/jtac.yml)
+
+jtac runs a repository's own checks before every push, signs the result, and
+stores it in git beside the commits. A change that fails does not leave the
+machine, a change pushed around the gate is recorded as unchecked, and anyone
+with a clone can tell the two apart offline. A CI gate re-runs the same checks
+on the forge's runner under its own key.
+
+It is for solo developers and teams who write code with AI agents faster than
+they can review it: the gate keeps that pace without letting unchecked changes
+reach `main`.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
 **Status: v0.2.9 is the latest release: the local gate (v0.1), the CI gate and
-the release gate (v0.2).** Tiering by blast radius is next. `DESIGN.md` is the
-source of truth; `main` is the development line; a release is a signed `v*` tag
-(`docs/RELEASING.md`).
+the release gate (v0.2).** Tiering by blast radius is next.
+[`DESIGN.md`](DESIGN.md) is the source of truth; `main` is the development
+line; a release is a signed `v*` tag ([`docs/RELEASING.md`](docs/RELEASING.md)).
 
 jtac gates this repository. Every commit on `main` since v0.2.7 is covered
 (`jtac audit v0.2.7..main`), and v0.2.9 carries a release attestation the CI
@@ -24,7 +31,7 @@ they predate the gate or skipped it; nothing backfills them.
 
 Linux x86_64 and macOS arm64, from the latest release, verified against the
 `SHA256SUMS` the release publishes (checking the signed release attestation
-instead is #126):
+instead is [#126](https://github.com/dmriding/jtac/issues/126)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
@@ -33,16 +40,23 @@ curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
 `--version vX.Y.Z` for a pinned one) and never edits PATH. It is 97 lines of `sh`, worth
 reading first. Windows takes the zip from the release page: the test suite runs
-there, the hooks are unverified. From source, the tip of `main`, with Rust 1.98
+there, the hooks are unverified. From source, the latest release, with Rust 1.98
 or later:
 
 ```sh
-cargo install --locked --git https://github.com/dmriding/jtac jtac
+cargo install --locked --git https://github.com/dmriding/jtac --tag v0.2.9 jtac
 ```
+
+Build from a release tag, not `main`: `jtac init --ci github` pins the action to
+the binary's own version, which must exist as a release.
 
 Everything needs git 2.31 or later and OpenSSH 8.9 or later for `ssh-keygen`.
 
 ## Quick start
+
+Start from a clean tree whose checks pass. If the checks write files (cargo
+writes `Cargo.lock` in a crate that has none), run them once and commit what
+they wrote: `jtac check` refuses when the tree changes under it.
 
 ```sh
 cd your-repo
@@ -58,11 +72,19 @@ git push                  # the hook sends the root ref ahead of the code
 `jtac init` reads the tree and writes a policy for what it finds: Rust, Python,
 Go, JavaScript/TypeScript, or only the diff rules when it finds nothing. The
 policy is a TOML file you own; `jtac init --dry-run` prints it without writing.
-A check that writes into the tree stops `jtac check` (cargo writing `Cargo.lock`
-on a fresh crate, say): commit or ignore what it wrote, then run it again.
 
 From then on every push needs a root. `jtac status` says whether the next one
-passes, and `jtac why` repeats the last verdict.
+passes, and `jtac why` repeats the last verdict. On GitHub, the first push of a
+new branch can be rejected once with `missing necessary objects` after the hook
+sends its roots; the same push again succeeds
+([#113](https://github.com/dmriding/jtac/issues/113)).
+
+The terms used below: a **root** is the signed record of one gate run on one
+commit's tree, kept under `refs/jtac/roots/` and pushed with the code. A commit
+is **covered** when a trusted root vouches for it, **declared off** when a
+signed waiver says why not, and **absent** when it has neither. `CLEARED HOT`
+is the gate's pass and `ABORT` its block; the vocabulary follows the tool's
+name, which `DESIGN.md` explains.
 
 ## What a block looks like
 
@@ -158,22 +180,24 @@ any other change.
 binary with this policy on this tree and recorded these results. It does not
 prove the results are true; the CI gate narrows that gap by re-running the
 gate on the forge's runner under a CI key that pull request runs cannot reach,
-though the machine that ran `jtac init --ci github` keeps a copy until #130.
+though the machine that ran `jtac init --ci github` keeps a copy until
+[#130](https://github.com/dmriding/jtac/issues/130).
 
 ## CI gate
 
 The same binary in a GitHub Action, under a CI key kept in an environment
 secret that only the default branch and `v*` tags reach:
 `jtac ci` judges every pull request again and compares the pushed root with its
-own run, and a merge commit gets a root the CI key signed. One command, one
-environment secret, one commit:
+own run, and a merge commit gets a root the CI key signed. One command writes
+the workflow, the trust file and the CI key, then prints the forge settings to
+apply: an environment holding the key, a CODEOWNERS line, and two rulesets:
 
 ```sh
 jtac init --ci github
 ```
 
-`docs/CI.md` has the steps it prints, what the check says, fork pull requests,
-bypass merges, and what reads as the developer's.
+[`docs/CI.md`](docs/CI.md) has the steps it prints, what the check says, fork
+pull requests, bypass merges, and what reads as the developer's.
 
 ## Numbers
 
@@ -224,14 +248,16 @@ competing-use case the license reserves.
 
 ## Contributing
 
-Read `CONTRIBUTING.md`, then `DESIGN.md`. Design decisions are recorded in
-`DESIGN.md` section 21, licensing and contribution terms in `docs/adr/`, and
-proposals to change the design go through `docs/rfc/`.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`DESIGN.md`](DESIGN.md).
+Design decisions are recorded in `DESIGN.md` section 21, licensing and
+contribution terms in [`docs/adr/`](docs/adr/), and proposals to change the
+design go through [`docs/rfc/`](docs/rfc/). Security reports go through
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 
 jtac is source-available under the Functional Source License, version 1.1,
-with an Apache 2.0 future grant (`LICENSE.md`, SPDX `FSL-1.1-ALv2`). You may
+with an Apache 2.0 future grant ([`LICENSE.md`](LICENSE.md), SPDX `FSL-1.1-ALv2`). You may
 use, copy, modify, and redistribute it for any purpose except offering it, or
 a derivative, as a commercial product or service that competes with it. Each
 release becomes Apache 2.0 two years after publication. This is not an

@@ -1,6 +1,7 @@
 # Security
 
-jtac is a gate. A way past it is a vulnerability, whether or not it reads like one.
+jtac is a gate. A way to get evidence for work it did not check is a vulnerability,
+whether or not it reads like one.
 
 **Report privately** through GitHub's advisory form for this repository:
 https://github.com/dmriding/jtac/security/advisories/new. Do not open a public
@@ -10,6 +11,10 @@ In scope: any way to make a check look like it ran when it did not, to obtain
 a `CLEARED HOT` or a signed root for a tree that was not checked, to forge or
 alter evidence, to reach a lever from an agent tool surface, or to make a hook
 print anything but its protocol on stdout.
+
+A rule that misses a change it should flag, such as a new suppression spelling,
+is an ordinary bug, since the evidence still records what ran: open an issue
+with the missed-rule form.
 
 Out of scope, by design (DESIGN.md section 6): a compromised operating system
 or toolchain on the developer's machine, malicious code inside a wrapped
