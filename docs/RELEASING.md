@@ -7,10 +7,14 @@ Nothing is "released" because it merged.
 
 ## Rules enforced by the repository
 
-- Only the repository admin can create a `v*` tag, and the tag must be
-  signed. No one, admin included, can move or delete one.
-- `main` requires a pull request, a code-owner review, signed commits, and
-  green checks.
+- Only the admin role can create a `v*` tag. The tag ruleset also requires a
+  signature and blocks moving or deleting a tag, but the admin role bypasses
+  all of it and immutable releases are off: tags are signed and kept by
+  practice, not by the repository (#122).
+- `main` takes changes only through a pull request, with a code-owner review,
+  signed commits, and green checks. The admin role can merge a pull request
+  around the review and the checks; `docs/CI.md` says how such a merge is
+  recorded.
 
 ## Cutting a release
 
