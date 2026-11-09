@@ -156,8 +156,9 @@ any other change.
 
 **What a v0.1 root proves.** That a holder of the signing key ran this gate
 binary with this policy on this tree and recorded these results. It does not
-prove the results are true; the CI gate closes that gap by re-running the
-gate on the forge's runner under a CI key that pull request runs cannot reach.
+prove the results are true; the CI gate narrows that gap by re-running the
+gate on the forge's runner under a CI key that pull request runs cannot reach,
+though the machine that ran `jtac init --ci github` keeps a copy until #130.
 
 ## CI gate
 
