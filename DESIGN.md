@@ -4,7 +4,7 @@ Provenance and verification for AI-written code.
 
 The name is short for Joint Terminal Attack Controller: the controller who clears a release only on positive identification and under the rules in force. Here the agent does the flying, and nothing leaves the machine until it is cleared. The word "terminal" also happens to be where the tool lives.
 
-Status: v0.1 and v0.2 released (v0.2.9: CI gate and release gate); tiering next. Date: 2026-11-09. License: FSL-1.1-ALv2.
+Status: v0.1 released; v0.2's CI gate and release gate released (v0.2.9); tiering and the later v0.2 patches next. Date: 2026-11-09. License: FSL-1.1-ALv2.
 
 This document is the source of truth for building jtac. Sections 1 to 6 say what the system is and why. Sections 7 to 14 specify v0.1 in enough detail to build. Sections 15 to 20 design the later releases, so v0.1 does not paint them into a corner. Section 21 lists the decisions made here that the maintainer should confirm, and section 22 lists open questions.
 

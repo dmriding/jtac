@@ -157,11 +157,12 @@ any other change.
 **What a v0.1 root proves.** That a holder of the signing key ran this gate
 binary with this policy on this tree and recorded these results. It does not
 prove the results are true; the CI gate closes that gap by re-running the
-gate under a key the developer does not hold.
+gate on the forge's runner under a CI key that pull request runs cannot reach.
 
 ## CI gate
 
-The same binary in a GitHub Action, under a key the developer does not hold:
+The same binary in a GitHub Action, under a CI key kept in an environment
+secret that only the default branch and `v*` tags reach:
 `jtac ci` judges every pull request again and compares the pushed root with its
 own run, and a merge commit gets a root the CI key signed. One command, one
 environment secret, one commit:
@@ -195,13 +196,13 @@ repository's language and the agent that wrote the code.
 
 - **v0.1, the local gate** (released): the checks, the diff rules, signed
   roots, the `pre-push` hook, the shell command classifier, the advisory
-  tool-call hook for Claude Code, `jtac bench`, the install script. `jtac
-  policy` and `jtac scope` (`DESIGN.md` section 7) are planned, not built.
-- **v0.2, CI gate** (released): the same binary in a GitHub Action verifies
-  the roots, re-runs the gate on the same tree, fails the check when a local
-  root lied, and signs a root for the merge commit under its own key; the
-  release gate attests a tag only when every commit in its range is covered or
-  declared off. Tiering by blast radius is next.
+  tool-call hook for Claude Code, `jtac bench`, the install script.
+- **v0.2, CI gate** (CI gate and release gate released): the same binary in a
+  GitHub Action verifies the roots, re-runs the gate on the same tree, fails
+  the check when a local root lied, and signs a root for the merge commit
+  under its own key; the release gate attests a tag only when every commit in
+  its range is covered or declared off. Tiering by blast radius is next, then
+  `jtac policy`, `jtac scope` and `jtac who` (`DESIGN.md` section 7).
 - **v0.3, review round and packet.** Model reviewers against recorded
   evidence; a human sees only what could not be proven.
 - **v0.4, collector.** Optional, self-hosted, server to server. Developer
@@ -222,8 +223,9 @@ competing-use case the license reserves.
 
 ## Contributing
 
-Read `CONTRIBUTING.md`, then `DESIGN.md`. Decisions are recorded in
-`docs/adr/`, and changes to the design go through `docs/rfc/`.
+Read `CONTRIBUTING.md`, then `DESIGN.md`. Design decisions are recorded in
+`DESIGN.md` section 21, licensing and contribution terms in `docs/adr/`, and
+proposals to change the design go through `docs/rfc/`.
 
 ## License
 

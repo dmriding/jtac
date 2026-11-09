@@ -13,8 +13,9 @@ Nothing is "released" because it merged.
   practice, not by the repository (#122).
 - `main` takes changes only through a pull request, with a code-owner review,
   signed commits, and green checks. The admin role can merge a pull request
-  around the review and the checks; `docs/CI.md` says how such a merge is
-  recorded.
+  around the review, the checks and the signature rule, and with one code
+  owner every merge so far has gone around the review; `docs/CI.md` says how
+  a merge around the checks is recorded.
 
 ## Cutting a release
 
@@ -30,7 +31,8 @@ Nothing is "released" because it merged.
    must equal the manifest. Merge it.
 3. Tag the merge commit, never the pull request's own commit: the release gate holds the
    first-parent line to CI's roots, and a pull request commit carries the developer's alone.
-   A tag cannot be deleted or moved and is never reused, so the check comes before the tag,
+   A tag is never moved, deleted or reused, by practice rather than by the repository (#122),
+   so the check comes before the tag,
    on the commit, and only its last line earns the next two commands:
 
    ```
