@@ -8,15 +8,15 @@ Provenance and verification for AI-written code.
 jtac is a pre-push gate. `jtac check` runs a repository's own checks and rules
 on the diff, and on a pass signs a root: a record of what ran on that tree,
 kept in git beside the commits. The pre-push hook refuses a branch tip that no
-root covers, by commit or by tree. A push around the hook still lands, without
-a root, so anyone with a clone can see offline which pushes went through the
-gate and which went around it. In CI, the same binary re-runs the gate on every
-pull request, and every pull request merged by a commit of the forge's gets a
-root signed by a CI key that pull request runs cannot reach.
+root covers, by commit or by tree. A push around the hook still lands, and
+anyone with a clone can verify the roots offline and see which commits have
+none. In CI, the same binary re-runs the gate on pull requests, and a pull
+request merged into the default branch by a commit of the forge's gets a root
+signed by a CI key that pull request runs cannot reach.
 
 It is for solo developers and teams who write code with AI agents faster than
-they can review it: the gate keeps that pace, and a push that went around it
-stays visible.
+they can review it: the gate keeps that pace and leaves a record anyone can
+check.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
@@ -83,14 +83,11 @@ sends its roots; the same push again succeeds
 ([#113](https://github.com/dmriding/jtac/issues/113)).
 
 The terms used below: a **root** is the signed record of one gate run on one
-commit's tree, kept under `refs/jtac/roots/` and pushed with the code. A commit
-is **covered** when a valid root names or covers it, or a covered commit has
-the same tree; **declared off** when a valid root carries a waiver that turned
-the gate off for it; **absent** otherwise. `jtac audit` says beside each
-whether the signer is trusted, and [`DESIGN.md`](DESIGN.md) section 9.5 has
-the full table, CI's column included. `CLEARED HOT` is the gate's pass and
-`ABORT` its block; the vocabulary follows the tool's
-name, which `DESIGN.md` explains.
+commit's tree, kept under `refs/jtac/roots/` and pushed with the code.
+`jtac audit` reads each commit as **covered**, **declared off** or **absent**
+from the roots that bear on it; [`DESIGN.md`](DESIGN.md) section 9.5 defines
+the three. `CLEARED HOT` is the gate's pass and `ABORT` its block; the
+vocabulary follows the tool's name, which `DESIGN.md` explains.
 
 ## What a block looks like
 
