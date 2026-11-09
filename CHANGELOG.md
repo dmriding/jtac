@@ -15,13 +15,13 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   `docs/RELEASING.md` states the admin bypass on the tag and `main` rulesets (#122); README
   and `docs/CI.md` claim only that pull request runs cannot reach the CI key, since `jtac init
   --ci github` keeps a local copy (#130).
-- (0.2.12) README leads with what jtac does instead of a slogan, defines root, covered,
-  declared off and absent, pins the source install to a release tag, says to commit what a
-  check writes before the first `jtac check`, names the first-push rejection (#113), and
-  links its docs; README and `docs/CI.md` list the forge settings the CI gate needs;
-  `SECURITY.md` and `SUPPORT.md` agree that a missed rule is a public issue and evidence for
-  unchecked work a private report; `jtac release --help` names the default start the code
-  uses (the test is #131).
+- (0.2.12) README leads with what the gate does and records, not a slogan; defines root,
+  covered, declared off and absent; says to commit what a check writes before the first
+  `jtac check`; names the first-push rejection (#113); links its docs. README and
+  `install.sh` send a source build to a release tag, since `jtac init --ci github` pins the
+  action to the binary's version. README and `docs/CI.md` list the forge settings the CI gate
+  needs. `SECURITY.md` and `SUPPORT.md` agree on what is a public issue. `jtac release --help`
+  names the default start the code uses; #131 keeps its test.
 
 ## [0.2.9] - 2026-11-03
 

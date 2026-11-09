@@ -20,7 +20,7 @@ It works at three points on one evidence chain:
 2. **CI gate.** Verifies that evidence independently and decides: merge, human required, or reject.
 3. **Review packet.** Hands a human reviewer only what could not be proven.
 
-One sentence for the README: jtac runs a repository's own checks before every push, signs the result, and stores it in git beside the commits.
+One sentence for the README: jtac is a pre-push gate whose passes are signed records, kept in git beside the commits, that anyone with a clone can verify.
 
 v0.1 is the local gate alone. It is complete and useful by itself for one developer, needs no account, no server, and no model.
 

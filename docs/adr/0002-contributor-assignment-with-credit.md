@@ -34,6 +34,7 @@ the main ruleset.
 
 ## Consequences
 
-Fewer contributions from people who refuse assignment agreements on principle.
+Fewer contributions from people who refuse assignment agreements on principle;
+those largely overlap with people who refuse source-available projects.
 Contributors can reuse their own work anywhere. The owner carries an
 obligation to credit, in writing, that a contributor can hold them to.

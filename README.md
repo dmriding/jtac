@@ -5,15 +5,17 @@ Provenance and verification for AI-written code.
 [![ci](https://github.com/dmriding/jtac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/ci.yml)
 [![jtac](https://github.com/dmriding/jtac/actions/workflows/jtac.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/jtac.yml)
 
-jtac runs a repository's own checks before every push, signs the result, and
-stores it in git beside the commits. A change that fails does not leave the
-machine, a change pushed around the gate is recorded as unchecked, and anyone
-with a clone can tell the two apart offline. A CI gate re-runs the same checks
-on the forge's runner under its own key.
+jtac is a pre-push gate. `jtac check` runs a repository's own checks and rules
+on the diff, and on a pass signs a root: a record of what ran on that tree,
+kept in git beside the commits. The pre-push hook refuses a branch tip that has
+no root. A push around the hook still lands but carries none, so anyone with a
+clone can see offline which commits were checked and which were not. In CI, the
+same binary re-runs the gate on every pull request and signs each merge under
+its own key, which pull request runs cannot reach.
 
 It is for solo developers and teams who write code with AI agents faster than
-they can review it: the gate keeps that pace without letting unchecked changes
-reach `main`.
+they can review it: the gate keeps that pace, and a change that reaches `main`
+unchecked is visible as such.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
@@ -38,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 ```
 
 It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
-`--version vX.Y.Z` for a pinned one) and never edits PATH. It is 97 lines of `sh`, worth
+`--version vX.Y.Z` for a pinned one) and never edits PATH. It is 98 lines of `sh`, worth
 reading first. Windows takes the zip from the release page: the test suite runs
 there, the hooks are unverified. From source, the latest release, with Rust 1.98
 or later:
@@ -81,8 +83,9 @@ sends its roots; the same push again succeeds
 
 The terms used below: a **root** is the signed record of one gate run on one
 commit's tree, kept under `refs/jtac/roots/` and pushed with the code. A commit
-is **covered** when a trusted root vouches for it, **declared off** when a
-signed waiver says why not, and **absent** when it has neither. `CLEARED HOT`
+is **covered** when a valid root names or covers it, **declared off** when a
+signed waiver says why not, and **absent** when it has neither; whether the
+root's signer is trusted is reported beside it. `CLEARED HOT`
 is the gate's pass and `ABORT` its block; the vocabulary follows the tool's
 name, which `DESIGN.md` explains.
 

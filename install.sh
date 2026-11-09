@@ -15,6 +15,7 @@ while [ $# -gt 0 ]; do
     *) echo "install.sh: unknown argument $1; usage: sh install.sh [--to DIR] [--version vX.Y.Z]" >&2; exit 2 ;;
   esac
 done
+case $version in latest) tag=vX.Y.Z ;; *) tag=$version ;; esac
 
 if [ "$to" = /.local/bin ]; then
   echo "install.sh: HOME is unset, so there is no default directory; say where with --to DIR." >&2
@@ -29,7 +30,7 @@ case "$os-$arch" in
   *)
     echo "install.sh: no prebuilt jtac for $os $arch." >&2
     echo "Releases ship Linux x86_64 and macOS arm64; Windows takes the zip from the release page." >&2
-    echo "Build from source instead: cargo install --locked --git https://github.com/dmriding/jtac jtac" >&2
+    echo "Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac" >&2
     exit 2 ;;
 esac
 
@@ -64,7 +65,7 @@ fetch SHA256SUMS "$tmp/SHA256SUMS"
 line=$(grep " jtac-.*-$target\.tar\.gz\$" "$tmp/SHA256SUMS" | head -1 || true)
 if [ -z "$line" ]; then
   echo "install.sh: SHA256SUMS at $base lists no archive for $target; nothing installed." >&2
-  echo "Build from source instead: cargo install --locked --git https://github.com/dmriding/jtac jtac" >&2
+  echo "Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac" >&2
   exit 2
 fi
 archive=${line##* }
