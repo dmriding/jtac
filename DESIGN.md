@@ -12,7 +12,7 @@ This document is the source of truth for building jtac. Sections 1 to 6 say what
 
 ## 1. Summary
 
-jtac is for solo developers and teams who work at AI speed and are held back by pull request review and by code nothing independent has checked. It is the quality and safety gate that lets them keep that speed without bloat or broken code reaching production: it proves quality and review with evidence, instead of trusting a model or a rubber stamp.
+jtac is for solo developers and teams who work at AI speed and are held back by pull request review and by code nothing independent has checked. It is the quality and safety gate that lets them keep that speed: it runs their own checks before code leaves the machine and records what ran as signed evidence, instead of trusting a model or a rubber stamp.
 
 It works at three points on one evidence chain:
 

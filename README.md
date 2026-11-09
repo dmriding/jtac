@@ -7,15 +7,16 @@ Provenance and verification for AI-written code.
 
 jtac is a pre-push gate. `jtac check` runs a repository's own checks and rules
 on the diff, and on a pass signs a root: a record of what ran on that tree,
-kept in git beside the commits. The pre-push hook refuses a branch tip that has
-no root. A push around the hook still lands but carries none, so anyone with a
-clone can see offline which commits were checked and which were not. In CI, the
-same binary re-runs the gate on every pull request and signs each merge under
-its own key, which pull request runs cannot reach.
+kept in git beside the commits. The pre-push hook refuses a branch tip that no
+root covers, by commit or by tree. A push around the hook still lands, without
+a root, so anyone with a clone can see offline which pushes went through the
+gate and which went around it. In CI, the same binary re-runs the gate on every
+pull request, and every pull request merged by a commit of the forge's gets a
+root signed by a CI key that pull request runs cannot reach.
 
 It is for solo developers and teams who write code with AI agents faster than
-they can review it: the gate keeps that pace, and a change that reaches `main`
-unchecked is visible as such.
+they can review it: the gate keeps that pace, and a push that went around it
+stays visible.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
@@ -83,10 +84,12 @@ sends its roots; the same push again succeeds
 
 The terms used below: a **root** is the signed record of one gate run on one
 commit's tree, kept under `refs/jtac/roots/` and pushed with the code. A commit
-is **covered** when a valid root names or covers it, **declared off** when a
-signed waiver says why not, and **absent** when it has neither; whether the
-root's signer is trusted is reported beside it. `CLEARED HOT`
-is the gate's pass and `ABORT` its block; the vocabulary follows the tool's
+is **covered** when a valid root names or covers it, or a covered commit has
+the same tree; **declared off** when a valid root carries a waiver that turned
+the gate off for it; **absent** otherwise. `jtac audit` says beside each
+whether the signer is trusted, and [`DESIGN.md`](DESIGN.md) section 9.5 has
+the full table, CI's column included. `CLEARED HOT` is the gate's pass and
+`ABORT` its block; the vocabulary follows the tool's
 name, which `DESIGN.md` explains.
 
 ## What a block looks like
@@ -129,8 +132,8 @@ refusal: the gate could not answer.
   model, so `jtac replay` recomputes the same answer from the recorded nodes.
 - On a pass, signs one root per push tip with an SSH key (`ssh-keygen -Y`, no
   new key format) and stores it under `refs/jtac/roots/`, pushed and fetched
-  beside the code. The `pre-push` hook refuses a tip that has no root, and a
-  push that rewinds a protected branch.
+  beside the code. The `pre-push` hook refuses a branch tip that no root
+  covers, by commit or by tree, and a push that rewinds a protected branch.
 - Says, per commit, whether the gate was on (`covered`), deliberately off
   (`declared_off`, a signed waiver), or not there (`absent`). Bypass is
   recorded, not prevented: `git push --no-verify` lands with no root, and
