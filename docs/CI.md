@@ -1,6 +1,8 @@
 # The CI gate
 
-BLUF: one action, one environment secret, one commit. Every pull request and every push to the
+BLUF: one command writes the workflow, the trust file and a CI key, and prints the forge settings
+to apply: an environment holding the key, a CODEOWNERS line, and two rulesets. Every pull request
+and every push to the
 default branch, save the one that creates it, is judged again on the forge's runner, and every pull request merged by
 a commit of the forge's gets a root signed by a CI key that pull request runs cannot reach; the root job needs `contents: write` and
 `pull-requests: read`, which the written workflow grants. The design is `DESIGN.md` section 15; this page is the

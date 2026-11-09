@@ -188,7 +188,8 @@ pub struct ReleaseArgs {
     /// The tag's short name.
     #[arg(value_name = "TAG")]
     pub tag: String,
-    /// Where the range starts; default the nearest earlier `v*` tag.
+    /// Where the range starts; default the nearest earlier release whose attestation the
+    /// tag's tree trusts, and with none the command refuses.
     #[arg(long, value_name = "REV", conflicts_with = "verify")]
     pub from: Option<String>,
     /// A `SHA256SUMS` file whose lines the attestation names as artifacts.

@@ -1,6 +1,6 @@
 # Working agreement for the jtac repository
 
-jtac is provenance and verification for AI-written code: a local gate, signed evidence that travels with commits, and later a CI gate and review packet. It is written in Rust (2024 edition) and licensed FSL-1.1-ALv2: source-available, free for any use except a competing product or service, converting to Apache-2.0 two years after each release.
+jtac is provenance and verification for AI-written code: a local gate, signed evidence that travels with commits, a CI gate and a release gate, and later a review packet. It is written in Rust (2024 edition) and licensed FSL-1.1-ALv2: source-available, free for any use except a competing product or service, converting to Apache-2.0 two years after each release.
 
 **`DESIGN.md` is the source of truth.** Read it before any work. If the code and the design disagree, stop and say so. Do not silently pick one. A design change is an edit to `DESIGN.md` in the same branch as the code that needs it, called out in the PR.
 
@@ -12,7 +12,7 @@ jtac is provenance and verification for AI-written code: a local gate, signed ev
 - **Explicit `git add` paths only.** Never `-A` or `.`.
 - **No AI attribution** in commits, PR bodies, docs, or comments: no co-author trailers, no session links, no "generated with" footers. Saying what a tool found and why it mattered is fine. A byline is not.
 - **Releases follow `docs/RELEASING.md` in order:** release pull request, then `scripts/release-check.sh vX.Y.Z` green on its merge commit, then `git tag`. A `v*` tag cannot be undone; "tag it" after a feature merge means start the release pull request.
-- **Bump the workspace version in every PR** and add a CHANGELOG entry. Every PR is a patch until `v0.1.0` is cut at the last v0.1 milestone; after that, `docs/RELEASING.md` decides.
+- **Bump the workspace version in every PR** and add a CHANGELOG entry. `docs/RELEASING.md` decides which part.
 - Sections 21 and 22 of `DESIGN.md` list decisions awaiting confirmation and open questions. Do not build past one that your milestone depends on without asking.
 
 ## Quality bars, every commit
