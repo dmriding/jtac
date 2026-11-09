@@ -1,8 +1,8 @@
 # The CI gate
 
 BLUF: one action, one environment secret, one commit. Every pull request and every push to the
-default branch, save the one that creates it, is judged again under a key the developer does not hold, and every pull
-request merged by a commit of the forge's gets a root that key signed; the root job needs `contents: write` and
+default branch, save the one that creates it, is judged again on the forge's runner, and every pull request merged by
+a commit of the forge's gets a root signed by a CI key that pull request runs cannot reach; the root job needs `contents: write` and
 `pull-requests: read`, which the written workflow grants. The design is `DESIGN.md` section 15; this page is the
 operator's.
 
@@ -21,7 +21,8 @@ operator's.
    then the default branch and `v*` tags as the only deployment targets. That rule is what
    keeps the key off pull request runs: a pull request from the same repository runs its
    own workflow file, so a repository secret would hand the key to any branch.
-4. `gh secret set JTAC_CI_KEY --env jtac-ci < <key path>`.
+4. `gh secret set JTAC_CI_KEY --env jtac-ci < <key path>`. The private key stays at that
+   path afterwards, and whoever holds it can sign as CI; removing it safely is #130.
 5. Require the `jtac` check in the default branch's ruleset, and a tag ruleset that lets only
    administrators create `v*` tags: the environment admits any `v*` tag by name, so without
    that rule a writer who tags an unreviewed commit holds the key.

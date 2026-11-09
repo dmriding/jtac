@@ -11,6 +11,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 - (0.2.10) The release workflow names no start: `refs/jtac/releases/` holds v0.2.9, so
   `jtac release` chains from the previous attestation, and with none left refuses the tag
   rather than falling back to `--from v0.2.7`.
+- (0.2.11) README states what v0.2.9 shipped and how this repository gates itself;
+  `docs/RELEASING.md` states the admin bypass on the tag and `main` rulesets (#122); README
+  and `docs/CI.md` claim only that pull request runs cannot reach the CI key, since `jtac init
+  --ci github` keeps a local copy (#130).
 
 ## [0.2.9] - 2026-11-03
 
