@@ -49,12 +49,14 @@ if [ -z "$base" ]; then
     base="https://github.com/dmriding/jtac/releases/download/$version"
   fi
 fi
+# A URL is never read as a directory: the default one would name a path under the working directory.
+case $base in http://*|https://*) dir= ;; *) dir=${base#file://} ;; esac
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fetch() {
-  if [ -d "${base#file://}" ]; then
-    cp "${base#file://}/$1" "$2" && return
+  if [ -n "$dir" ]; then
+    cp "$dir/$1" "$2" && return
   elif command -v curl >/dev/null 2>&1; then
     curl -fsSL "$base/$1" -o "$2" && return
   elif command -v wget >/dev/null 2>&1; then
@@ -77,12 +79,22 @@ SIGNERS
 read -r principal _ < "$tmp/signers"
 fetch jtac-release.json "$tmp/release.json"
 fetch jtac-release.sig "$tmp/release.sig"
-if ! ssh-keygen -Y verify -f "$tmp/signers" -I "$principal" -n jtac-release-v1 -s "$tmp/release.sig" < "$tmp/release.json" >/dev/null; then
-  echo "install.sh: the release attestation at $base is not signed by jtac's release key; nothing installed." >&2
-  echo "Only the CI key attests a release, so any other signature is a substituted release, and a provenance tool is not installed on trust." >&2
-  echo "$report" >&2
-  exit 1
-fi
+# ssh-keygen exits 255 for every signature that fails to verify; other codes mean it could not check.
+verified=0
+ssh-keygen -Y verify -f "$tmp/signers" -I "$principal" -n jtac-release-v1 -s "$tmp/release.sig" < "$tmp/release.json" >/dev/null || verified=$?
+case $verified in
+  0) ;;
+  255)
+    echo "install.sh: the release attestation at $base is not signed by jtac's release key; nothing installed." >&2
+    echo "Only the CI key attests a release, so any other signature is a substituted release, and a provenance tool is not installed on trust." >&2
+    echo "$report" >&2
+    exit 1 ;;
+  *)
+    echo "install.sh: ssh-keygen could not check the release attestation (exit $verified); nothing installed." >&2
+    echo "Checking it takes ssh-keygen -Y verify, which OpenSSH has had since 8.1." >&2
+    echo "Upgrade OpenSSH, then run the installer again." >&2
+    exit 2 ;;
+esac
 
 # The document is one line of sorted keys: each artifact is {"name":...,"sha256":...}.
 pair=$(tr '{' '\n' < "$tmp/release.json" | grep -E "^\"name\":\"jtac-v[^\"/]*-$target\\.tar\\.gz\",\"sha256\":\"sha256:[0-9a-f]{64}\"}" || true)
@@ -90,12 +102,13 @@ case $pair in
   ""|*"
 "*)
     echo "install.sh: the release attestation at $base does not name exactly one archive for $target; nothing installed." >&2
+    echo "Only an archive the signed document names installs, and it names no single one for this platform." >&2
     echo "$source_build" >&2
     exit 2 ;;
 esac
 archive=${pair#'"name":"'}
 archive=${archive%%'"'*}
-want=${pair##*sha256:}
+want=${pair#*'"sha256":"sha256:'}
 want=${want%%'"'*}
 if [ "$version" != latest ] && [ "$archive" != "jtac-$version-$target.tar.gz" ]; then
   echo "install.sh: the release attestation at $base is for $archive, not $version; nothing installed." >&2

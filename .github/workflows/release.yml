@@ -77,7 +77,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      # install.sh verifies the archive it fetches against this file (DESIGN.md decision 39).
+      # `jtac release --sums` signs these digests into the attestation install.sh checks (DESIGN.md decision 39).
       - name: checksums
         run: |
           set -eu

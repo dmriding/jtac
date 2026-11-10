@@ -4,6 +4,7 @@
 //! no trust override. Unix only: the script is `sh`.
 #![cfg(unix)]
 
+use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -93,15 +94,17 @@ fn archive(dir: &Path, target: &str, version: &str, body: &str) -> String {
 }
 
 /// `jtac-release.json` naming `artifacts` as `(name, digest)`, in the release document's shape,
-/// signed by `key` in `namespace` as `jtac-release.sig`.
+/// signed by `key` in `namespace` as `jtac-release.sig`. The `commit` after the last artifact is
+/// a sha256 id, so a parse that reads the last `sha256:` takes the wrong digest.
 fn attest(dir: &Path, key: &Path, namespace: &str, artifacts: &[(&str, &str)]) {
     let listed: Vec<String> = artifacts
         .iter()
         .map(|(name, digest)| format!(r#"{{"name":"{name}","sha256":"sha256:{digest}"}}"#))
         .collect();
     let doc = format!(
-        r#"{{"artifacts":[{}],"ci":true,"from":{{"tag":"v9.9.8"}},"tag":"v9.9.9","v":1}}"#,
-        listed.join(",")
+        r#"{{"artifacts":[{}],"ci":true,"commit":"sha256:{}","from":{{"tag":"v9.9.8"}},"tag":"v9.9.9","v":1}}"#,
+        listed.join(","),
+        "7".repeat(64)
     );
     let json = dir.join("jtac-release.json");
     std::fs::write(&json, doc).unwrap();
@@ -114,17 +117,23 @@ fn attest(dir: &Path, key: &Path, namespace: &str, artifacts: &[(&str, &str)]) {
     std::fs::rename(sig, dir.join("jtac-release.sig")).unwrap();
 }
 
-fn install(script: &Path, base: &Path, to: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new("sh")
-        .arg(script)
+fn installer(script: &Path, base: impl AsRef<OsStr>, to: &Path) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg(script)
         .arg("--to")
         .arg(to)
-        .args(args)
         .env("JTAC_INSTALL_BASE", base)
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", base)
-        .output()
-        .unwrap();
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", script.parent().unwrap());
+    cmd
+}
+
+fn install(script: &Path, base: &Path, to: &Path, args: &[&str]) -> (i32, String, String) {
+    outcome(installer(script, base, to).args(args))
+}
+
+fn outcome(cmd: &mut Command) -> (i32, String, String) {
+    let out = cmd.output().unwrap();
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -169,7 +178,7 @@ fn the_shipped_release_signers_are_the_trust_files_release_lines() {
 }
 
 #[test]
-fn the_installer_installs_only_what_the_release_attestation_signs() {
+fn the_installer_verifies_the_archive_and_installs_nothing_on_a_mismatch() {
     let lab = Repo::empty();
     let dir = lab.path();
     let to = dir.join("bin");
@@ -284,4 +293,73 @@ fn the_installer_installs_nothing_it_cannot_fetch_or_write() {
         assert_eq!(code, 2, "a destination that refuses the write: {stderr}");
         assert!(stderr.contains("could not write"), "{stderr}");
     }
+}
+
+/// A directory of links to `tools` alone, for a PATH that holds nothing else.
+fn bare_path(dir: &Path, tools: &[&str]) -> PathBuf {
+    let bare = dir.join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for tool in tools {
+        let found = std::env::split_paths(&path)
+            .map(|p| p.join(tool))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("{tool} on PATH"));
+        std::os::unix::fs::symlink(found, bare.join(tool)).unwrap();
+    }
+    bare
+}
+
+#[test]
+fn the_installer_refuses_without_an_ssh_keygen_that_verifies() {
+    let lab = Repo::empty();
+    let dir = lab.path();
+    let to = dir.join("bin");
+    let (ci, line) = key(dir, "ci", "namespaces=\"jtac-release-v1\" ");
+    let script = script_trusting(dir, &line);
+    let Some(target) = target() else { return };
+    let good = archive(dir, target, "v9.9.9", "jtac 9.9.9");
+    attest(dir, &ci, "jtac-release-v1", &[(&good, &sha256(dir, &good))]);
+
+    let bare = bare_path(dir, &["sh", "uname"]);
+    let r = outcome(installer(&script, dir, &to).env("PATH", bare));
+    refused(r, 2, "needs ssh-keygen", &to);
+
+    let old = dir.join("old");
+    std::fs::create_dir(&old).unwrap();
+    let stub = old.join("ssh-keygen");
+    std::fs::write(&stub, "#!/bin/sh\necho 'unknown option -- Y' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(std::iter::once(old).chain(std::env::split_paths(&path)));
+    let r = outcome(installer(&script, dir, &to).env("PATH", path.unwrap()));
+    refused(
+        r,
+        2,
+        "could not check the release attestation (exit 1)",
+        &to,
+    );
+}
+
+#[test]
+fn the_installer_reads_a_url_base_as_a_url_never_as_a_directory() {
+    let lab = Repo::empty();
+    let dir = lab.path();
+    let to = dir.join("bin");
+    let (ci, line) = key(dir, "ci", "namespaces=\"jtac-release-v1\" ");
+    let script = script_trusting(dir, &line);
+    let Some(target) = target() else { return };
+    let decoy = dir.join("https:/example.invalid/download");
+    std::fs::create_dir_all(&decoy).unwrap();
+    let good = archive(&decoy, target, "v9.9.9", "jtac 9.9.9");
+    attest(
+        &decoy,
+        &ci,
+        "jtac-release-v1",
+        &[(&good, &sha256(&decoy, &good))],
+    );
+    let bare = bare_path(dir, &["sh", "uname", "ssh-keygen", "mktemp", "cat", "rm"]);
+    let mut cmd = installer(&script, "https://example.invalid/download", &to);
+    let r = outcome(cmd.env("PATH", bare).current_dir(dir));
+    refused(r, 2, "needs curl or wget", &to);
 }
