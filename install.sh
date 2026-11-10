@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs jtac: fetches the release archive for this platform, verifies it against the
-# SHA256SUMS the release publishes, and copies `jtac` into one directory. Never edits PATH.
+# Installs jtac: fetches the release archive for this platform, verifies it against the release
+# attestation the CI key signs, and copies `jtac` into one directory. Never edits PATH.
 #   sh install.sh [--to DIR] [--version vX.Y.Z]
 # JTAC_INSTALL_BASE names where archives come from instead of GitHub: a URL or a directory.
 set -eu
@@ -16,6 +16,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $version in latest) tag=vX.Y.Z ;; *) tag=$version ;; esac
+source_build="Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac"
+report="Do not fall back to SHA256SUMS, which sits on the same page; report it as https://github.com/dmriding/jtac/blob/main/SECURITY.md says."
 
 if [ "$to" = /.local/bin ]; then
   echo "install.sh: HOME is unset, so there is no default directory; say where with --to DIR." >&2
@@ -30,9 +32,14 @@ case "$os-$arch" in
   *)
     echo "install.sh: no prebuilt jtac for $os $arch." >&2
     echo "Releases ship Linux x86_64 and macOS arm64; Windows takes the zip from the release page." >&2
-    echo "Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac" >&2
+    echo "$source_build" >&2
     exit 2 ;;
 esac
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+  echo "install.sh: needs ssh-keygen to verify the release attestation; nothing installed." >&2
+  echo "jtac signs and verifies with ssh-keygen too, so it cannot run without it: install OpenSSH, then run the installer again." >&2
+  exit 2
+fi
 
 base="${JTAC_INSTALL_BASE:-}"
 if [ -z "$base" ]; then
@@ -57,28 +64,54 @@ fetch() {
     exit 2
   fi
   echo "install.sh: could not fetch $base/$1; nothing installed." >&2
+  case $1 in jtac-release.*) echo "A release with no signed attestation (v0.2.7 and older) does not install this way. $source_build" >&2 ;; esac
   echo "Check the network and the release page, then run the installer again; JTAC_INSTALL_BASE names another source." >&2
   exit 2
 }
 
-fetch SHA256SUMS "$tmp/SHA256SUMS"
-line=$(grep " jtac-.*-$target\.tar\.gz\$" "$tmp/SHA256SUMS" | head -1 || true)
-if [ -z "$line" ]; then
-  echo "install.sh: SHA256SUMS at $base lists no archive for $target; nothing installed." >&2
-  echo "Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac" >&2
-  exit 2
+# The `jtac-release-v1` lines of .jtac/signers, held equal by tests/install.rs. Never the whole
+# file: a line with no namespaces option verifies in every namespace, so a developer's key would attest.
+cat > "$tmp/signers" <<'SIGNERS'
+jtac-ci@users.noreply.github.com namespaces="jtac-ci-root-v1,jtac-release-v1" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuboJpHI1jqXzTmbzYWAuBPUNAxPlR+XfuP4NjWMrGR
+SIGNERS
+read -r principal _ < "$tmp/signers"
+fetch jtac-release.json "$tmp/release.json"
+fetch jtac-release.sig "$tmp/release.sig"
+if ! ssh-keygen -Y verify -f "$tmp/signers" -I "$principal" -n jtac-release-v1 -s "$tmp/release.sig" < "$tmp/release.json" >/dev/null; then
+  echo "install.sh: the release attestation at $base is not signed by jtac's release key; nothing installed." >&2
+  echo "Only the CI key attests a release, so any other signature is a substituted release, and a provenance tool is not installed on trust." >&2
+  echo "$report" >&2
+  exit 1
 fi
-archive=${line##* }
-want=${line%% *}
+
+# The document is one line of sorted keys: each artifact is {"name":...,"sha256":...}.
+pair=$(tr '{' '\n' < "$tmp/release.json" | grep -E "^\"name\":\"jtac-v[^\"/]*-$target\\.tar\\.gz\",\"sha256\":\"sha256:[0-9a-f]{64}\"}" || true)
+case $pair in
+  ""|*"
+"*)
+    echo "install.sh: the release attestation at $base does not name exactly one archive for $target; nothing installed." >&2
+    echo "$source_build" >&2
+    exit 2 ;;
+esac
+archive=${pair#'"name":"'}
+archive=${archive%%'"'*}
+want=${pair##*sha256:}
+want=${want%%'"'*}
+if [ "$version" != latest ] && [ "$archive" != "jtac-$version-$target.tar.gz" ]; then
+  echo "install.sh: the release attestation at $base is for $archive, not $version; nothing installed." >&2
+  echo "Each release's page carries its own attestation, so another version's is a substituted one." >&2
+  echo "$report" >&2
+  exit 1
+fi
 fetch "$archive" "$tmp/$archive"
 if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/$archive" | cut -d' ' -f1)
 elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)
 else echo "install.sh: needs sha256sum or shasum to verify $archive; nothing installed." >&2; exit 2
 fi
 if [ "$got" != "$want" ]; then
-  echo "install.sh: $archive does not match SHA256SUMS (got $got, want $want); nothing installed." >&2
+  echo "install.sh: $archive does not match the signed release attestation (got $got, want $want); nothing installed." >&2
   echo "A mismatch is a corrupted or substituted download, and a provenance tool is not installed on trust." >&2
-  echo "Run the installer again; if it repeats, fetch $base/$archive by hand and compare it with $base/SHA256SUMS." >&2
+  echo "Run the installer again; if it repeats: $report" >&2
   exit 1
 fi
 
@@ -90,7 +123,7 @@ if ! { mkdir -p "$to" && [ ! -d "$to/jtac" ] && cp "$tmp/${archive%.tar.gz}/jtac
   echo "Pick a directory you can write with --to DIR, then run the installer again." >&2
   exit 2
 fi
-echo "installed $("$to/jtac" --version) at $to/jtac, verified against SHA256SUMS"
+echo "installed $("$to/jtac" --version) at $to/jtac, verified against the release attestation $principal signed"
 case ":$PATH:" in
   *":$to:"*) ;;
   *) echo "note: $to is not on PATH. Add it in your shell's rc file or run $to/jtac by path; install.sh never edits PATH." ;;

@@ -33,16 +33,15 @@ they predate the gate or skipped it; nothing backfills them.
 ## Install
 
 Linux x86_64 and macOS arm64, from the latest release, verified against the
-`SHA256SUMS` the release publishes (checking the signed release attestation
-instead is [#126](https://github.com/dmriding/jtac/issues/126)):
+release attestation the CI key signs, with `ssh-keygen`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 ```
 
 It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
-`--version vX.Y.Z` for a pinned one) and never edits PATH. It is 98 lines of `sh`, worth
-reading first. Windows takes the zip from the release page: the test suite runs
+`--version vX.Y.Z` for a pinned one, v0.2.9 or later) and never edits PATH. It is 131
+lines of `sh`, worth reading first. Windows takes the zip from the release page: the test suite runs
 there, the hooks are unverified. From source, the latest release, with Rust 1.98
 or later:
 
