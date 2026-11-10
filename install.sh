@@ -17,10 +17,13 @@ while [ $# -gt 0 ]; do
 done
 case $version in latest) tag=vX.Y.Z ;; *) tag=$version ;; esac
 source_build="Build from source instead, from a release tag (https://github.com/dmriding/jtac/releases): cargo install --locked --git https://github.com/dmriding/jtac --tag $tag jtac"
-report="Do not fall back to SHA256SUMS, which sits on the same page; report it as https://github.com/dmriding/jtac/blob/main/SECURITY.md says."
+report="This is a fence, not a retry: do not fall back to SHA256SUMS, which sits on the same page. Report it privately: https://github.com/dmriding/jtac/security/advisories/new"
+openssh="(apt install openssh-client, or brew install openssh), then run the installer again."
 
 if [ "$to" = /.local/bin ]; then
-  echo "install.sh: HOME is unset, so there is no default directory; say where with --to DIR." >&2
+  echo "install.sh: HOME is unset, so there is no default directory; nothing installed." >&2
+  echo "The default is ~/.local/bin, and the installer never guesses another." >&2
+  echo "Say where: sh install.sh --to DIR" >&2
   exit 2
 fi
 
@@ -37,7 +40,8 @@ case "$os-$arch" in
 esac
 if ! command -v ssh-keygen >/dev/null 2>&1; then
   echo "install.sh: needs ssh-keygen to verify the release attestation; nothing installed." >&2
-  echo "jtac signs and verifies with ssh-keygen too, so it cannot run without it: install OpenSSH, then run the installer again." >&2
+  echo "jtac signs and verifies with ssh-keygen too, so it cannot run without it." >&2
+  echo "Install OpenSSH $openssh" >&2
   exit 2
 fi
 
@@ -63,10 +67,15 @@ fetch() {
     wget -q "$base/$1" -O "$2" && return
   else
     echo "install.sh: needs curl or wget to fetch $base/$1; nothing installed." >&2
+    echo "The release is fetched over HTTPS, and sh has no client of its own." >&2
+    echo "Install one (apt install curl), then run the installer again; JTAC_INSTALL_BASE=DIR installs from a directory instead." >&2
     exit 2
   fi
   echo "install.sh: could not fetch $base/$1; nothing installed." >&2
-  case $1 in jtac-release.*) echo "A release with no signed attestation (v0.2.7 and older) does not install this way. $source_build" >&2 ;; esac
+  case $1 in
+    jtac-release.*) echo "The installer installs only what a signed release attestation names, and v0.2.7 and older have none. $source_build" >&2 ;;
+    *) echo "The installer installs only an archive it fetched whole and verified." >&2 ;;
+  esac
   echo "Check the network and the release page, then run the installer again; JTAC_INSTALL_BASE names another source." >&2
   exit 2
 }
@@ -92,7 +101,7 @@ case $verified in
   *)
     echo "install.sh: ssh-keygen could not check the release attestation (exit $verified); nothing installed." >&2
     echo "Checking it takes ssh-keygen -Y verify, which OpenSSH has had since 8.1." >&2
-    echo "Upgrade OpenSSH, then run the installer again." >&2
+    echo "Upgrade OpenSSH $openssh" >&2
     exit 2 ;;
 esac
 
@@ -119,7 +128,11 @@ fi
 fetch "$archive" "$tmp/$archive"
 if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/$archive" | cut -d' ' -f1)
 elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)
-else echo "install.sh: needs sha256sum or shasum to verify $archive; nothing installed." >&2; exit 2
+else
+  echo "install.sh: needs sha256sum or shasum to verify $archive; nothing installed." >&2
+  echo "The archive is held to the digest the attestation signs before anything is copied." >&2
+  echo "Install coreutils (apt install coreutils), then run the installer again." >&2
+  exit 2
 fi
 if [ "$got" != "$want" ]; then
   echo "install.sh: $archive does not match the signed release attestation (got $got, want $want); nothing installed." >&2

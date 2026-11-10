@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/dmriding/jtac/main/install.sh | sh
 ```
 
 It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
-`--version vX.Y.Z` for a pinned one, v0.2.9 or later) and never edits PATH. It is 144
+`--version vX.Y.Z` for a pinned one, v0.2.9 or later) and never edits PATH. It is 157
 lines of `sh`, worth reading first. Windows takes the zip from the release page: the test suite runs
 there, the hooks are unverified. From source, the latest release, with Rust 1.98
 or later:

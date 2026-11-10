@@ -148,6 +148,11 @@ fn refused(result: (i32, String, String), code: i32, says: &str, to: &Path) {
         stderr.contains(says) && stderr.contains("nothing installed"),
         "{stderr}"
     );
+    let refusal: Vec<&str> = stderr
+        .lines()
+        .skip_while(|l| !l.starts_with("install.sh:"))
+        .collect();
+    assert!(refusal.len() >= 3, "what, why and next: {stderr}");
     assert!(!to.join("jtac").exists(), "{says}: installed anyway");
 }
 
