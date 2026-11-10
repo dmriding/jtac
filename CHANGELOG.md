@@ -23,6 +23,14 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   needs. `SECURITY.md` and `SUPPORT.md` agree on what is a public issue. `jtac release --help`
   names the default start the code uses; #131 keeps its test.
 
+### Security
+
+- (0.2.13) `install.sh` verifies the signed release attestation with `ssh-keygen` against the
+  CI key line it carries, and installs only the archive that document names at its digest;
+  it no longer reads `SHA256SUMS`, which anyone who can edit the release page can swap with
+  the archive (#126). It refuses a release with no attestation (v0.2.7 and older), another
+  version's attestation under `--version`, and a host without `ssh-keygen`.
+
 ## [0.2.9] - 2026-11-03
 
 ### Added
