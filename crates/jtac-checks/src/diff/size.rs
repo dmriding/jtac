@@ -1,14 +1,17 @@
 //! `JT-SIZE-001` and `-002`: a changed file past the production-line cap with no exemption
 //! marker, and a changed non-test function past the line cap. A function changed when an
-//! added line falls inside its span.
+//! added line falls inside its span. Each finding says whether the before side already broke
+//! the same cap: the file, or a function of the same name.
 
 use jtac_core::Severity;
 use jtac_policy::Integrity;
 
+use super::lang::Lang;
 use super::lines::{counts, exempt};
 use super::report::Finding;
 use super::rule::Rule;
-use super::span::functions;
+use super::scan::Line;
+use super::span::{Span, functions};
 use super::view::View;
 
 pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
@@ -17,18 +20,23 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
         let Some(lang) = v.new_lang.filter(|_| !v.new.is_empty()) else {
             continue;
         };
-        let production = counts(lang, &v.new, v.new_test).production;
-        if production > integrity.max_file_lines && !exempt(lang, &v.new) {
-            findings.push(Finding::new(
-                Rule::Size001,
-                Severity::Major,
-                v.path(),
-                0,
-                format!(
-                    "{production} production lines, cap {}",
-                    integrity.max_file_lines
-                ),
-            ));
+        let before = v.old_lang.filter(|_| !v.old.is_empty());
+        if let Some(production) = over_file_cap(lang, &v.new, v.new_test, integrity) {
+            let was =
+                before.is_some_and(|l| over_file_cap(l, &v.old, v.old_test, integrity).is_some());
+            findings.push(
+                Finding::new(
+                    Rule::Size001,
+                    Severity::Major,
+                    v.path(),
+                    0,
+                    format!(
+                        "{production} production lines, cap {}",
+                        integrity.max_file_lines
+                    ),
+                )
+                .with_preexisting(was),
+            );
         }
         let added: Vec<usize> = v
             .edit
@@ -36,10 +44,18 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
             .iter()
             .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
             .collect();
-        for span in functions(lang, &v.new, v.new_test) {
-            let changed = added.iter().any(|&i| (span.start..=span.end).contains(&i));
-            if !span.test && !v.new_test && changed && span.len() > integrity.max_function_lines {
-                findings.push(Finding::new(
+        let changed: Vec<Span> = over_function_cap(lang, &v.new, v.new_test, integrity)
+            .into_iter()
+            .filter(|s| added.iter().any(|&i| (s.start..=s.end).contains(&i)))
+            .collect();
+        let long_before = match before {
+            Some(l) if !changed.is_empty() => over_function_cap(l, &v.old, v.old_test, integrity),
+            _ => Vec::new(),
+        };
+        for span in changed {
+            let was = long_before.iter().any(|b| b.name == span.name);
+            findings.push(
+                Finding::new(
                     Rule::Size002,
                     Severity::Major,
                     v.path(),
@@ -50,11 +66,26 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
                         span.len(),
                         integrity.max_function_lines
                     ),
-                ));
-            }
+                )
+                .with_preexisting(was),
+            );
         }
     }
     findings
+}
+
+/// Production lines when past the file cap with no exemption marker.
+fn over_file_cap(lang: Lang, lines: &[Line], test: bool, integrity: &Integrity) -> Option<u64> {
+    let production = counts(lang, lines, test).production;
+    (production > integrity.max_file_lines && !exempt(lang, lines)).then_some(production)
+}
+
+/// Non-test functions past the function cap.
+fn over_function_cap(lang: Lang, lines: &[Line], test: bool, integrity: &Integrity) -> Vec<Span> {
+    functions(lang, lines, test)
+        .into_iter()
+        .filter(|s| !s.test && !test && s.len() > integrity.max_function_lines)
+        .collect()
 }
 
 #[cfg(test)]
@@ -165,6 +196,72 @@ mod tests {
             let want: Vec<(u64, String)> =
                 want.iter().map(|(l, m)| (*l, (*m).to_owned())).collect();
             assert_eq!(got, want, "{path}: {new:?}");
+        }
+    }
+
+    #[test]
+    fn preexisting_is_the_same_cap_broken_before_by_the_same_counter() {
+        let integrity = Integrity {
+            max_file_lines: 5,
+            max_function_lines: 4,
+            ..Integrity::default()
+        };
+        let lines = |n: usize| "fn a() {}\n".repeat(n);
+        let long = |name: &str, n: usize| format!("fn {name}() {{\n{}}}\n", body(n));
+        let edited = long("a", 3).replace("x2", "y2");
+        type Was<'a> = &'a [(Rule, bool)];
+        let rows: &[(&str, Option<&str>, &str, Was)] = &[
+            (
+                "src/a.rs",
+                Some(&lines(6)),
+                &lines(7),
+                &[(Rule::Size001, true)],
+            ),
+            (
+                "src/a.rs",
+                Some(&lines(5)),
+                &lines(6),
+                &[(Rule::Size001, false)],
+            ),
+            ("src/a.rs", None, &lines(6), &[(Rule::Size001, false)]),
+            (
+                "src/a.rs",
+                Some(&format!("// jtac-loc-exempt: table\n{}", lines(6))),
+                &lines(6),
+                &[(Rule::Size001, false)],
+            ),
+            ("tests/a.rs", Some(&lines(6)), &lines(7), &[]),
+            (
+                "src/a.rs",
+                Some(&long("a", 3)),
+                &edited,
+                &[(Rule::Size002, true)],
+            ),
+            (
+                "src/a.rs",
+                Some(&long("b", 3)),
+                &long("a", 3),
+                &[(Rule::Size002, false)],
+            ),
+            (
+                "src/a.rs",
+                Some(&long("a", 2)),
+                &long("a", 3),
+                &[(Rule::Size002, false)],
+            ),
+            (
+                "src/a.rs",
+                Some(&format!("#[test]\n{}", long("a", 3))),
+                &edited,
+                &[(Rule::Size002, false)],
+            ),
+        ];
+        for (path, old, new, want) in rows {
+            let got: Vec<(Rule, bool)> = check(&[View::of(&change(path, *old, new))], &integrity)
+                .into_iter()
+                .map(|f| (f.rule, f.preexisting.expect("size findings carry it")))
+                .collect();
+            assert_eq!(got, *want, "{path}: {old:?} -> {new:?}");
         }
     }
 }

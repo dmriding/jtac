@@ -54,6 +54,9 @@ pub enum Command {
     /// The public proof: attack every control through its real path in a scratch
     /// repository; exit 1 when one does not hold
     Bench(JsonArg),
+    /// What the diff-integrity rules would have said over merged history: one unit per
+    /// first-parent commit, a summary of counts; writes nothing to the repository
+    Backtest(BacktestArgs),
     /// A git hook entry point; git runs it, `jtac init` installs it
     #[command(subcommand)]
     Hook(Hook),
@@ -266,6 +269,24 @@ pub struct ShowArgs {
     /// What `git rev-list` reads; the upstream to HEAD when none: what the next push carries
     #[arg(value_name = "RANGE")]
     pub range: Vec<String>,
+    /// Print the structure the text is rendered from, as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `jtac backtest` flags.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct BacktestArgs {
+    /// What `git rev-list` reads, walked first-parent: `A..B`, `A...B`, a rev for its whole
+    /// history
+    #[arg(value_name = "RANGE", required = true)]
+    pub range: Vec<String>,
+    /// A policy file of your own instead of `.jtac/policy.toml` in the range's newest commit
+    #[arg(long, value_name = "FILE")]
+    pub policy: Option<PathBuf>,
+    /// Write one JSON line per unit, with paths and messages, to FILE, which must not exist
+    #[arg(long, value_name = "FILE")]
+    pub rows: Option<PathBuf>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -506,6 +527,32 @@ mod tests {
             args.extend(flag);
             assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
         }
+    }
+
+    #[test]
+    fn backtest_needs_a_range_and_takes_a_policy_and_a_rows_file() {
+        let cli = Cli::try_parse_from([
+            "jtac",
+            "backtest",
+            "main~50..main",
+            "--policy",
+            "p.toml",
+            "--rows",
+            "r.jsonl",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Backtest(BacktestArgs {
+                range: vec!["main~50..main".into()],
+                policy: Some("p.toml".into()),
+                rows: Some("r.jsonl".into()),
+                json: true,
+            }))
+        );
+        assert!(Cli::try_parse_from(["jtac", "backtest"]).is_err());
+        assert!(Cli::try_parse_from(["jtac", "backtest", "HEAD", "--rows"]).is_err());
     }
 
     #[test]

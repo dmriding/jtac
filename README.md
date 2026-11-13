@@ -151,6 +151,7 @@ refusal: the gate could not answer.
 | `jtac show [range]` | The root refs a push would send, byte for byte |
 | `jtac release <tag>` | The release gate: every commit since the previous attested release (or `--from`) covered or declared off by a root the tag's tree trusts, else refused naming each; `--require-ci` holds the first-parent line to CI's roots; `--push <remote>` signs the attestation in `jtac-release-v1` and sends it; `--verify` holds a tag's attestation to this clone's roots |
 | `jtac bench` | The public proof: ten controls attacked through their real path in a scratch repository, each row quoting the gate |
+| `jtac backtest <range>` | What the diff-integrity rules would have said over merged history: one unit per first-parent commit, a summary of counts and rule ids that names no path; `--rows <file>` writes the findings for adjudication. Writes nothing to the repository |
 | `jtac init --agent claude-code` | Registers the advisory `PreToolUse` hook: Claude Code is told about a fence or a missing root before it pushes, and is never blocked |
 
 Every command but `hook` takes `--json` and prints the structure the text is

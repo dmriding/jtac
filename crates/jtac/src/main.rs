@@ -4,6 +4,7 @@
 mod agent;
 mod agentcfg;
 mod audit;
+mod backtest;
 mod bench;
 mod chain;
 mod check;
@@ -166,6 +167,7 @@ fn run(args: &[String], cwd: &Path, stdin: &Result<String, String>) -> Run {
         Some(Command::Waive(a)) => Run::verdict(waive::waive(&a, cwd), a.json),
         Some(Command::Release(a)) => Run::verdict(release::release(&a, cwd), a.json),
         Some(Command::Bench(a)) => Run::verdict(bench::bench(a.json), a.json),
+        Some(Command::Backtest(a)) => Run::verdict(backtest::backtest(&a, cwd), a.json),
     }
 }
 
@@ -212,8 +214,10 @@ mod tests {
 
     #[test]
     fn help_goes_to_stdout_with_exit_zero_and_names_every_command() {
-        let rows: [(&[&str], &str); 11] = [
+        let rows: [(&[&str], &str); 13] = [
             (&["--help"], "check"),
+            (&["--help"], "backtest"),
+            (&["backtest", "--help"], "--rows"),
             (&["release", "--help"], "--require-ci"),
             (&["ci", "--help"], "--require-local-root"),
             (&["--help"], "bench"),

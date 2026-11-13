@@ -1,11 +1,12 @@
 //! `JT-CMT-001`: a changed file with at least as many plain comment lines as code lines, and an
 //! added plain comment inside a block. A comment sits at a block's head, at its tail, or
-//! directly above the line that opens one; anything else is inside.
+//! directly above the line that opens one; anything else is inside. The ratio finding says
+//! whether the before side already broke it; an added comment is the change's own.
 
 use jtac_core::Severity;
 
 use super::lang::Lang;
-use super::lines::counts;
+use super::lines::{Counts, counts};
 use super::report::Finding;
 use super::rule::Rule;
 use super::scan::{Kind, Line};
@@ -21,21 +22,34 @@ pub(crate) fn check(views: &[View]) -> Vec<Finding> {
         let finding =
             |line, message| Finding::new(Rule::Cmt001, Severity::Minor, v.path(), line, message);
         let c = counts(lang, &v.new, v.new_test);
-        if c.comment > 0 && c.comment >= c.code {
-            findings.push(finding(
-                0,
-                format!("{} comment lines, {} code lines", c.comment, c.code),
-            ));
+        if heavy(c) {
+            let was = v
+                .old_lang
+                .filter(|_| !v.old.is_empty())
+                .is_some_and(|l| heavy(counts(l, &v.old, v.old_test)));
+            findings.push(
+                finding(
+                    0,
+                    format!("{} comment lines, {} code lines", c.comment, c.code),
+                )
+                .with_preexisting(was),
+            );
         }
         let inside = inside_lines(lang, &v.new);
         for (n, _) in &v.edit.added {
             let i = usize::try_from(*n).unwrap_or(usize::MAX) - 1;
             if inside[i] {
-                findings.push(finding(*n, "comment inside a block".to_owned()));
+                findings
+                    .push(finding(*n, "comment inside a block".to_owned()).with_preexisting(false));
             }
         }
     }
     findings
+}
+
+/// The ratio cap: plain comment lines at least as many as code lines.
+fn heavy(c: Counts) -> bool {
+    c.comment > 0 && c.comment >= c.code
 }
 
 /// Per line, whether it is a plain comment inside a block.
@@ -192,5 +206,43 @@ mod tests {
             ..heavy
         };
         assert!(check(&[View::of(&test_file)]).is_empty());
+    }
+
+    #[test]
+    fn preexisting_is_the_ratio_broken_before_and_never_an_added_comment() {
+        let heavy = "// a\n// b\nfn a() {}\n";
+        let light = "// a\nfn a() {}\nfn b() {}\n";
+        let inside = "fn a() {\n    x();\n    // new\n    y();\n}\n";
+        type Was<'a> = &'a [(u64, bool)];
+        let rows: &[(&str, Option<&str>, &str, Was)] = &[
+            (
+                "src/a.rs",
+                Some(heavy),
+                &format!("{heavy}// c\n"),
+                &[(0, true)],
+            ),
+            ("src/a.rs", Some(light), heavy, &[(0, false)]),
+            ("src/a.rs", None, heavy, &[(0, false)]),
+            ("tests/a.rs", Some(heavy), heavy, &[]),
+            (
+                "src/a.rs",
+                Some("fn a() {\n    x();\n    y();\n}\n"),
+                inside,
+                &[(3, false)],
+            ),
+        ];
+        for (path, old, new, want) in rows {
+            let change = Change {
+                path: (*path).into(),
+                from: None,
+                old: old.map(|s| Blob::Text(s.into())),
+                new: Some(Blob::Text((*new).into())),
+            };
+            let got: Vec<(u64, bool)> = check(&[View::of(&change)])
+                .into_iter()
+                .map(|f| (f.line, f.preexisting.expect("comment findings carry it")))
+                .collect();
+            assert_eq!(got, *want, "{path}: {old:?} -> {new:?}");
+        }
     }
 }
