@@ -1,7 +1,9 @@
 //! `JT-SIZE-001` and `-002`: a changed file past the production-line cap with no exemption
-//! marker, and a changed non-test function past the line cap. A function changed when an
-//! added line falls inside its span. Each finding says whether the before side already broke
-//! the same cap: the file, or the function of the same name when one has it on each side.
+//! marker, and a changed non-test function past the line cap. A function is unchanged when
+//! the old side holds it line for line as a non-test function, each old one vouching once;
+//! no line diff decides it, since a diff can place a removed run on either side of a `}`.
+//! Each finding says whether the before side already broke the same cap: the file, or the
+//! function of the same name when one has it on each side.
 
 use jtac_core::Severity;
 use jtac_policy::Integrity;
@@ -38,19 +40,20 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
                 .with_preexisting(was),
             );
         }
-        let added: Vec<usize> = v
-            .edit
-            .added
-            .iter()
-            .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
-            .collect();
         let now = functions(lang, &v.new, v.new_test);
-        let changed = now
-            .iter()
-            .filter(|s| over_function_cap(s, v.new_test, integrity))
-            .filter(|s| added.iter().any(|&i| (s.start..=s.end).contains(&i)));
         let then = before.map_or_else(Vec::new, |l| functions(l, &v.old, v.old_test));
-        for span in changed {
+        let mut kept: Vec<&[Line]> = then
+            .iter()
+            .filter(|b| over_function_cap(b, v.old_test, integrity))
+            .map(|b| &v.old[b.start..=b.end])
+            .collect();
+        let over = now
+            .iter()
+            .filter(|s| over_function_cap(s, v.new_test, integrity));
+        for span in over {
+            if unchanged(&mut kept, &v.new[span.start..=span.end]) {
+                continue;
+            }
             let was = paired(&now, span, &then)
                 .is_some_and(|b| over_function_cap(b, v.old_test, integrity));
             findings.push(
@@ -82,6 +85,17 @@ fn over_file_cap(lang: Lang, lines: &[Line], test: bool, integrity: &Integrity) 
 /// A non-test function past the function cap.
 fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
     !s.test && !test && s.len() > integrity.max_function_lines
+}
+
+/// Takes from `kept` the old function `now` repeats line for line, so a second copy of one
+/// finds none left (`a_function_is_unchanged_when_the_old_side_holds_it_line_for_line`). Which
+/// copy is the new one no text can say: the later in the file is the one named.
+fn unchanged(kept: &mut Vec<&[Line]>, now: &[Line]) -> bool {
+    let same = |old: &&[Line]| old.iter().map(|l| l.text).eq(now.iter().map(|l| l.text));
+    kept.iter()
+        .position(same)
+        .map(|i| kept.swap_remove(i))
+        .is_some()
 }
 
 /// The before-side function of `span`'s name, taken only when one function has that name on
@@ -203,6 +217,137 @@ mod tests {
                 want.iter().map(|(l, m)| (*l, (*m).to_owned())).collect();
             assert_eq!(got, want, "{path}: {new:?}");
         }
+    }
+
+    #[test]
+    fn a_function_is_unchanged_when_the_old_side_holds_it_line_for_line() {
+        let integrity = Integrity {
+            max_function_lines: 4,
+            ..Integrity::default()
+        };
+        let f = |name: &str, n: usize| format!("fn {name}() {{\n{}}}\n", body(n));
+        let (a, b) = (f("a", 3), f("b", 1));
+        let merged = format!("fn a() {{\n{}{}}}\n", body(2), body(2));
+        let py = "def a():\n    x = 1\n    x = 2\ndef b():\n    y = 1\n    y = 2\n";
+        let a5: Want = &[(1, "function `a` is 5 lines, cap 4")];
+        let rows: &[(&str, &str, String, String, Want)] = &[
+            (
+                "the lines between two functions removed",
+                "src/a.rs",
+                format!("{}{}", f("a", 2), f("b", 2)),
+                merged,
+                &[(1, "function `a` is 6 lines, cap 4")],
+            ),
+            (
+                "the same in Python",
+                "a.py",
+                py.to_owned(),
+                py.replace("def b():\n", ""),
+                a5,
+            ),
+            (
+                "a line removed, still past the cap",
+                "src/a.rs",
+                f("a", 4),
+                a.clone(),
+                a5,
+            ),
+            (
+                "a line removed just under the name",
+                "src/a.rs",
+                format!("fn a() {{\n    gone();\n{}}}\n", body(3)),
+                a.clone(),
+                a5,
+            ),
+            (
+                "the function below removed, and a line above edited",
+                "src/a.rs",
+                format!("use x;\n\n{a}\n{b}\n{}", f("c", 1)),
+                format!("use y;\n\n{a}\n{}", f("c", 1)),
+                &[],
+            ),
+            (
+                "lines above the name and below the close removed",
+                "src/a.rs",
+                format!("// x\n{a}// y\n"),
+                a.clone(),
+                &[],
+            ),
+            (
+                "moved below another, nothing else",
+                "src/a.rs",
+                format!("{a}{b}"),
+                format!("{b}{a}"),
+                &[],
+            ),
+            (
+                "copied whole under another name's block",
+                "src/a.rs",
+                format!("impl A {{\n{a}}}\n"),
+                format!("impl A {{\n{a}}}\nimpl B {{\n{a}}}\n"),
+                &[(9, "function `a` is 5 lines, cap 4")],
+            ),
+            (
+                "a comment inside it reworded",
+                "src/a.rs",
+                format!("fn a() {{\n    // old\n{}}}\n", body(2)),
+                format!("fn a() {{\n    // new\n{}}}\n", body(2)),
+                a5,
+            ),
+            (
+                "indented into a block, nothing else",
+                "src/a.rs",
+                a.clone(),
+                format!(
+                    "impl A {{\n    {}}}\n",
+                    a.replace("\n", "\n    ").trim_end_matches(' ')
+                ),
+                &[(2, "function `a` is 5 lines, cap 4")],
+            ),
+            (
+                "the comment after a Python function removed",
+                "a.py",
+                format!(
+                    "def a():\n{}\n# helpers\n\ndef b():\n    return 1\n",
+                    "    x = 1\n".repeat(4)
+                ),
+                format!(
+                    "def a():\n{}\ndef b():\n    return 1\n",
+                    "    x = 1\n".repeat(4)
+                ),
+                &[],
+            ),
+            (
+                "the comment around it removed",
+                "src/a.rs",
+                format!("/*\n{a}*/\n"),
+                a.clone(),
+                a5,
+            ),
+            (
+                "its test attribute removed",
+                "src/a.rs",
+                format!("#[test]\n{a}"),
+                a.clone(),
+                a5,
+            ),
+        ];
+        for (what, path, old, new, want) in rows {
+            let got: Vec<(u64, String)> =
+                check(&[View::of(&change(path, Some(old), new))], &integrity)
+                    .into_iter()
+                    .map(|f| (f.line, f.message))
+                    .collect();
+            let want: Vec<(u64, String)> =
+                want.iter().map(|(l, m)| (*l, (*m).to_owned())).collect();
+            assert_eq!(got, want, "{what}");
+        }
+        let moved = Change {
+            from: Some("tests/a.rs".into()),
+            ..change("src/a.rs", Some(&a), &a)
+        };
+        let got = check(&[View::of(&moved)], &integrity);
+        assert_eq!(got.len(), 1, "a test file's function was under no cap");
     }
 
     #[test]
