@@ -55,15 +55,17 @@ Nothing is "released" because it merged.
 
    ```
    git switch --detach vX.Y.Z
-   cargo publish --workspace --locked --dry-run
+   scripts/release-check.sh vX.Y.Z
    cargo publish --workspace --locked
    ```
 
-   It uploads the six library crates and then `jtac`, in dependency order, and
-   skips `jtac-testkit` (DESIGN.md decision 52). A published version can be
-   yanked and never replaced. A run that stops partway is finished with
+   The check packages every crate and holds each one's `LICENSE.md` to the
+   root file, on this checkout as it did before the tag. The publish uploads
+   the six library crates and then `jtac`, in dependency order, and skips
+   `jtac-testkit` (DESIGN.md decision 52). A published version can be yanked
+   and never replaced. A run that stops partway is finished with
    `cargo publish --locked -p <crate>` for each crate it had not uploaded, in
-   the order the dry run printed; a version that cannot be finished is yanked,
+   the order it printed; a version that cannot be finished is yanked,
    and the next patch replaces all seven. The crates are source: a crates.io
    install is outside the release attestation, which covers the archives.
 

@@ -47,4 +47,18 @@ if ! grep -q "^## \[$version\]" CHANGELOG.md; then
   exit 1
 fi
 sh scripts/action-version.sh
+# A crates.io version is never replaced (docs/RELEASING.md step 5), and CI packages nothing: a
+# checkout without symlinks ships the link's text as the license, a bad manifest fails the upload.
+for license in crates/*/LICENSE.md; do
+  if ! cmp -s "$license" LICENSE.md; then
+    echo "$license is not the root LICENSE.md; the crate would ship without the license text"
+    echo "Fix: release from a checkout that keeps symlinks (Linux or macOS), then run scripts/release-check.sh $tag again."
+    exit 1
+  fi
+done
+if ! cargo package --workspace --locked; then
+  echo "the workspace does not package for crates.io"
+  echo "Fix: repair what cargo named in a pull request, then run scripts/release-check.sh $tag on its merge commit."
+  exit 1
+fi
 echo "release-check: $tag may be tagged at $head"
