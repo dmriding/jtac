@@ -254,22 +254,33 @@ fn js(lines: &[Line], i: usize, test_file: bool) -> Option<(String, bool, usize)
 const SIGNATURE_LINES: usize = 64;
 
 /// The line closing the body opened at or after `start`; `None` when `;` comes first, except
-/// for a one-line arrow function, which is its own span.
+/// for a one-line arrow function, which is its own span. Inside `[]` a `;` or a brace is a
+/// type's, as in `[u8; { N }]`, and inside `()` a `;` is: neither ends or opens anything. A
+/// `{` inside `()` still opens, since a JavaScript test's callback does.
 fn brace_end(lines: &[Line], depths: &[Depth], start: usize) -> Option<usize> {
     if !lines[start].code.contains('{') && lines[start].code.contains("=>") {
         return Some(start);
     }
-    let mut seen = 0;
+    let (mut seen, mut round, mut square) = (0, 0u32, 0u32);
     let opener = (start..lines.len()).find_map(|j| {
         seen += usize::from(lines[j].kind == Kind::Code);
         if seen > SIGNATURE_LINES {
             return Some(None);
         }
-        match lines[j].code.chars().find(|c| matches!(c, '{' | ';' | '}')) {
-            Some('{') => Some(Some(j)),
-            Some(_) => Some(None),
-            None => None,
+        for c in lines[j].code.chars() {
+            match c {
+                '(' => round += 1,
+                ')' => round = round.saturating_sub(1),
+                '[' => square += 1,
+                ']' => square = square.saturating_sub(1),
+                '{' | '}' | ';' if square > 0 => {}
+                ';' if round > 0 => {}
+                '{' => return Some(Some(j)),
+                ';' | '}' => return Some(None),
+                _ => {}
+            }
         }
+        None
     })??;
     let base = depths[opener].before;
     Some(
@@ -366,6 +377,30 @@ mod tests {
                 "trait T {\n    fn d(&self);\n    fn e(&self) {\n    }\n}",
                 false,
                 &[("e", 2, 3, false)],
+            ),
+            (
+                Lang::Rust,
+                "fn k(k: [u8; 32]) {\n}\nfn r() -> [u8; 4] {\n}\nfn g<T = [u8; 4]>(\n    t: T,\n) {\n}",
+                false,
+                &[("k", 0, 1, false), ("r", 2, 3, false), ("g", 4, 7, false)],
+            ),
+            (
+                Lang::Rust,
+                "fn m(x: m!(a; b)) {\n}\nfn h() -> [u8; { N }] {\n}",
+                false,
+                &[("m", 0, 1, false), ("h", 2, 3, false)],
+            ),
+            (
+                Lang::Rust,
+                "trait T {\n    fn d() -> [u8; { N }];\n    fn e(&self) {\n    }\n}",
+                false,
+                &[("e", 2, 3, false)],
+            ),
+            (
+                Lang::Rust,
+                "trait T {\n    fn d(k: [u8; 32]);\n    fn e(k: (u8, [u8; 2]))\n    ;\n}\nfn f() {}",
+                false,
+                &[("f", 5, 5, false)],
             ),
             (
                 Lang::Rust,

@@ -46,6 +46,14 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   reads back gets two seconds to start and print before the deadline kills it, not 300 ms
   (#144). A test that pipes stdin to `jtac` takes a closed pipe as the child's early exit,
   through one `jtac-testkit` helper, where three harnesses unwrapped the write (#145).
+- (0.2.18) `JT-SIZE-002` judged a function only when the line diff put an added line inside
+  it. It now judges every function past the cap that the file's old version does not hold
+  line for line. Newly reported: a function made by removing what separated two (#140), one
+  still past the cap after a line left it, one whose surrounding comment or test attribute
+  was removed, and a second copy of one. No longer reported: a function moved within its
+  file and otherwise untouched. A Rust function with a `;` in its signature's parentheses
+  or brackets, as in `[u8; 32]`, was read as a bodiless declaration and never measured
+  (#141).
 
 ### Security
 
