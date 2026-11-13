@@ -55,8 +55,23 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        feed(&mut child, b"x\n");
+        feed(&mut child, b"x1\nx2\n");
         let out = child.wait_with_output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "x");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(text.lines().collect::<Vec<_>>(), ["x1", "x2"]);
+    }
+
+    /// A read-only file stands in for stdin, so the write fails with something other than
+    /// a closed pipe.
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "stdin:")]
+    fn any_other_write_error_panics() {
+        use std::os::fd::OwnedFd;
+
+        let mut child = Command::new("cat").stdin(Stdio::piped()).spawn().unwrap();
+        let read_only = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        child.stdin = Some(OwnedFd::from(read_only).into());
+        feed(&mut child, b"x");
     }
 }
