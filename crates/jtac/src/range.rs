@@ -50,6 +50,49 @@ pub fn commits(
         .collect()
 }
 
+/// One commit of a first-parent walk with every parent it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    /// The commit.
+    pub commit: GitOid,
+    /// Its parents in order; the first is the line it landed on.
+    pub parents: Vec<GitOid>,
+}
+
+/// The first-parent line of `specs`, newest first (DESIGN.md section 11.10). `%P` names every
+/// parent whatever `--first-parent` walks; a shallow boundary reads as parentless here, which
+/// the caller tells from a root with `has_parent`.
+pub fn first_parent_line(
+    repo: &Path,
+    format: &str,
+    command: &str,
+    specs: &[String],
+) -> Result<Vec<Landed>, Refusal> {
+    let mut args = vec![
+        "rev-list",
+        "--first-parent",
+        "--topo-order",
+        "--format=%H %P",
+        "--end-of-options",
+    ];
+    args.extend(specs.iter().map(String::as_str));
+    let out = git(repo, &args).map_err(|e| Refusal::range(command, specs, &e))?;
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter(|l| !l.starts_with("commit "))
+        .map(|l| {
+            let mut ids = l.split_whitespace().map(|hex| oid(format, hex));
+            let commit = ids
+                .next()
+                .ok_or_else(|| Refusal::internal(format!("rev-list printed `{l}`")))??;
+            Ok(Landed {
+                commit,
+                parents: ids.collect::<Result<_, _>>()?,
+            })
+        })
+        .collect()
+}
+
 /// The tree of each commit, `None` where the clone has no such commit.
 pub fn trees(
     repo: &Path,
@@ -187,9 +230,8 @@ pub fn ancestor(repo: &Path, ancestor: &GitOid, tip: &GitOid) -> Result<bool, Re
 
 /// Whether `commit` has a parent, read from the object itself so a shallow boundary hides
 /// nothing.
-pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, Refusal> {
-    let object = git(repo, &["cat-file", "commit", &commit.hex()])
-        .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, RepoError> {
+    let object = git(repo, &["cat-file", "commit", &commit.hex()])?;
     Ok(String::from_utf8_lossy(&object)
         .lines()
         .take_while(|l| !l.is_empty())

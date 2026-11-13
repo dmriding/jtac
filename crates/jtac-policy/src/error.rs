@@ -12,7 +12,7 @@ use crate::schema::{DEFAULT_TIMEOUT_SECS, JTAC_DIR_GLOB};
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
     /// Not TOML, not this shape, an unknown key, a float, or a negative integer.
-    #[error("{}: {detail}", place(.position))]
+    #[error("{}", parse_at(.position, .detail, POLICY_PATH))]
     Parse {
         /// 1-based line and column (in chars) of the offending text, when the parser knows.
         position: Option<(u32, u32)>,
@@ -20,7 +20,7 @@ pub enum PolicyError {
         detail: String,
     },
     /// A schema version this build has no reader for.
-    #[error("{path} has version {found}; this build reads policy version 1", path = POLICY_PATH)]
+    #[error("{}", version_in(.found, POLICY_PATH))]
     Version {
         /// The version in the file.
         found: u32,
@@ -79,17 +79,32 @@ pub enum PolicyError {
 /// The tail every `how` shares: the edit leaves the tree dirty, and only `--preview` runs there.
 pub(crate) const NEXT: &str = ", then run: jtac check";
 
-fn place(position: &Option<(u32, u32)>) -> String {
+fn parse_at(position: &Option<(u32, u32)>, detail: &str, file: &str) -> String {
     match position {
-        Some((line, column)) => format!("{POLICY_PATH} line {line}, column {column}"),
-        None => format!("in {POLICY_PATH}"),
+        Some((line, column)) => format!("{file} line {line}, column {column}: {detail}"),
+        None => format!("in {file}: {detail}"),
     }
+}
+
+fn version_in(found: &u32, file: &str) -> String {
+    format!("{file} has version {found}; this build reads policy version 1")
 }
 
 impl PolicyError {
     /// What happened, why the rule exists, and the next command, for the CLI to print.
     pub fn three_parts(&self) -> [String; 3] {
         [self.to_string(), self.why().to_owned(), self.how()]
+    }
+
+    /// What happened, why, and the edit that fixes it, for a policy read from `file` and not
+    /// the tree's own: the caller adds its own next command (`jtac backtest --policy`).
+    pub fn parts_in(&self, file: &str) -> [String; 3] {
+        let what = match self {
+            Self::Parse { position, detail } => parse_at(position, detail, file),
+            Self::Version { found } => version_in(found, file),
+            other => other.to_string(),
+        };
+        [what, self.why().to_owned(), self.fix(file)]
     }
 
     fn why(&self) -> &'static str {
@@ -144,45 +159,48 @@ impl PolicyError {
     }
 
     fn how(&self) -> String {
+        format!("{}{NEXT}", self.fix(POLICY_PATH))
+    }
+
+    fn fix(&self, file: &str) -> String {
         let spelling = "1 to 64 bytes of [a-z0-9_-]";
-        let fix = match self {
+        match self {
             Self::Parse {
                 position: Some((line, column)),
                 ..
-            } => format!("edit {POLICY_PATH} line {line}, column {column}"),
-            Self::Parse { position: None, .. } => format!("edit {POLICY_PATH}"),
-            Self::Version { found: 0 } => format!("set version = 1 in {POLICY_PATH}"),
+            } => format!("edit {file} line {line}, column {column}"),
+            Self::Parse { position: None, .. } => format!("edit {file}"),
+            Self::Version { found: 0 } => format!("set version = 1 in {file}"),
             Self::Version { found } => format!("install a jtac that reads policy version {found}"),
             Self::JtacUnprotected => {
-                format!("add \"{JTAC_DIR_GLOB}\" to protected.paths in {POLICY_PATH}")
+                format!("add \"{JTAC_DIR_GLOB}\" to protected.paths in {file}")
             }
             Self::CheckId { id } => {
-                format!("rename the check id \"{id}\" in {POLICY_PATH} to {spelling}")
+                format!("rename the check id \"{id}\" in {file} to {spelling}")
             }
             Self::ReservedId { id } => {
                 format!(
-                    "rename [checks.{id}] in {POLICY_PATH}; diff-integrity runs without a policy entry"
+                    "rename [checks.{id}] in {file}; diff-integrity runs without a policy entry"
                 )
             }
             Self::EmptyArgv { id } => format!(
-                "set run under [checks.{id}] in {POLICY_PATH} to the program and its arguments, \
+                "set run under [checks.{id}] in {file} to the program and its arguments, \
                  as run = [\"cargo\", \"test\"]"
             ),
-            Self::Timeout { id } => format!(
-                "set timeout_secs = {DEFAULT_TIMEOUT_SECS} under [checks.{id}] in {POLICY_PATH}"
-            ),
+            Self::Timeout { id } => {
+                format!("set timeout_secs = {DEFAULT_TIMEOUT_SECS} under [checks.{id}] in {file}")
+            }
             Self::TooLarge { key } => {
-                format!("set {key} to {MAX_SAFE_INTEGER} or less in {POLICY_PATH}")
+                format!("set {key} to {MAX_SAFE_INTEGER} or less in {file}")
             }
             Self::TierName { name } => {
-                format!("rename the tier name \"{name}\" in {POLICY_PATH} to {spelling}")
+                format!("rename the tier name \"{name}\" in {file} to {spelling}")
             }
             Self::Glob { key, .. } => format!(
-                "fix {key} in {POLICY_PATH}: literals, ?, * and ** only, relative to the \
+                "fix {key} in {file}: literals, ?, * and ** only, relative to the \
                  repository root, / between directories"
             ),
-        };
-        format!("{fix}{NEXT}")
+        }
     }
 }
 
@@ -254,6 +272,27 @@ pub(crate) mod tests {
             );
             assert!(!how.contains('{'), "{error:?}: unfilled value in {how}");
         }
+    }
+
+    #[test]
+    fn parts_in_names_the_file_given_and_agrees_with_three_parts_on_the_tree_policy() {
+        for error in samples() {
+            let [what, why, how] = error.three_parts();
+            assert_eq!(
+                error.parts_in(POLICY_PATH),
+                [what, why, how.strip_suffix(NEXT).unwrap().to_owned()],
+                "{error:?}"
+            );
+            let [what, _, fix] = error.parts_in("own.toml");
+            assert!(
+                !what.contains(POLICY_PATH) && !fix.contains(POLICY_PATH),
+                "{error:?}: names the tree's policy in {what} / {fix}"
+            );
+            assert!(!fix.contains("jtac check"), "{error:?}: {fix}");
+        }
+        let [what, _, fix] = samples()[0].parts_in("own.toml");
+        assert!(what.starts_with("own.toml line 3, column 1: "), "{what}");
+        assert_eq!(fix, "edit own.toml line 3, column 1");
     }
 
     #[test]

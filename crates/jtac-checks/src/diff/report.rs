@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use jtac_core::Severity;
 use jtac_policy::{Integrity, Matchers};
+use serde::Serialize;
 
 use super::change::Change;
 use super::prot::Adoption;
@@ -12,7 +13,7 @@ use super::view::View;
 use super::{add, ci, cmt, prot, sec, size, sup, test};
 
 /// One thing a rule found, without the check id `jtac check` adds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Finding {
     /// The rule.
     pub rule: Rule,
@@ -24,6 +25,10 @@ pub struct Finding {
     pub line: u64,
     /// The detail: what, not why.
     pub message: String,
+    /// `JT-SIZE-001`, `-002` and `JT-CMT-001` only: whether the before side already broke the
+    /// same cap by the same counter (DESIGN.md section 11.10). Evidence never carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preexisting: Option<bool>,
 }
 
 impl Finding {
@@ -40,6 +45,14 @@ impl Finding {
             path: path.to_owned(),
             line,
             message: message.into(),
+            preexisting: None,
+        }
+    }
+
+    pub(crate) fn with_preexisting(self, was: bool) -> Self {
+        Self {
+            preexisting: Some(was),
+            ..self
         }
     }
 }
@@ -134,5 +147,15 @@ mod tests {
         );
         assert_eq!(got.added_lines, 6);
         assert!(got.tiers.is_empty());
+        let carried: Vec<bool> = got
+            .findings
+            .iter()
+            .map(|f| f.preexisting.is_some())
+            .collect();
+        assert_eq!(
+            carried,
+            [false, false, false, true, false],
+            "only size and comment findings say whether the cap was broken before"
+        );
     }
 }

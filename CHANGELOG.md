@@ -6,6 +6,19 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+### Added
+
+- (0.2.15) `jtac backtest <range>` (DESIGN.md section 11.10, decision 51): the diff-integrity
+  rules over merged history, one unit per first-parent commit judged against its first
+  parent, under `--policy <file>` or the newest commit's `.jtac/policy.toml`, with no waiver,
+  no adoption and no check run. The summary names the policy by hash and source, and beside
+  that holds counts and rule ids only: units judged and skipped, the share that would block
+  and the share with no finding, findings by rule and severity, units blocked by one rule
+  alone, and the same by language. A `JT-SIZE-001`, `JT-SIZE-002` or `JT-CMT-001` finding
+  says whether the before side already broke the same cap. `--rows <file>` writes each
+  unit's findings as JSON lines and never replaces a file. Writes nothing to the repository;
+  exit 0 when it ran, 2 when it could not.
+
 ### Changed
 
 - (0.2.10) The release workflow names no start: `refs/jtac/releases/` holds v0.2.9, so

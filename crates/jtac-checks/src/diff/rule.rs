@@ -1,7 +1,7 @@
 //! The rule table of DESIGN.md section 10.3: id, the reason the rule exists, and the fix. The
 //! CLI's three-part message (section 12) is built from these; a finding's message is the detail.
 
-/// One diff-integrity rule, in table order.
+/// One diff-integrity rule, in table order; serialized as its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rule {
     /// A change to a protected path.
@@ -155,6 +155,12 @@ impl Rule {
                 "split the change into smaller pull requests, or raise integrity.max_added_lines in the policy with a reviewer's approval"
             }
         }
+    }
+}
+
+impl serde::Serialize for Rule {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.id())
     }
 }
 

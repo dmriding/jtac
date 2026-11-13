@@ -50,8 +50,8 @@ impl Refusal {
             format!("`{command}` is not a command in this release."),
             format!(
                 "jtac {} ships `init`, `check`, `ci`, `status`, `why`, `verify`, `replay`, `audit`, \
-                 `show`, `waive`, `release`, `bench`, and `hook`; exiting zero on anything else \
-                 would let a hook treat \"not built\" as \"passed\".",
+                 `show`, `waive`, `release`, `bench`, `backtest`, and `hook`; exiting zero on \
+                 anything else would let a hook treat \"not built\" as \"passed\".",
                 env!("CARGO_PKG_VERSION")
             ),
             "Run `jtac check` for a verdict, `jtac check --preview` for one that writes \
@@ -377,8 +377,8 @@ impl Refusal {
         };
         Self::new(
             format!("`{spec}` is not a range git can list: {said}"),
-            "`verify`, `audit`, and `show` walk exactly the commits git names, so a range git \
-             cannot resolve is refused rather than read as empty.",
+            "`verify`, `audit`, `show`, and `backtest` walk exactly the commits git names, so \
+             a range git cannot resolve is refused rather than read as empty.",
             format!(
                 "Run `git rev-list {spec}` to see what git says, then `jtac {command}` with a \
                  range it lists."
@@ -794,6 +794,7 @@ mod tests {
             Refusal::internal("hash"),
             Refusal::arguments(&args),
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),
+            Refusal::range("backtest", &["nope..HEAD".into()], &git_failed()),
             Refusal::rev("replay", "no such\nnegotiation: forged"),
             Refusal::waive_scope(),
             Refusal::waive_expires("JT-SUP-001", "src", "x", None),

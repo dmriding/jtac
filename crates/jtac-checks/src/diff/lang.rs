@@ -65,6 +65,16 @@ impl Lang {
             Self::Rust | Self::Go | Self::Js => "//",
         }
     }
+
+    /// The name a report keys the language by; `js` covers TypeScript.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::Go => "go",
+            Self::Js => "js",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +101,12 @@ mod tests {
         for (path, want) in rows {
             assert_eq!(Lang::of(path), want, "{path}");
         }
+    }
+
+    #[test]
+    fn each_language_has_one_distinct_report_name() {
+        let names = [Lang::Rust, Lang::Python, Lang::Go, Lang::Js].map(Lang::name);
+        assert_eq!(names, ["rust", "python", "go", "js"]);
     }
 
     #[test]
