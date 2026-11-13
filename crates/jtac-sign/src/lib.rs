@@ -1,7 +1,9 @@
-//! SSHSIG signing and verification through ssh-keygen (DESIGN.md section 11.8).
+//! SSHSIG signing and verification through ssh-keygen ([DESIGN.md] section 11.8).
 //!
 //! Impure: gathers facts and decides nothing. ssh-keygen does every cryptographic operation;
 //! this crate names the key, the namespace and the trust file, and reads the envelope.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 mod confine;
 mod fingerprint;

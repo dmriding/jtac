@@ -1,6 +1,7 @@
 [package]
 name = "jtac-core"
 description = "Evidence types, canonical encoding, hashing, the Merkle tree, and the verdict function."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

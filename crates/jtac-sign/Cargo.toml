@@ -1,6 +1,7 @@
 [package]
 name = "jtac-sign"
 description = "SSHSIG signing and verification through ssh-keygen."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
