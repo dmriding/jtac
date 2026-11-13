@@ -98,11 +98,11 @@ fn indexes(lines: &[(u64, &str)]) -> BTreeSet<usize> {
         .collect()
 }
 
-/// The before-side function `now[i]` was: of its name, the one holding most of the lines the
-/// change `kept` (new index, old index), unless another function of that name holds more of
-/// that one. A long `new` in one impl never vouches for another's, wherever either moved.
-/// With no kept line to go by (a rewrite), the name decides only when one function has it on
-/// each side. `kept` rises in both indexes, so a span's share of it is a slice.
+/// The before-side function `now[i]` was: of its name, the one holding strictly most of the
+/// lines the change `kept` (new index, old index), when no other function of that name holds
+/// as many of that one. A tie pairs nothing, so a long `new` in one impl never vouches for
+/// another's. With no kept line at all (a rewrite), the name decides only when one function
+/// has it on each side. `kept` rises in both indexes, so a span's share of it is a slice.
 fn paired<'a>(
     now: &[Span],
     i: usize,
@@ -119,16 +119,18 @@ fn paired<'a>(
     };
     let named = || then.iter().filter(|b| b.name == span.name);
     let peers = || now.iter().filter(|s| s.name == span.name);
-    let by_lines = named()
+    let counts: Vec<(usize, &Span)> = named()
         .map(|b| (held(span, b), b))
         .filter(|(lines, _)| *lines > 0)
-        .max_by_key(|(lines, _)| *lines);
-    match by_lines {
-        Some((lines, b)) => peers().all(|s| held(s, b) <= lines).then_some(b),
-        None => named()
+        .collect();
+    let Some(&(lines, b)) = counts.iter().max_by_key(|(lines, _)| *lines) else {
+        return named()
             .next()
-            .filter(|_| named().count() == 1 && peers().count() == 1),
-    }
+            .filter(|_| named().count() == 1 && peers().count() == 1);
+    };
+    let top = counts.iter().filter(|(n, _)| *n == lines).count();
+    let holders = peers().filter(|s| held(s, b) >= lines).count();
+    (top == 1 && holders == 1).then_some(b)
 }
 
 #[cfg(test)]
@@ -365,6 +367,27 @@ mod tests {
                 format!("{short}{long}"),
                 f("    x();\n", 4),
                 &[(1, false)],
+            ),
+            (
+                "a rewrite sharing only a header and a brace with two of the name is a tie",
+                "src/a.rs",
+                format!("{short}{long}"),
+                other.clone(),
+                &[(1, false)],
+            ),
+            (
+                "and the same tie with the two in the other order",
+                "src/a.rs",
+                format!("{long}{short}"),
+                other.clone(),
+                &[(1, false)],
+            ),
+            (
+                "one long function never vouches for two",
+                "src/a.rs",
+                long.clone(),
+                format!("{other}{}", f("    z();\n", 4)),
+                &[(1, false), (7, false)],
             ),
             (
                 "a class written above another, whose long __init__ grows",
