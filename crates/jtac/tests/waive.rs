@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use jtac_testkit::Repo;
+use jtac_testkit::{Repo, feed};
 use serde_json::Value;
 
 fn me() -> String {
@@ -102,12 +102,7 @@ fn hook(repo: &Repo, stdin: &str) -> Ran {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    feed(&mut child, stdin.as_bytes());
     Ran::of(child.wait_with_output().unwrap())
 }
 
