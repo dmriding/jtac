@@ -1,6 +1,7 @@
 [package]
 name = "jtac-checks"
 description = "Check runner: subprocess execution, output capture, caching, diff-integrity checks."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

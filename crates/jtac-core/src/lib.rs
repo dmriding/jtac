@@ -1,6 +1,8 @@
-//! Evidence types, canonical encoding, hashing, and the Merkle tree (DESIGN.md section 9).
+//! Evidence types, canonical encoding, hashing, and the Merkle tree ([DESIGN.md] section 9).
 //!
 //! Pure: no I/O, no clock, no process.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 pub mod canonical;
 pub mod compare;

@@ -1,6 +1,7 @@
 [package]
 name = "jtac-store"
 description = "Local content-addressed store and the git ref layer."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

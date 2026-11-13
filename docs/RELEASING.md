@@ -50,13 +50,31 @@ Nothing is "released" because it merged.
    next patch. Tags are never reused. When the spent tag's version is still the manifest's,
    the next release pull request bumps it: the one case where one does. A commit the gate names as absent takes
    `jtac waive <commit> --ci --reason` on `main` before the next tag.
+5. Publish to crates.io, by hand, once the release workflow is green, from a
+   clean checkout of the tag and logged in with `cargo login`:
+
+   ```
+   git switch --detach vX.Y.Z
+   cargo publish --workspace --locked --dry-run
+   cargo publish --workspace --locked
+   ```
+
+   It uploads the six library crates and then `jtac`, in dependency order, and
+   skips `jtac-testkit` (DESIGN.md decision 52). A published version can be
+   yanked and never replaced. A run that stops partway is finished with
+   `cargo publish --locked -p <crate>` for each crate it had not uploaded, in
+   the order the dry run printed; a version that cannot be finished is yanked,
+   and the next patch replaces all seven. The crates are source: a crates.io
+   install is outside the release attestation, which covers the archives.
 
 ## Version policy
 
 Semver, pre-1.0: a breaking change to the CLI, a policy key, a hook, or an
 evidence format is a minor bump; anything else is a patch. Every pull request
 bumps the version, in `[workspace.package]` and in every `[workspace.dependencies]`
-path entry (the published `jtac` crate needs a version on each, and `cargo deny`
-refuses a bare path), and adds its `[Unreleased]` entry. Shipped evidence and
+path entry but `jtac-testkit`'s (a published crate needs a version on each, and
+`cargo deny` refuses a bare path; the test helper is unpublished and carries
+none, so cargo drops it from the uploaded manifests), and adds its `[Unreleased]`
+entry. Shipped evidence and
 policy schemas are never edited: a change is a new schema version with a
 reader for the old one, whatever the crate version does.

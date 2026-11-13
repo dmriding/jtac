@@ -1,7 +1,9 @@
-//! The decision function for git operations (DESIGN.md section 11.3), the coverage state
+//! The decision function for git operations ([DESIGN.md] section 11.3), the coverage state
 //! of a range of commits (section 9.5), the release verdict (section 16.3) and the shell
 //! command classifier (section 11.4).
 //! Pure: reads no disk, runs no process.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 pub mod advise;
 pub mod audit;

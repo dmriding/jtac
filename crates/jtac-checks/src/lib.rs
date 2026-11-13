@@ -1,6 +1,8 @@
 //! Check runner: spawn a policy check, cap its output, kill it on time, mark cache hits
-//! (DESIGN.md sections 11.1 and 8.1), and the diff-integrity rules under `diff` (section 10.3).
+//! ([DESIGN.md] sections 11.1 and 8.1), and the diff-integrity rules under `diff` (section 10.3).
 //! Impure: gathers facts and decides nothing.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 mod cache;
 mod cached;

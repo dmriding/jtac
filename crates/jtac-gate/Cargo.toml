@@ -1,6 +1,7 @@
 [package]
 name = "jtac-gate"
 description = "Shell command classifier and the decision function for tool calls and git operations."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

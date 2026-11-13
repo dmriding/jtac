@@ -1,6 +1,8 @@
-//! Parse, validate, hash, and evaluate policy (DESIGN.md section 10).
+//! Parse, validate, hash, and evaluate policy ([DESIGN.md] section 10).
 //!
-//! Pure: takes policy text and facts as arguments. See DESIGN.md section 8.1.
+//! Pure: takes policy text and facts as arguments. See [DESIGN.md] section 8.1.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 pub mod defaults;
 mod echo;
