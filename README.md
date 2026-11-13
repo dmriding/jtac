@@ -1,34 +1,126 @@
 # jtac
 
-Provenance and verification for AI-written code.
-
 [![ci](https://github.com/dmriding/jtac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/ci.yml)
 [![jtac](https://github.com/dmriding/jtac/actions/workflows/jtac.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/jtac.yml)
 
-jtac is a pre-push gate. `jtac check` runs a repository's own checks and rules
-on the diff, and on a pass signs a root: a record of what ran on that tree,
-kept in git beside the commits. The pre-push hook refuses a branch tip that no
-root covers, by commit or by tree. A push around the hook still lands, and
-anyone with a clone can verify the roots offline and see which commits have
-none. In CI, the same binary re-runs the gate on pull requests, and a pull
-request merged into the default branch by a commit of the forge's gets a root
-signed by a CI key that pull request runs cannot reach.
+AI agents write code faster than anyone can review it. jtac is a gate that
+runs before a push: it checks the change, and on a pass signs a record of what
+it checked. The record lives in git beside the commits, so anyone with a clone
+can verify it, and can see which commits have none.
 
-It is for solo developers and teams who write code with AI agents faster than
-they can review it: the gate keeps that pace and leaves a record anyone can
-check.
+- **It catches the shortcuts.** A removed test, a dropped assertion, a new
+  lint suppression, a CI step switched off, a credential-shaped string: each
+  blocks by default, with the reason and the fix.
+- **It records what happened, including what did not.** A pass is a signed
+  record for that exact tree. A push around the gate still lands, but with no
+  record of its own: its commits read as absent until a later pass covers
+  them, judging their changes in its own diff.
+- **CI checks it again.** The same binary re-runs the gate on pull requests.
+  [CI gate](#ci-gate) says what a merge gets.
 
 No account, no server, no model call. One binary, git, and `ssh-keygen`.
 
-**Status: v0.2.9 is the latest release: the local gate (v0.1), the CI gate and
-the release gate (v0.2).** Tiering by blast radius is next.
-[`DESIGN.md`](DESIGN.md) is the source of truth; `main` is the development
-line; a release is a signed `v*` tag ([`docs/RELEASING.md`](docs/RELEASING.md)).
+## What a block looks like
+
+A commit that adds a lint suppression and a token-shaped string, with the
+tree, policy and tier lines trimmed:
+
+```
+ABORT: 2 reasons block
+  commit  sha1:e449e906eb6f5079707dd60ea8374128369f8a34
+  base    0cdeae1cdcec320108372029cb2adb315de3ac5f (nearest covered ancestor)
+  root    none written
+  1. JT-SUP-001 blocker src/main.rs:1: new suppression `#[allow(dead_code)]`
+     why  A suppression turns a tool's finding off at one line. Each one is a decision that a person should see; past the budget it blocks.
+     fix  fix what the tool reported instead of suppressing it, or raise integrity.max_new_suppressions in the policy with a reviewer's approval
+  2. JT-SEC-001 blocker src/main.rs:2: credential-shaped string (GitHub token)
+     why  A string shaped like a credential is an immediate leak once pushed, whatever it was for. History is not rewritten, so it is caught before the commit leaves the machine.
+     fix  remove the string, rotate the credential it came from, and read it from the environment or a secret store
+  checks
+     integrity pass 18ms  diff-integrity rules
+     rust-fmt pass 30ms  cargo fmt --all -- --check
+     rust-lint pass 70ms  cargo clippy --workspace --all-targets -- -D warnings
+     rust-test pass 80ms  cargo test --workspace
+```
+
+Every block and refusal has three parts: what happened, why the rule exists, and
+what to do next. A refusal says whether it is a fence (no path to yes from inside
+a session) or a negotiation (run this). Exit 0 is pass, 1 is block, 2 is a
+refusal: the gate could not answer.
+
+## What it is today
+
+**v0.2.9 is the latest release.** [`DESIGN.md`](DESIGN.md) is the source of
+truth; `main` is the development line; a release is a signed `v*` tag
+([`docs/RELEASING.md`](docs/RELEASING.md)).
+
+The terms: a **root** is the signed record of one gate run on one
+commit's tree, kept under `refs/jtac/roots/` and pushed with the code.
+`jtac audit` reads each commit as **covered**, **declared off** or **absent**
+from the roots that bear on it; [`DESIGN.md`](DESIGN.md) section 9.5 defines
+the three. `CLEARED HOT` is the gate's pass and `ABORT` its block; the
+vocabulary follows the tool's name, which `DESIGN.md` explains.
+
+What works now:
+
+- **The local gate.** A repository's own format, lint and test checks, the
+  diff rules, a signed record (a root) on a pass, and a `pre-push` hook that
+  refuses a branch tip no root covers.
+- **The CI gate, on GitHub.** `jtac ci` judges every pull request again and
+  compares the pushed root with its own run; a merge commit gets a root the
+  CI key signed.
+- **The release gate.** A tag is attested only when every commit in its range
+  is covered or declared off by a trusted root.
+- **Reading evidence.** `jtac verify` and `jtac audit` work in any clone,
+  offline; `jtac replay` recomputes a verdict on the machine that ran it.
+- **An advisory hook for Claude Code.** The agent is told about a fence or a
+  missing root before it pushes, and is never blocked.
+
+What it is not yet:
+
+- **Measured.** Catch rate and false block rate are unknown; [Numbers](#numbers)
+  has the method.
+- **Independent on one machine.** A root signed where the code was written is
+  a claim that the gate ran, not proof the results are true; the CI gate is
+  what narrows that ([Checking someone else's evidence](#checking-someone-elses-evidence)).
+- **On every platform and forge.** Release binaries are Linux x86_64, macOS
+  arm64 and Windows x86_64, and the install script covers the first two. CI
+  does not yet test on macOS
+  ([#137](https://github.com/dmriding/jtac/issues/137)); on Windows the test
+  suite runs and the hooks are unverified. The CI gate ships for GitHub only.
+  Built-in checks and rule tables cover Rust, Python, Go and
+  JavaScript/TypeScript.
 
 jtac gates this repository. Every commit on `main` since v0.2.7 is covered
 (`jtac audit v0.2.7..main`), and v0.2.9 carries a release attestation the CI
 key signed (`jtac release v0.2.9 --verify`). Older commits read `absent` where
 they predate the gate or skipped it; nothing backfills them.
+
+## Where it is going
+
+The aim is a gate a whole team can lean on: a pass means every bar the
+repository sets has signed evidence behind it, and a person is asked only for
+what could not be proven.
+
+- **Next: tiering by blast radius.** Policy classifies each change by what it
+  touches. A low tier merges on the CI verdict, a high tier needs a named
+  person who owns the area, and a change to the gate's own policy is always
+  high tier (`DESIGN.md` section 15).
+- **Then, for teams.** Checks reused from a trusted CI run, organisation
+  policy from a signed release of a policy repository, and `jtac policy`,
+  `jtac scope` and `jtac who` (`DESIGN.md` sections 7, 15 and 18).
+- **v0.3, review round and packet.** Model reviewers whose reports are
+  recorded as evidence and never approve; a human sees only what could not be
+  proven.
+- **v0.4, collector.** Optional, self-hosted, server to server. Developer
+  machines never report to it.
+- **Numbers from repositories other than this one.** Without them the gate's
+  catch rate and false block rate stay unmeasured. If you run the method under
+  [Numbers](#numbers), send what you find.
+
+Released so far: v0.1, the local gate (checks, diff rules, signed roots, the
+`pre-push` hook, the shell command classifier, the advisory tool-call hook,
+`jtac bench`, the install script); v0.2, the CI gate and the release gate.
 
 ## Install
 
@@ -81,42 +173,7 @@ new branch can be rejected once with `missing necessary objects` after the hook
 sends its roots; the same push again succeeds
 ([#113](https://github.com/dmriding/jtac/issues/113)).
 
-The terms used below: a **root** is the signed record of one gate run on one
-commit's tree, kept under `refs/jtac/roots/` and pushed with the code.
-`jtac audit` reads each commit as **covered**, **declared off** or **absent**
-from the roots that bear on it; [`DESIGN.md`](DESIGN.md) section 9.5 defines
-the three. `CLEARED HOT` is the gate's pass and `ABORT` its block; the
-vocabulary follows the tool's name, which `DESIGN.md` explains.
-
-## What a block looks like
-
-A commit that adds a lint suppression and a token-shaped string, with the
-tree, policy and tier lines trimmed:
-
-```
-ABORT: 2 reasons block
-  commit  sha1:e449e906eb6f5079707dd60ea8374128369f8a34
-  base    0cdeae1cdcec320108372029cb2adb315de3ac5f (nearest covered ancestor)
-  root    none written
-  1. JT-SUP-001 blocker src/main.rs:1: new suppression `#[allow(dead_code)]`
-     why  A suppression turns a tool's finding off at one line. Each one is a decision that a person should see; past the budget it blocks.
-     fix  fix what the tool reported instead of suppressing it, or raise integrity.max_new_suppressions in the policy with a reviewer's approval
-  2. JT-SEC-001 blocker src/main.rs:2: credential-shaped string (GitHub token)
-     why  A string shaped like a credential is an immediate leak once pushed, whatever it was for. History is not rewritten, so it is caught before the commit leaves the machine.
-     fix  remove the string, rotate the credential it came from, and read it from the environment or a secret store
-  checks
-     integrity pass 18ms  diff-integrity rules
-     rust-fmt pass 30ms  cargo fmt --all -- --check
-     rust-lint pass 70ms  cargo clippy --workspace --all-targets -- -D warnings
-     rust-test pass 80ms  cargo test --workspace
-```
-
-Every block and refusal has three parts: what happened, why the rule exists, and
-what to do next. A refusal says whether it is a fence (no path to yes from inside
-a session) or a negotiation (run this). Exit 0 is pass, 1 is block, 2 is a
-refusal: the gate could not answer.
-
-## What it does
+## How it works
 
 - Runs the repository's own format, lint and test checks on HEAD's tree, plus
   deterministic diff-integrity rules on the change since the last covered
@@ -219,22 +276,6 @@ human overruled with `jtac waive`; `jtac audit` shows every waiver. Catch rate
 is blocks over changes a human judged bad, which needs a label per change;
 false block rate is overruled blocks over blocks. Send both with the
 repository's language and the agent that wrote the code.
-
-## Roadmap
-
-- **v0.1, the local gate** (released): the checks, the diff rules, signed
-  roots, the `pre-push` hook, the shell command classifier, the advisory
-  tool-call hook for Claude Code, `jtac bench`, the install script.
-- **v0.2, CI gate** (CI gate and release gate released): the same binary in a
-  GitHub Action verifies the roots, re-runs the gate on the same tree, fails
-  the check when a local root lied, and signs a root for the merge commit
-  under its own key; the release gate attests a tag only when every commit in
-  its range is covered or declared off. Tiering by blast radius is next, then
-  `jtac policy`, `jtac scope` and `jtac who` (`DESIGN.md` section 7).
-- **v0.3, review round and packet.** Model reviewers against recorded
-  evidence; a human sees only what could not be proven.
-- **v0.4, collector.** Optional, self-hosted, server to server. Developer
-  machines never report to it.
 
 ## Privacy
 
