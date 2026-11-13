@@ -22,6 +22,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   action to the binary's version. README and `docs/CI.md` list the forge settings the CI gate
   needs. `SECURITY.md` and `SUPPORT.md` agree on what is a public issue. `jtac release --help`
   names the default start the code uses; #131 keeps its test.
+- (0.2.14) README opens with the problem and what the gate does, then what works today
+  beside what does not yet (unmeasured rates, a local root as a claim, platforms and forges),
+  then where it is going; the reference sections follow with their text unchanged, but for
+  the paragraph that defines the terms, which moves to the head of "What it is today".
 
 ### Security
 
