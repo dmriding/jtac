@@ -1,6 +1,7 @@
 [package]
 name = "jtac-policy"
 description = "Parse, validate, hash, and evaluate policy."
+readme = "../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

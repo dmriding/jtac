@@ -9,16 +9,16 @@ rust-version = "1.98"
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/dmriding/jtac"
 authors = ["David Riding"]
-publish = false
+publish = true
 
 [workspace.dependencies]
-jtac-core = { path = "crates/jtac-core", version = "0.2.18" }
-jtac-policy = { path = "crates/jtac-policy", version = "0.2.18" }
-jtac-gate = { path = "crates/jtac-gate", version = "0.2.18" }
-jtac-checks = { path = "crates/jtac-checks", version = "0.2.18" }
-jtac-store = { path = "crates/jtac-store", version = "0.2.18" }
-jtac-sign = { path = "crates/jtac-sign", version = "0.2.18" }
-jtac-testkit = { path = "crates/jtac-testkit", version = "0.2.18" }
+jtac-core = { path = "crates/jtac-core", version = "=0.2.18" }
+jtac-policy = { path = "crates/jtac-policy", version = "=0.2.18" }
+jtac-gate = { path = "crates/jtac-gate", version = "=0.2.18" }
+jtac-checks = { path = "crates/jtac-checks", version = "=0.2.18" }
+jtac-store = { path = "crates/jtac-store", version = "=0.2.18" }
+jtac-sign = { path = "crates/jtac-sign", version = "=0.2.18" }
+jtac-testkit = { path = "crates/jtac-testkit" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

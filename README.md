@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/dmriding/jtac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/ci.yml)
 [![jtac](https://github.com/dmriding/jtac/actions/workflows/jtac.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/jtac.yml)
+[![release](https://img.shields.io/github/v/release/dmriding/jtac)](https://github.com/dmriding/jtac/releases/latest)
+[![license](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE.md)
 
 AI agents write code faster than anyone can review it. jtac is a gate that
 runs before a push: it checks the change, and on a pass signs a record of what

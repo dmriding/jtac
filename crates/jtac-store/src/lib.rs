@@ -1,7 +1,9 @@
-//! Local content-addressed store and the git ref layer (DESIGN.md section 9.6).
+//! Local content-addressed store and the git ref layer ([DESIGN.md] section 9.6).
 //!
 //! Impure: gathers facts and decides nothing. Every read re-hashes what it finds, so a file
 //! that is not what its name says is an error, never a document.
+//!
+//! [DESIGN.md]: https://github.com/dmriding/jtac/blob/main/DESIGN.md
 
 mod batch;
 mod cache;

@@ -9,7 +9,7 @@ yanked = "deny"
 
 [licenses]
 version = 2
-# Unpublished workspace crates are skipped; the published `jtac` crate carries the project
+# The unpublished `jtac-testkit` is skipped; the published crates carry the project
 # license, so it is allowed by name. Dependencies must be permissive.
 private = { ignore = true }
 unused-allowed-license = "allow"
@@ -30,8 +30,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Path dependencies between private workspace crates may omit a version; the published
-# `jtac` crate may not, so every workspace path entry carries one (docs/RELEASING.md).
+# A published crate's path dependency needs a version, so every workspace path entry
+# carries one but `jtac-testkit`'s: a dev-dependency by path alone (docs/RELEASING.md).
 allow-wildcard-paths = true
 
 [sources]
