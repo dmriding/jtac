@@ -31,6 +31,11 @@ fn ctx(cap: usize) -> Context {
 
 const MINUTE: Duration = Duration::from_secs(60);
 
+/// The deadline for a child whose pid the test reads back: long enough for the child to
+/// start and print before the kill, on a loaded runner too (#144). 300 ms was not.
+#[cfg(unix)]
+const PID_FIRST: Duration = Duration::from_secs(2);
+
 #[cfg(unix)]
 fn assert_dead(pid_line: &[u8]) {
     let pid = String::from_utf8_lossy(pid_line).trim().to_string();
@@ -144,10 +149,7 @@ fn a_timeout_kills_the_check_and_is_error() {
 fn a_timeout_kills_the_grandchild_too() {
     let started = Instant::now();
     let ran = run(
-        &spec(
-            shell("sleep 30 & echo $!; sleep 30", ""),
-            Duration::from_millis(300),
-        ),
+        &spec(shell("sleep 30 & echo $!; sleep 30", ""), PID_FIRST),
         &ctx(CAPTURE_CAP),
     );
     assert_eq!(ran.body.outcome, Outcome::Error);
@@ -191,7 +193,7 @@ fn a_leader_that_leaves_its_group_is_still_killed_at_the_deadline() {
     ]
     .map(String::from)
     .to_vec();
-    let ran = run(&spec(argv, Duration::from_millis(300)), &ctx(CAPTURE_CAP));
+    let ran = run(&spec(argv, PID_FIRST), &ctx(CAPTURE_CAP));
     assert_eq!((ran.body.outcome, ran.body.exit), (Outcome::Error, -9));
     assert!(
         started.elapsed() < Duration::from_secs(20),

@@ -40,6 +40,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   then where it is going; the reference sections follow with their text unchanged, but for
   the paragraph that defines the terms, which moves to the head of "What it is today".
 
+### Fixed
+
+- (0.2.16) Two runner tests no longer fail on a slow machine (#144): a child whose pid the
+  test reads back gets two seconds to start and print before the deadline kills it, not
+  300 ms. Tests only.
+
 ### Security
 
 - (0.2.13) `install.sh` verifies the signed release attestation with `ssh-keygen` against the
