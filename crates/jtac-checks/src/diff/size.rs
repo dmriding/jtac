@@ -1,7 +1,9 @@
 //! `JT-SIZE-001` and `-002`: a changed file past the production-line cap with no exemption
 //! marker, and a changed non-test function past the line cap. A function changed when an
 //! added line falls inside its span. Each finding says whether the before side already broke
-//! the same cap: the file, or the function of the same name, the nth of that name with the nth.
+//! the same cap: the file, or the function of the same name the kept lines place it in.
+
+use std::collections::BTreeSet;
 
 use jtac_core::Severity;
 use jtac_policy::Integrity;
@@ -38,29 +40,25 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
                 .with_preexisting(was),
             );
         }
-        let added: Vec<usize> = v
-            .edit
-            .added
-            .iter()
-            .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
-            .collect();
+        let added = indexes(&v.edit.added);
         let now = functions(lang, &v.new, v.new_test);
         let changed: Vec<usize> = (0..now.len())
             .filter(|&i| over_function_cap(&now[i], v.new_test, integrity))
-            .filter(|&i| {
-                added
-                    .iter()
-                    .any(|a| (now[i].start..=now[i].end).contains(a))
-            })
+            .filter(|&i| added.range(now[i].start..=now[i].end).next().is_some())
             .collect();
-        let then = match before {
-            Some(l) if !changed.is_empty() => functions(l, &v.old, v.old_test),
-            _ => Vec::new(),
+        let (then, kept) = match before {
+            Some(l) if !changed.is_empty() => {
+                let removed = indexes(&v.edit.removed);
+                let new = (0..v.new.len()).filter(|i| !added.contains(i));
+                let old = (0..v.old.len()).filter(|i| !removed.contains(i));
+                (functions(l, &v.old, v.old_test), new.zip(old).collect())
+            }
+            _ => (Vec::new(), Vec::new()),
         };
         for i in changed {
             let span = &now[i];
-            let was =
-                paired(&now, i, &then).is_some_and(|b| over_function_cap(b, v.old_test, integrity));
+            let was = paired(&now, i, &then, &kept)
+                .is_some_and(|b| over_function_cap(b, v.old_test, integrity));
             findings.push(
                 Finding::new(
                     Rule::Size002,
@@ -92,12 +90,45 @@ fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
     !s.test && !test && s.len() > integrity.max_function_lines
 }
 
-/// The before-side function `now[i]` pairs with: the same name, at the same place among the
-/// functions of that name, so a long `new` in one impl never vouches for another's.
-fn paired<'a>(now: &[Span], i: usize, then: &'a [Span]) -> Option<&'a Span> {
-    let name = &now[i].name;
-    let nth = now[..i].iter().filter(|s| &s.name == name).count();
-    then.iter().filter(|s| &s.name == name).nth(nth)
+/// Zero-based indexes of an edit's lines.
+fn indexes(lines: &[(u64, &str)]) -> BTreeSet<usize> {
+    lines
+        .iter()
+        .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
+        .collect()
+}
+
+/// The before-side function `now[i]` was: of its name, the one holding most of the lines the
+/// change `kept` (new index, old index), unless another function of that name holds more of
+/// that one. A long `new` in one impl never vouches for another's, wherever either moved.
+/// With no kept line to go by (a rewrite), the name decides only when one function has it on
+/// each side. `kept` rises in both indexes, so a span's share of it is a slice.
+fn paired<'a>(
+    now: &[Span],
+    i: usize,
+    then: &'a [Span],
+    kept: &[(usize, usize)],
+) -> Option<&'a Span> {
+    let span = &now[i];
+    let held = |n: &Span, o: &Span| {
+        let new = kept.partition_point(|k| k.0 < n.start)..kept.partition_point(|k| k.0 <= n.end);
+        let old = kept.partition_point(|k| k.1 < o.start)..kept.partition_point(|k| k.1 <= o.end);
+        new.end
+            .min(old.end)
+            .saturating_sub(new.start.max(old.start))
+    };
+    let named = || then.iter().filter(|b| b.name == span.name);
+    let peers = || now.iter().filter(|s| s.name == span.name);
+    let by_lines = named()
+        .map(|b| (held(span, b), b))
+        .filter(|(lines, _)| *lines > 0)
+        .max_by_key(|(lines, _)| *lines);
+    match by_lines {
+        Some((lines, b)) => peers().all(|s| held(s, b) <= lines).then_some(b),
+        None => named()
+            .next()
+            .filter(|_| named().count() == 1 && peers().count() == 1),
+    }
 }
 
 #[cfg(test)]
@@ -267,24 +298,6 @@ mod tests {
                 &edited,
                 &[(Rule::Size002, false)],
             ),
-            (
-                "src/a.rs",
-                Some(&format!("{}{}", long("a", 3), long("a", 2))),
-                &format!("{}{}", long("a", 3), long("a", 3)),
-                &[(Rule::Size001, true), (Rule::Size002, false)],
-            ),
-            (
-                "src/a.rs",
-                Some(&format!("{}{}", long("a", 2), long("a", 3))),
-                &format!("{}{}", long("a", 2), edited),
-                &[(Rule::Size001, true), (Rule::Size002, true)],
-            ),
-            (
-                "src/a.rs",
-                Some(&long("a", 3)),
-                &format!("{}{}", long("a", 3), long("a", 3)),
-                &[(Rule::Size001, false), (Rule::Size002, false)],
-            ),
         ];
         for (path, old, new, want) in rows {
             let got: Vec<(Rule, bool)> = check(&[View::of(&change(path, *old, new))], &integrity)
@@ -293,5 +306,112 @@ mod tests {
                 .collect();
             assert_eq!(got, *want, "{path}: {old:?} -> {new:?}");
         }
+        let moved = Change {
+            from: Some("tests/a.rs".into()),
+            ..change("src/a.rs", Some(&long("a", 3)), &edited)
+        };
+        let got: Vec<bool> = check(&[View::of(&moved)], &integrity)
+            .into_iter()
+            .filter_map(|f| f.preexisting)
+            .collect();
+        assert_eq!(got, [false], "a test file's function was under no cap");
+    }
+
+    #[test]
+    fn a_function_pairs_with_the_one_of_its_name_that_the_kept_lines_place_it_in() {
+        let integrity = Integrity {
+            max_function_lines: 4,
+            ..Integrity::default()
+        };
+        let f = |text: &str, n: usize| format!("fn a() {{\n{}}}\n", text.repeat(n));
+        let (long, short) = (long_a(), f("    x();\n", 1));
+        let other = f("    other();\n", 4);
+        let grown = long.replace("x2", "y2");
+        let rewritten = other.replace("fn a()", "fn a(n: u32)").replace('}', "} ");
+        let py = |class: &str, n: usize| {
+            format!(
+                "class {class}:\n    def __init__(self):\n{}\n",
+                (0..n)
+                    .map(|i| format!("        self.{}{i} = {i}\n", class.to_lowercase()))
+                    .collect::<String>()
+            )
+        };
+        type Was<'a> = &'a [(u64, bool)];
+        let rows: &[(&str, &str, String, String, Was)] = &[
+            (
+                "a same-named function grown beside a long one",
+                "src/a.rs",
+                format!("{long}{short}"),
+                format!("{long}{other}"),
+                &[(6, false)],
+            ),
+            (
+                "a same-named function written above a long one",
+                "src/a.rs",
+                long.clone(),
+                format!("{other}{grown}"),
+                &[(1, false), (7, true)],
+            ),
+            (
+                "a short same-named function deleted above a long one",
+                "src/a.rs",
+                format!("{short}{long}"),
+                grown.clone(),
+                &[(1, true)],
+            ),
+            (
+                "a short one grown as the long same-named one below it is deleted",
+                "src/a.rs",
+                format!("{short}{long}"),
+                f("    x();\n", 4),
+                &[(1, false)],
+            ),
+            (
+                "a class written above another, whose long __init__ grows",
+                "a.py",
+                py("B", 5),
+                format!("{}{}", py("A", 5), py("B", 6)),
+                &[(2, false), (10, true)],
+            ),
+            (
+                "a rewrite keeps no line, so the one function of the name decides",
+                "src/a.rs",
+                long.clone(),
+                rewritten.clone(),
+                &[(1, true)],
+            ),
+            (
+                "a rewrite of two of the name says nothing was there",
+                "src/a.rs",
+                format!("{long}{grown}"),
+                format!(
+                    "{rewritten}{}",
+                    f("    y();\n", 1)
+                        .replace("fn a()", "fn a(m: u32)")
+                        .replace('}', "} ")
+                ),
+                &[(1, false)],
+            ),
+            (
+                "a rewrite of one where two of the name stood says the same",
+                "src/a.rs",
+                format!("{long}{short}"),
+                rewritten.clone(),
+                &[(1, false)],
+            ),
+        ];
+        for (claim, path, old, new, want) in rows {
+            let got: Vec<(u64, bool)> =
+                check(&[View::of(&change(path, Some(old), new))], &integrity)
+                    .into_iter()
+                    .filter(|f| f.rule == Rule::Size002)
+                    .map(|f| (f.line, f.preexisting.expect("size findings carry it")))
+                    .collect();
+            assert_eq!(got, *want, "{claim}: {old:?} -> {new:?}");
+        }
+    }
+
+    fn long_a() -> String {
+        format!("fn a() {{\n{}}}\n", body(3))
     }
 }
