@@ -3,6 +3,8 @@
 [![ci](https://github.com/dmriding/jtac/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/ci.yml)
 [![jtac](https://github.com/dmriding/jtac/actions/workflows/jtac.yml/badge.svg?branch=main)](https://github.com/dmriding/jtac/actions/workflows/jtac.yml)
 [![release](https://img.shields.io/github/v/release/dmriding/jtac)](https://github.com/dmriding/jtac/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/jtac)](https://crates.io/crates/jtac)
+[![msrv](https://img.shields.io/crates/msrv/jtac)](https://crates.io/crates/jtac)
 [![license](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE.md)
 
 AI agents write code faster than anyone can review it. jtac is a gate that
@@ -52,7 +54,7 @@ refusal: the gate could not answer.
 
 ## What it is today
 
-**v0.2.9 is the latest release.** [`DESIGN.md`](DESIGN.md) is the source of
+**v0.2.18 is the latest release.** [`DESIGN.md`](DESIGN.md) is the source of
 truth; `main` is the development line; a release is a signed `v*` tag
 ([`docs/RELEASING.md`](docs/RELEASING.md)).
 
@@ -94,8 +96,8 @@ What it is not yet:
   JavaScript/TypeScript.
 
 jtac gates this repository. Every commit on `main` since v0.2.7 is covered
-(`jtac audit v0.2.7..main`), and v0.2.9 carries a release attestation the CI
-key signed (`jtac release v0.2.9 --verify`). Older commits read `absent` where
+(`jtac audit v0.2.7..main`), and each release since v0.2.9 carries a release
+attestation the CI key signed (`jtac release v0.2.18 --verify`). Older commits read `absent` where
 they predate the gate or skipped it; nothing backfills them.
 
 ## Where it is going
@@ -122,7 +124,8 @@ what could not be proven.
 
 Released so far: v0.1, the local gate (checks, diff rules, signed roots, the
 `pre-push` hook, the shell command classifier, the advisory tool-call hook,
-`jtac bench`, the install script); v0.2, the CI gate and the release gate.
+`jtac bench`, the install script); v0.2, the CI gate, the release gate and
+`jtac backtest`.
 
 ## Install
 
@@ -137,14 +140,16 @@ It puts `jtac` in `~/.local/bin` (`| sh -s -- --to DIR` for another place,
 `--version vX.Y.Z` for a pinned one, v0.2.9 or later) and never edits PATH. It is 157
 lines of `sh`, worth reading first. Windows takes the zip from the release page: the test suite runs
 there, the hooks are unverified. From source, the latest release, with Rust 1.98
-or later:
+or later, from crates.io:
 
 ```sh
-cargo install --locked --git https://github.com/dmriding/jtac --tag v0.2.9 jtac
+cargo install --locked jtac
 ```
 
-Build from a release tag, not `main`: `jtac init --ci github` pins the action to
-the binary's own version, which must exist as a release.
+That is a build on your machine from the crates.io source: nothing checks it
+against the release attestation, which names the release archives. The install
+script is the verified path. Build a release, not `main`: `jtac init --ci github`
+pins the action to the binary's own version, which must exist as a release.
 
 Everything needs git 2.31 or later and OpenSSH 8.9 or later for `ssh-keygen`.
 
@@ -224,7 +229,7 @@ Only roots and signatures travel. In any clone:
 git fetch origin '+refs/jtac/*:refs/jtac/*'   # jtac init adds this refspec
 jtac verify main                               # exit 1 on a bad root
 jtac audit main                                # the coverage table
-jtac release v0.2.9 --verify                   # the release attestation against the roots
+jtac release v0.2.18 --verify                  # the release attestation against the roots
 ```
 
 ```

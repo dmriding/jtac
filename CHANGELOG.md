@@ -6,6 +6,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-11-14
+
 ### Added
 
 - (0.2.15) `jtac backtest <range>` (DESIGN.md section 11.10, decision 51): the diff-integrity
@@ -49,6 +51,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   file before the tag. README
   gains release and license badges. DESIGN.md section 8.1 no longer says the binary
   re-exports the library crates: it has no library target.
+- (0.2.18) README sends a source build to crates.io (`cargo install --locked jtac`), where
+  0.2.12 sent it to a release tag, and says nothing checks that build against the release
+  attestation: the install script is the verified path. README gains crates.io and MSRV
+  badges.
 
 ### Fixed
 
