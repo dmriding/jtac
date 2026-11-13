@@ -182,7 +182,7 @@ Rust 2024 edition, one cargo workspace. Start with these crates and split furthe
 | `jtac-sign` | SSHSIG signing and verification | Impure |
 | `jtac` | The `jtac` binary (the crates.io package), hook entry points, rendering | Impure |
 
-The binary re-exports the library crates. Tests exercise the same code the binary runs.
+The binary crate has no library target: it depends on the library crates and exports nothing. Tests exercise the same code the binary runs.
 
 **Publishing.** All seven are crates.io packages (decision 52). The six libraries are there only so `cargo install jtac` resolves: they share the workspace version, promise no API stability, and say so in the README they ship. `jtac-testkit`, the test helper, is a dev-dependency by path alone and is never published. A crates.io install is a source build on the installer's machine, outside the release attestation (section 16.3), which names the archives the release workflow built.
 

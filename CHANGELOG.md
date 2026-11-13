@@ -45,7 +45,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   promise; `jtac-testkit` stays unpublished and is a dev-dependency by path alone, where
   its version failed the upload. Each library's crate docs link `DESIGN.md`.
   `docs/RELEASING.md` gains the publish step, by hand after the release workflow. README
-  gains release and license badges.
+  gains release and license badges. DESIGN.md section 8.1 no longer says the binary
+  re-exports the library crates: it has no library target.
 
 ### Fixed
 
