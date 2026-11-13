@@ -1,7 +1,8 @@
 //! `jtac backtest` on a scripted history (DESIGN.md section 11.10, decision 51): the units a
 //! merge, a squash-style commit and a root give, a removed test under the default policy,
 //! `preexisting` on a file already past the cap, a summary that names nothing from the tree,
-//! a rows file created once, the refusals with exit 2, and a run that writes nothing.
+//! the policy of the range's newest commit named by hash, a rows file created once, the
+//! refusals with exit 2 naming the policy they read, and a run that writes nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -354,6 +355,122 @@ fn no_policy_refuses_in_three_parts_with_exit_two() {
         "{}",
         missing.stderr
     );
+}
+
+fn finds(summary: &Value, rule: &str) -> bool {
+    summary["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["rule"] == rule)
+}
+
+#[test]
+fn the_policy_is_the_newest_commit_s_of_the_range_and_the_summary_names_it() {
+    let loose = b"version = 1\n[integrity]\nmax_file_lines = 100\n";
+    let strict = "version = 1\n[integrity]\nmax_file_lines = 6\n";
+    let repo = Repo::init(&[]);
+    repo.write(".jtac/policy.toml", loose);
+    repo.write("src/a.rs", lines("a", 4).as_bytes());
+    repo.commit("root, loose");
+    repo.write(".jtac/policy.toml", strict.as_bytes());
+    repo.write("src/a.rs", lines("a", 8).as_bytes());
+    repo.commit("strict, and a file past its cap");
+    repo.write(".jtac/policy.toml", loose);
+    repo.write("src/a.rs", lines("a", 9).as_bytes());
+    repo.commit("loose again");
+
+    let below = summary(&repo, &["backtest", "HEAD~1"]);
+    assert!(
+        finds(&below, "JT-SIZE-001"),
+        "the cap of the range's newest commit, not the root's or HEAD's: {below}"
+    );
+    assert_eq!(below["policy_from"], "newest-commit");
+    let head = summary(&repo, &["backtest", "HEAD"]);
+    assert!(!finds(&head, "JT-SIZE-001"), "{head}");
+    assert_ne!(head["policy"], below["policy"]);
+    assert!(
+        head["policy"].as_str().unwrap().starts_with("sha256:"),
+        "{head}"
+    );
+
+    let (dir, _) = outside();
+    let own = dir.path().join("own.toml");
+    std::fs::write(&own, strict).unwrap();
+    let pinned = summary(&repo, &["backtest", "HEAD", "--policy", &arg(&own)]);
+    assert_eq!(pinned["policy_from"], "file");
+    assert_eq!(pinned["policy"], below["policy"], "one policy, one hash");
+    assert!(finds(&pinned, "JT-SIZE-001"), "{pinned}");
+    let text = jtac(&repo, &["backtest", "HEAD"]).stdout;
+    let line = format!(
+        "policy       {} from the range's newest commit",
+        head["policy"].as_str().unwrap()
+    );
+    assert!(text.contains(&line), "{text}");
+}
+
+#[test]
+fn a_refused_policy_names_where_it_was_read_and_never_the_gate_s_file_or_command() {
+    let (repo, _) = history();
+    let (dir, _) = outside();
+    let own = dir.path().join("own.toml");
+    std::fs::write(&own, "version = 1\nunknown = 1\n").unwrap();
+    let file = jtac(&repo, &["backtest", "main", "--policy", &arg(&own)]);
+    assert_eq!((file.code, file.stdout.as_str()), (2, ""));
+    assert!(
+        file.stderr.contains("the `--policy` file was refused: ")
+            && file.stderr.contains("line 2, column 1")
+            && file.stderr.contains("then run `jtac backtest --policy "),
+        "{}",
+        file.stderr
+    );
+    assert!(
+        !file.stderr.contains(".jtac/policy.toml"),
+        "{}",
+        file.stderr
+    );
+
+    repo.write(".jtac/policy.toml", b"version = 1\nunknown = 1\n");
+    let bad = repo.commit("a policy this build refuses");
+    let committed = jtac(&repo, &["backtest", "main"]);
+    assert_eq!((committed.code, committed.stdout.as_str()), (2, ""));
+    for want in [
+        format!("the range's newest commit `{bad}` holds a policy this build refuses: "),
+        format!("`git show {bad}:.jtac/policy.toml` to `../backtest-policy.toml`"),
+        "edit ../backtest-policy.toml line 2, column 1".to_owned(),
+        "jtac backtest --policy ../backtest-policy.toml main".to_owned(),
+    ] {
+        assert!(
+            committed.stderr.contains(&want),
+            "{want:?} in {}",
+            committed.stderr
+        );
+    }
+
+    #[cfg(unix)]
+    let linked = {
+        std::fs::remove_file(repo.path().join(".jtac/policy.toml")).unwrap();
+        std::os::unix::fs::symlink("elsewhere.toml", repo.path().join(".jtac/policy.toml"))
+            .unwrap();
+        let link = repo.commit("the policy is a link");
+        let linked = jtac(&repo, &["backtest", "main"]);
+        assert_eq!((linked.code, linked.stdout.as_str()), (2, ""));
+        let want = format!(
+            "`.jtac/policy.toml` in the range's newest commit `{link}` could not be read: it is \
+             a link or a directory there."
+        );
+        assert!(linked.stderr.contains(&want), "{}", linked.stderr);
+        assert!(!linked.stderr.contains("HEAD"), "{}", linked.stderr);
+        linked.stderr
+    };
+    #[cfg(not(unix))]
+    let linked = String::new();
+    for stderr in [&file.stderr, &committed.stderr, &linked] {
+        assert!(
+            !stderr.contains("jtac check"),
+            "the gate's command: {stderr}"
+        );
+    }
 }
 
 #[test]

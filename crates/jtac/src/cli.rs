@@ -281,7 +281,8 @@ pub struct BacktestArgs {
     /// history
     #[arg(value_name = "RANGE", required = true)]
     pub range: Vec<String>,
-    /// A policy file of your own instead of `.jtac/policy.toml` in the range's newest commit
+    /// A policy file of your own instead of `.jtac/policy.toml` in the range's newest commit;
+    /// pin a range with more than one tip this way
     #[arg(long, value_name = "FILE")]
     pub policy: Option<PathBuf>,
     /// Write one JSON line per unit, with paths and messages, to FILE, which must not exist

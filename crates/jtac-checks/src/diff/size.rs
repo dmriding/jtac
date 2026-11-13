@@ -1,7 +1,7 @@
 //! `JT-SIZE-001` and `-002`: a changed file past the production-line cap with no exemption
 //! marker, and a changed non-test function past the line cap. A function changed when an
 //! added line falls inside its span. Each finding says whether the before side already broke
-//! the same cap: the file, or a function of the same name.
+//! the same cap: the file, or the function of the same name, the nth of that name with the nth.
 
 use jtac_core::Severity;
 use jtac_policy::Integrity;
@@ -44,16 +44,23 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
             .iter()
             .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
             .collect();
-        let changed: Vec<Span> = over_function_cap(lang, &v.new, v.new_test, integrity)
-            .into_iter()
-            .filter(|s| added.iter().any(|&i| (s.start..=s.end).contains(&i)))
+        let now = functions(lang, &v.new, v.new_test);
+        let changed: Vec<usize> = (0..now.len())
+            .filter(|&i| over_function_cap(&now[i], v.new_test, integrity))
+            .filter(|&i| {
+                added
+                    .iter()
+                    .any(|a| (now[i].start..=now[i].end).contains(a))
+            })
             .collect();
-        let long_before = match before {
-            Some(l) if !changed.is_empty() => over_function_cap(l, &v.old, v.old_test, integrity),
+        let then = match before {
+            Some(l) if !changed.is_empty() => functions(l, &v.old, v.old_test),
             _ => Vec::new(),
         };
-        for span in changed {
-            let was = long_before.iter().any(|b| b.name == span.name);
+        for i in changed {
+            let span = &now[i];
+            let was =
+                paired(&now, i, &then).is_some_and(|b| over_function_cap(b, v.old_test, integrity));
             findings.push(
                 Finding::new(
                     Rule::Size002,
@@ -80,12 +87,17 @@ fn over_file_cap(lang: Lang, lines: &[Line], test: bool, integrity: &Integrity) 
     (production > integrity.max_file_lines && !exempt(lang, lines)).then_some(production)
 }
 
-/// Non-test functions past the function cap.
-fn over_function_cap(lang: Lang, lines: &[Line], test: bool, integrity: &Integrity) -> Vec<Span> {
-    functions(lang, lines, test)
-        .into_iter()
-        .filter(|s| !s.test && !test && s.len() > integrity.max_function_lines)
-        .collect()
+/// A non-test function past the function cap.
+fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
+    !s.test && !test && s.len() > integrity.max_function_lines
+}
+
+/// The before-side function `now[i]` pairs with: the same name, at the same place among the
+/// functions of that name, so a long `new` in one impl never vouches for another's.
+fn paired<'a>(now: &[Span], i: usize, then: &'a [Span]) -> Option<&'a Span> {
+    let name = &now[i].name;
+    let nth = now[..i].iter().filter(|s| &s.name == name).count();
+    then.iter().filter(|s| &s.name == name).nth(nth)
 }
 
 #[cfg(test)]
@@ -254,6 +266,24 @@ mod tests {
                 Some(&format!("#[test]\n{}", long("a", 3))),
                 &edited,
                 &[(Rule::Size002, false)],
+            ),
+            (
+                "src/a.rs",
+                Some(&format!("{}{}", long("a", 3), long("a", 2))),
+                &format!("{}{}", long("a", 3), long("a", 3)),
+                &[(Rule::Size001, true), (Rule::Size002, false)],
+            ),
+            (
+                "src/a.rs",
+                Some(&format!("{}{}", long("a", 2), long("a", 3))),
+                &format!("{}{}", long("a", 2), edited),
+                &[(Rule::Size001, true), (Rule::Size002, true)],
+            ),
+            (
+                "src/a.rs",
+                Some(&long("a", 3)),
+                &format!("{}{}", long("a", 3), long("a", 3)),
+                &[(Rule::Size001, false), (Rule::Size002, false)],
             ),
         ];
         for (path, old, new, want) in rows {

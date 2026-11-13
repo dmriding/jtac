@@ -147,7 +147,8 @@ impl Judge<'_> {
         let Some(base) = root.base else {
             let parented = root.v == RootVersion::V2
                 && tree.is_some()
-                && range::has_parent(self.repo, &root.commit)?;
+                && range::has_parent(self.repo, &root.commit)
+                    .map_err(|e| Refusal::repository(&e))?;
             return Ok(parented.then(|| "it names no base and its tip has a parent".to_owned()));
         };
         Ok(match range::kinds(self.repo, &[base])?[0].as_deref() {

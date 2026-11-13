@@ -1,9 +1,9 @@
-//! The `jtac backtest` summary as text: the counts, then what they do not say. It renders the
-//! summary alone, which holds no path, message, commit id or author.
+//! The `jtac backtest` summary as text: the policy, the counts, then what they do not say. It
+//! renders the summary alone, which holds no path, message, commit id or author.
 
 use std::fmt::Write;
 
-use super::summary::{Alone, RuleCount, Summary};
+use super::summary::{Alone, PolicyFrom, RuleCount, Summary};
 
 /// Render `s`.
 pub fn text(s: &Summary) -> String {
@@ -15,6 +15,11 @@ pub fn text(s: &Summary) -> String {
         units(s.skipped),
         s.block_at
     );
+    let from = match s.policy_from {
+        PolicyFrom::File => "the --policy file",
+        PolicyFrom::NewestCommit => "the range's newest commit",
+    };
+    let _ = writeln!(out, "  policy       {} from {from}", s.policy);
     let _ = writeln!(
         out,
         "  would block  {} ({})",
@@ -92,7 +97,7 @@ fn share(per_mille: u64) -> String {
 #[cfg(test)]
 mod tests {
     use jtac_checks::diff::Rule;
-    use jtac_core::Severity;
+    use jtac_core::{Severity, Sha256Digest};
 
     use super::*;
     use crate::backtest::summary::{ByLanguage, DOES_NOT_SAY};
@@ -111,6 +116,8 @@ mod tests {
         Summary {
             v: 1,
             command: "backtest",
+            policy: Sha256Digest::of("policy"),
+            policy_from: PolicyFrom::File,
             block_at: Severity::Major,
             units: 8,
             skipped: 1,
@@ -135,6 +142,10 @@ mod tests {
         let text = text(&summary(None));
         for want in [
             "BACKTEST: 8 units judged, 1 unit skipped (no parent); block_at major",
+            &format!(
+                "policy       {} from the --policy file",
+                Sha256Digest::of("policy")
+            ),
             "would block  3 units (37.5%)",
             "no finding   1 unit (12.5%)",
             "JT-SIZE-001  major    3, 2 preexisting",

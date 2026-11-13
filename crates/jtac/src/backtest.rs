@@ -3,6 +3,7 @@
 //! policy, with no waiver, no adoption and no check run. A report: it writes nothing to the
 //! repository or the store, needs no `jtac init`, and exits 0 whenever it ran.
 
+mod policy;
 mod refuse;
 mod render;
 mod row;
@@ -11,21 +12,21 @@ mod summary;
 use std::io::Write;
 use std::path::Path;
 
-use jtac_checks::diff::git::{changes, quoted};
+use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, report};
-use jtac_policy::{Matchers, POLICY_PATH, Policy};
 
 use crate::Printed;
 use crate::cli::BacktestArgs;
-use crate::range::{self, Landed};
+use crate::range;
 use crate::refuse::Refusal;
 use crate::repo::{self, RepoError};
 
 use row::Row;
+use summary::Under;
 
 /// Judge every unit of the range and print the summary.
 pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
-    let git = |e: RepoError| Refusal::repository(&e);
+    let git = |e: RepoError| Refusal::backtest_repository(&e, &a.range);
     let repo = repo::root(cwd).map_err(git)?;
     if let Some(path) = repo::grafted(&repo).map_err(git)? {
         return Err(Refusal::grafted(&path));
@@ -37,13 +38,14 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
     }
     let format = repo::format(&repo).map_err(git)?;
     let line = range::first_parent_line(&repo, &format, "backtest", &a.range)?;
-    let (policy, matchers) = policy(&repo, &format, a, line.first())?;
+    let chosen = policy::choose(&repo, &format, a, line.first())?;
+    let (policy, matchers) = (&chosen.policy, &chosen.matchers);
     let block_at = policy.integrity.block_at;
     let mut rows = Vec::new();
     let mut skipped = 0;
     for unit in &line {
         let Some(parent) = unit.parents.first() else {
-            if range::has_parent(&repo, &unit.commit)? {
+            if range::has_parent(&repo, &unit.commit).map_err(git)? {
                 return Err(Refusal::backtest_shallow(&unit.commit, &a.range));
             }
             skipped += 1;
@@ -51,10 +53,15 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
         };
         let changed = changes(&repo, &parent.hex(), &unit.commit.hex())
             .map_err(|e| Refusal::backtest_diff(&unit.commit, parent, &e, &a.range))?;
-        let said = report(&policy.integrity, &matchers, &changed, Adoption::None);
+        let said = report(&policy.integrity, matchers, &changed, Adoption::None);
         rows.push(Row::of(unit, changed.len(), said, block_at));
     }
-    let mut summary = summary::summarize(&rows, skipped, block_at);
+    let under = Under {
+        block_at,
+        policy: chosen.hash,
+        from: chosen.from,
+    };
+    let mut summary = summary::summarize(&rows, skipped, under);
     if let Some(path) = &a.rows {
         write_rows(path, &rows).map_err(|e| Refusal::backtest_rows_write(path, &e, &a.range))?;
         summary.rows_written = Some(rows.len() as u64);
@@ -65,45 +72,6 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
         render::text(&summary)
     };
     Ok(Printed::verdict(text, true))
-}
-
-/// `--policy` when given, else the newest commit's file read through git, never the work tree.
-fn policy(
-    repo: &Path,
-    format: &str,
-    a: &BacktestArgs,
-    newest: Option<&Landed>,
-) -> Result<(Policy, Matchers), Refusal> {
-    let (source, bytes) = match (&a.policy, newest) {
-        (Some(path), _) => {
-            let source = format!(
-                "`--policy` file `{}`",
-                quoted(&path.to_string_lossy(), "FILE")
-            );
-            let bytes = std::fs::read(path)
-                .map_err(|e| Refusal::backtest_policy_unread(&source, &e.to_string(), &a.range))?;
-            (source, bytes)
-        }
-        (None, Some(unit)) => {
-            let git = |e: RepoError| Refusal::repository(&e);
-            let head = repo::peel(repo, format, &unit.commit.hex()).map_err(git)?;
-            let Some((_, bytes)) = repo::blob_at(repo, &head, POLICY_PATH).map_err(git)? else {
-                return Err(Refusal::backtest_no_policy(&a.range));
-            };
-            let source = format!(
-                "`{POLICY_PATH}` in the range's newest commit `{}`",
-                unit.commit.hex()
-            );
-            (source, bytes)
-        }
-        (None, None) => return Err(Refusal::backtest_no_policy(&a.range)),
-    };
-    let text = String::from_utf8(bytes)
-        .map_err(|_| Refusal::backtest_policy_unread(&source, "it is not UTF-8", &a.range))?;
-    let parsed = jtac_policy::parse(&text)
-        .and_then(|p| p.matchers().map(|m| (p, m)))
-        .map_err(|e| Refusal::backtest_policy(&source, &e, &a.range))?;
-    Ok(parsed)
 }
 
 /// One JSON line per row, into a file created here: an existing one is never replaced.
@@ -118,4 +86,29 @@ fn write_rows(path: &Path, rows: &[Row]) -> std::io::Result<()> {
         .create_new(true)
         .open(path)?;
     file.write_all(text.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_rows_creates_its_file_and_never_writes_over_or_through_one() {
+        let dir = jtac_testkit::Repo::empty();
+        let path = dir.path().join("rows.jsonl");
+        write_rows(&path, &[]).unwrap();
+        std::fs::write(&path, "an earlier run\n").unwrap();
+        let err = write_rows(&path, &[]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "an earlier run\n");
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("elsewhere");
+            let link = dir.path().join("link.jsonl");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let err = write_rows(&link, &[]).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+            assert!(!target.exists(), "a dangling link was written through");
+        }
+    }
 }

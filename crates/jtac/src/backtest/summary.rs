@@ -1,14 +1,35 @@
-//! The `jtac backtest` summary (DESIGN.md section 11.10, decision 51): counts and rule ids only,
-//! so it can leave a private repository; shares are per mille, rounded down, since no float
+//! The `jtac backtest` summary (DESIGN.md section 11.10, decision 51): counts, rule ids and
+//! the policy's hash only, so it can leave a private repository; shares are per mille, rounded down, since no float
 //! is printed (decision 17). Pure: rows in, summary out.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use jtac_checks::diff::{Finding, Lang, Rule};
-use jtac_core::Severity;
+use jtac_core::{Severity, Sha256Digest};
 use serde::Serialize;
 
 use super::row::Row;
+
+/// Where the run's one policy was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyFrom {
+    /// The `--policy` file.
+    File,
+    /// The tree of the range's newest commit: with more than one tip, the first git walks.
+    NewestCommit,
+}
+
+/// The policy a run judged under: the input that sets every count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Under {
+    /// The lowest severity that blocks.
+    pub block_at: Severity,
+    /// The policy's hash, as a root records it.
+    pub policy: Sha256Digest,
+    /// Where it was read.
+    pub from: PolicyFrom,
+}
 
 /// The statement every summary carries.
 pub const DOES_NOT_SAY: [&str; 2] = [
@@ -26,6 +47,10 @@ pub struct Summary {
     pub v: u32,
     /// The command.
     pub command: &'static str,
+    /// The hash of the one policy every unit was judged under.
+    pub policy: Sha256Digest,
+    /// Where that policy was read.
+    pub policy_from: PolicyFrom,
     /// The lowest severity that blocks, from the policy.
     pub block_at: Severity,
     /// First-parent commits judged against their first parent.
@@ -124,8 +149,9 @@ impl Tally {
     }
 }
 
-/// Aggregate `rows` and the `skipped` parentless commits under `block_at`.
-pub fn summarize(rows: &[Row], skipped: u64, block_at: Severity) -> Summary {
+/// Aggregate `rows` and the `skipped` parentless commits under the policy `under` names.
+pub fn summarize(rows: &[Row], skipped: u64, under: Under) -> Summary {
+    let block_at = under.block_at;
     let units = rows.len() as u64;
     let silent = rows.iter().filter(|r| r.findings.is_empty()).count() as u64;
     let mut blocking = 0;
@@ -160,6 +186,8 @@ pub fn summarize(rows: &[Row], skipped: u64, block_at: Severity) -> Summary {
     Summary {
         v: 1,
         command: "backtest",
+        policy: under.policy,
+        policy_from: under.from,
         block_at,
         units,
         skipped,
@@ -203,6 +231,14 @@ mod tests {
             line: 0,
             message: "m".into(),
             preexisting,
+        }
+    }
+
+    fn under(block_at: Severity) -> Under {
+        Under {
+            block_at,
+            policy: Sha256Digest::of("policy"),
+            from: PolicyFrom::NewestCommit,
         }
     }
 
@@ -254,8 +290,16 @@ mod tests {
 
     #[test]
     fn units_shares_and_findings_by_rule_and_severity_carry_the_preexisting_count() {
-        let s = summarize(&rows(), 2, Severity::Major);
+        let s = summarize(&rows(), 2, under(Severity::Major));
         assert_eq!((s.units, s.skipped), (5, 2));
+        assert_eq!(
+            (s.policy, s.policy_from, s.block_at),
+            (
+                Sha256Digest::of("policy"),
+                PolicyFrom::NewestCommit,
+                Severity::Major
+            )
+        );
         assert_eq!((s.blocking, s.blocking_per_mille), (3, 600));
         assert_eq!((s.silent, s.silent_per_mille), (1, 200));
         assert_eq!(
@@ -274,20 +318,20 @@ mod tests {
 
     #[test]
     fn a_unit_is_blocked_by_a_rule_alone_only_when_no_other_rule_blocks_it() {
-        let s = summarize(&rows(), 0, Severity::Major);
+        let s = summarize(&rows(), 0, under(Severity::Major));
         assert_eq!(
             s.blocked_alone,
             [alone(Rule::Test001, 1), alone(Rule::Size001, 1)],
             "the unit with JT-PROT-001 and JT-TEST-001 counts under neither"
         );
-        let strict = summarize(&rows(), 0, Severity::Blocker);
+        let strict = summarize(&rows(), 0, under(Severity::Blocker));
         assert_eq!(strict.blocked_alone, [alone(Rule::Test001, 2)]);
         assert_eq!(strict.blocking, 2);
     }
 
     #[test]
     fn the_language_split_keys_each_finding_by_its_path_and_other_for_none() {
-        let s = summarize(&rows(), 0, Severity::Major);
+        let s = summarize(&rows(), 0, under(Severity::Major));
         let names: Vec<&str> = s.languages.iter().map(|l| l.language).collect();
         assert_eq!(names, ["other", "python", "rust"]);
         let python = &s.languages[1];
@@ -322,7 +366,7 @@ mod tests {
 
     #[test]
     fn zero_units_give_zero_shares_and_empty_breakdowns() {
-        let s = summarize(&[], 1, Severity::Major);
+        let s = summarize(&[], 1, under(Severity::Major));
         assert_eq!(
             (s.units, s.skipped, s.blocking_per_mille, s.silent_per_mille),
             (0, 1, 0, 0)

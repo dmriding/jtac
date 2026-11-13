@@ -230,9 +230,8 @@ pub fn ancestor(repo: &Path, ancestor: &GitOid, tip: &GitOid) -> Result<bool, Re
 
 /// Whether `commit` has a parent, read from the object itself so a shallow boundary hides
 /// nothing.
-pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, Refusal> {
-    let object = git(repo, &["cat-file", "commit", &commit.hex()])
-        .map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+pub fn has_parent(repo: &Path, commit: &GitOid) -> Result<bool, RepoError> {
+    let object = git(repo, &["cat-file", "commit", &commit.hex()])?;
     Ok(String::from_utf8_lossy(&object)
         .lines()
         .take_while(|l| !l.is_empty())
