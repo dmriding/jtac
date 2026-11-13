@@ -84,9 +84,9 @@ fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
     !s.test && !test && s.len() > integrity.max_function_lines
 }
 
-/// The before-side function `span` was, known only when one function has its name on each
-/// side. A line diff cannot tell two functions of one name apart (it keeps their shared
-/// braces and returns wherever they fall), so with more than one this says none.
+/// The before-side function of `span`'s name, taken only when one function has that name on
+/// each side: a line diff keeps the braces and returns two of one name share, so it cannot
+/// tell them apart. A name, not an identity: a renamed function's successor still pairs.
 fn paired<'a>(now: &[Span], span: &Span, then: &'a [Span]) -> Option<&'a Span> {
     let named = |spans: &[Span]| spans.iter().filter(|s| s.name == span.name).count();
     then.iter()
