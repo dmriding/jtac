@@ -88,7 +88,8 @@ fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
 }
 
 /// Takes from `kept` the old function `now` repeats line for line, so a second copy of one
-/// finds none left (`a_function_is_unchanged_when_the_old_side_holds_it_line_for_line`).
+/// finds none left (`a_function_is_unchanged_when_the_old_side_holds_it_line_for_line`). Which
+/// copy is the new one no text can say: the later in the file is the one named.
 fn unchanged(kept: &mut Vec<&[Line]>, now: &[Line]) -> bool {
     let same = |old: &&[Line]| old.iter().map(|l| l.text).eq(now.iter().map(|l| l.text));
     kept.iter()
@@ -285,6 +286,36 @@ mod tests {
                 format!("impl A {{\n{a}}}\n"),
                 format!("impl A {{\n{a}}}\nimpl B {{\n{a}}}\n"),
                 &[(9, "function `a` is 5 lines, cap 4")],
+            ),
+            (
+                "a comment inside it reworded",
+                "src/a.rs",
+                format!("fn a() {{\n    // old\n{}}}\n", body(2)),
+                format!("fn a() {{\n    // new\n{}}}\n", body(2)),
+                a5,
+            ),
+            (
+                "indented into a block, nothing else",
+                "src/a.rs",
+                a.clone(),
+                format!(
+                    "impl A {{\n    {}}}\n",
+                    a.replace("\n", "\n    ").trim_end_matches(' ')
+                ),
+                &[(2, "function `a` is 5 lines, cap 4")],
+            ),
+            (
+                "the comment after a Python function removed",
+                "a.py",
+                format!(
+                    "def a():\n{}\n# helpers\n\ndef b():\n    return 1\n",
+                    "    x = 1\n".repeat(4)
+                ),
+                format!(
+                    "def a():\n{}\ndef b():\n    return 1\n",
+                    "    x = 1\n".repeat(4)
+                ),
+                &[],
             ),
             (
                 "the comment around it removed",

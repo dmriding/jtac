@@ -256,7 +256,8 @@ const SIGNATURE_LINES: usize = 64;
 /// The line closing the body opened at or after `start`; `None` when `;` comes first, except
 /// for a one-line arrow function, which is its own span. Inside `[]` a `;` or a brace is a
 /// type's, as in `[u8; { N }]`, and inside `()` a `;` is: neither ends or opens anything. A
-/// `{` inside `()` still opens, since a JavaScript test's callback does.
+/// `{` inside `()` still opens, since a JavaScript test's callback does. The body closes at
+/// the depth before `start`, not before the opener: a type's brace may sit between them.
 fn brace_end(lines: &[Line], depths: &[Depth], start: usize) -> Option<usize> {
     if !lines[start].code.contains('{') && lines[start].code.contains("=>") {
         return Some(start);
@@ -282,7 +283,7 @@ fn brace_end(lines: &[Line], depths: &[Depth], start: usize) -> Option<usize> {
         }
         None
     })??;
-    let base = depths[opener].before;
+    let base = depths[start].before;
     Some(
         (opener..lines.len())
             .find(|&k| depths[k].after <= base)
@@ -291,7 +292,8 @@ fn brace_end(lines: &[Line], depths: &[Depth], start: usize) -> Option<usize> {
 }
 
 /// The last non-blank line before the suite's indentation ends; a bracket left open, as in a
-/// signature split across lines, holds the suite open.
+/// signature split across lines, holds the suite open. A comment at the `def`'s indentation or
+/// left of it is the suite's only when a suite line follows it.
 fn python_end(lines: &[Line], start: usize) -> Option<usize> {
     let indent = |l: &Line| l.text.len() - l.text.trim_start().len();
     let brackets = |l: &Line| {
@@ -308,6 +310,7 @@ fn python_end(lines: &[Line], start: usize) -> Option<usize> {
         match line.kind {
             Kind::Blank => continue,
             Kind::Code if open == 0 && !line.continued && indent(line) <= base => break,
+            Kind::Comment if open == 0 && indent(line) <= base => continue,
             _ => end = j,
         }
         open = (open + brackets(line)).max(0);
@@ -337,6 +340,72 @@ mod tests {
                 .collect();
             assert_eq!(spans(*lang, text, *test_file), want, "{lang:?}: {text:?}");
         }
+    }
+
+    #[test]
+    fn a_type_in_a_signature_neither_ends_nor_opens_the_body() {
+        assert_rows(&[
+            (
+                Lang::Rust,
+                "fn k(k: [u8; 32]) {\n}\nfn r() -> [u8; 4] {\n}\nfn g<T = [u8; 4]>(\n    t: T,\n) {\n}",
+                false,
+                &[("k", 0, 1, false), ("r", 2, 3, false), ("g", 4, 7, false)],
+            ),
+            (
+                Lang::Rust,
+                "fn m(x: m!(a; b)) {\n}\nfn h() -> [u8; { N }] {\n}",
+                false,
+                &[("m", 0, 1, false), ("h", 2, 3, false)],
+            ),
+            (
+                Lang::Rust,
+                "trait T {\n    fn d() -> [u8; { N }];\n    fn e(&self) {\n    }\n}",
+                false,
+                &[("e", 2, 3, false)],
+            ),
+            (
+                Lang::Rust,
+                "fn h() -> [u8; {\n    N\n}] {\n    x()\n}",
+                false,
+                &[("h", 0, 4, false)],
+            ),
+            (
+                Lang::Js,
+                "export function f(): [number, {\n  a: string;\n}] {\n  x();\n}\nfunction g(x: [number, {\n  a: string;\n}]) {\n  x();\n}",
+                false,
+                &[("f", 0, 4, false), ("g", 5, 9, false)],
+            ),
+            (
+                Lang::Go,
+                "func Sum[T interface {\n\t~int | ~float64\n}](xs []T) T {\n\treturn 0\n}",
+                false,
+                &[("Sum", 0, 4, false)],
+            ),
+            (
+                Lang::Rust,
+                "trait T {\n    fn d(k: [u8; 32]);\n    fn e(k: (u8, [u8; 2]))\n    ;\n}\nfn f() {}",
+                false,
+                &[("f", 5, 5, false)],
+            ),
+        ]);
+    }
+
+    #[test]
+    fn a_python_comment_after_a_suite_is_not_the_suite() {
+        assert_rows(&[
+            (
+                Lang::Python,
+                "def a():\n    x = 1\n\n# helpers\n\ndef b():\n    return 1\n# tail",
+                false,
+                &[("a", 0, 1, false), ("b", 5, 6, false)],
+            ),
+            (
+                Lang::Python,
+                "class T:\n    def a(self):\n        x = 1\n# note\n        y = 2\n    # section\n    def b(self):\n        pass",
+                false,
+                &[("a", 1, 4, false), ("b", 6, 7, false)],
+            ),
+        ]);
     }
 
     #[test]
@@ -377,30 +446,6 @@ mod tests {
                 "trait T {\n    fn d(&self);\n    fn e(&self) {\n    }\n}",
                 false,
                 &[("e", 2, 3, false)],
-            ),
-            (
-                Lang::Rust,
-                "fn k(k: [u8; 32]) {\n}\nfn r() -> [u8; 4] {\n}\nfn g<T = [u8; 4]>(\n    t: T,\n) {\n}",
-                false,
-                &[("k", 0, 1, false), ("r", 2, 3, false), ("g", 4, 7, false)],
-            ),
-            (
-                Lang::Rust,
-                "fn m(x: m!(a; b)) {\n}\nfn h() -> [u8; { N }] {\n}",
-                false,
-                &[("m", 0, 1, false), ("h", 2, 3, false)],
-            ),
-            (
-                Lang::Rust,
-                "trait T {\n    fn d() -> [u8; { N }];\n    fn e(&self) {\n    }\n}",
-                false,
-                &[("e", 2, 3, false)],
-            ),
-            (
-                Lang::Rust,
-                "trait T {\n    fn d(k: [u8; 32]);\n    fn e(k: (u8, [u8; 2]))\n    ;\n}\nfn f() {}",
-                false,
-                &[("f", 5, 5, false)],
             ),
             (
                 Lang::Rust,
