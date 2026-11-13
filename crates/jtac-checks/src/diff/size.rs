@@ -1,9 +1,7 @@
 //! `JT-SIZE-001` and `-002`: a changed file past the production-line cap with no exemption
 //! marker, and a changed non-test function past the line cap. A function changed when an
 //! added line falls inside its span. Each finding says whether the before side already broke
-//! the same cap: the file, or the function of the same name the kept lines place it in.
-
-use std::collections::BTreeSet;
+//! the same cap: the file, or the function of the same name when one has it on each side.
 
 use jtac_core::Severity;
 use jtac_policy::Integrity;
@@ -40,24 +38,20 @@ pub(crate) fn check(views: &[View], integrity: &Integrity) -> Vec<Finding> {
                 .with_preexisting(was),
             );
         }
-        let added = indexes(&v.edit.added);
-        let now = functions(lang, &v.new, v.new_test);
-        let changed: Vec<usize> = (0..now.len())
-            .filter(|&i| over_function_cap(&now[i], v.new_test, integrity))
-            .filter(|&i| added.range(now[i].start..=now[i].end).next().is_some())
+        let added: Vec<usize> = v
+            .edit
+            .added
+            .iter()
+            .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
             .collect();
-        let (then, kept) = match before {
-            Some(l) if !changed.is_empty() => {
-                let removed = indexes(&v.edit.removed);
-                let new = (0..v.new.len()).filter(|i| !added.contains(i));
-                let old = (0..v.old.len()).filter(|i| !removed.contains(i));
-                (functions(l, &v.old, v.old_test), new.zip(old).collect())
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
-        for i in changed {
-            let span = &now[i];
-            let was = paired(&now, i, &then, &kept)
+        let now = functions(lang, &v.new, v.new_test);
+        let changed = now
+            .iter()
+            .filter(|s| over_function_cap(s, v.new_test, integrity))
+            .filter(|s| added.iter().any(|&i| (s.start..=s.end).contains(&i)));
+        let then = before.map_or_else(Vec::new, |l| functions(l, &v.old, v.old_test));
+        for span in changed {
+            let was = paired(&now, span, &then)
                 .is_some_and(|b| over_function_cap(b, v.old_test, integrity));
             findings.push(
                 Finding::new(
@@ -90,47 +84,14 @@ fn over_function_cap(s: &Span, test: bool, integrity: &Integrity) -> bool {
     !s.test && !test && s.len() > integrity.max_function_lines
 }
 
-/// Zero-based indexes of an edit's lines.
-fn indexes(lines: &[(u64, &str)]) -> BTreeSet<usize> {
-    lines
-        .iter()
-        .map(|(n, _)| usize::try_from(*n).unwrap_or(usize::MAX) - 1)
-        .collect()
-}
-
-/// The before-side function `now[i]` was: of its name, the one holding strictly most of the
-/// lines the change `kept` (new index, old index), when no other function of that name holds
-/// as many of that one. A tie pairs nothing, so a long `new` in one impl never vouches for
-/// another's. With no kept line at all (a rewrite), the name decides only when one function
-/// has it on each side. `kept` rises in both indexes, so a span's share of it is a slice.
-fn paired<'a>(
-    now: &[Span],
-    i: usize,
-    then: &'a [Span],
-    kept: &[(usize, usize)],
-) -> Option<&'a Span> {
-    let span = &now[i];
-    let held = |n: &Span, o: &Span| {
-        let new = kept.partition_point(|k| k.0 < n.start)..kept.partition_point(|k| k.0 <= n.end);
-        let old = kept.partition_point(|k| k.1 < o.start)..kept.partition_point(|k| k.1 <= o.end);
-        new.end
-            .min(old.end)
-            .saturating_sub(new.start.max(old.start))
-    };
-    let named = || then.iter().filter(|b| b.name == span.name);
-    let peers = || now.iter().filter(|s| s.name == span.name);
-    let counts: Vec<(usize, &Span)> = named()
-        .map(|b| (held(span, b), b))
-        .filter(|(lines, _)| *lines > 0)
-        .collect();
-    let Some(&(lines, b)) = counts.iter().max_by_key(|(lines, _)| *lines) else {
-        return named()
-            .next()
-            .filter(|_| named().count() == 1 && peers().count() == 1);
-    };
-    let top = counts.iter().filter(|(n, _)| *n == lines).count();
-    let holders = peers().filter(|s| held(s, b) >= lines).count();
-    (top == 1 && holders == 1).then_some(b)
+/// The before-side function `span` was, known only when one function has its name on each
+/// side. A line diff cannot tell two functions of one name apart (it keeps their shared
+/// braces and returns wherever they fall), so with more than one this says none.
+fn paired<'a>(now: &[Span], span: &Span, then: &'a [Span]) -> Option<&'a Span> {
+    let named = |spans: &[Span]| spans.iter().filter(|s| s.name == span.name).count();
+    then.iter()
+        .find(|b| b.name == span.name)
+        .filter(|_| named(now) == 1 && named(then) == 1)
 }
 
 #[cfg(test)]
@@ -320,107 +281,84 @@ mod tests {
     }
 
     #[test]
-    fn a_function_pairs_with_the_one_of_its_name_that_the_kept_lines_place_it_in() {
+    fn a_function_pairs_by_name_only_when_one_has_the_name_on_each_side() {
         let integrity = Integrity {
             max_function_lines: 4,
             ..Integrity::default()
         };
         let f = |text: &str, n: usize| format!("fn a() {{\n{}}}\n", text.repeat(n));
-        let (long, short) = (long_a(), f("    x();\n", 1));
+        let (long, short) = (f("    x();\n", 4), f("    x();\n", 1));
+        let grown = long.replace("}", "    y();\n}");
         let other = f("    other();\n", 4);
-        let grown = long.replace("x2", "y2");
-        let rewritten = other.replace("fn a()", "fn a(n: u32)").replace('}', "} ");
-        let py = |class: &str, n: usize| {
+        let init = |class: &str, n: usize| {
             format!(
                 "class {class}:\n    def __init__(self):\n{}\n",
-                (0..n)
-                    .map(|i| format!("        self.{}{i} = {i}\n", class.to_lowercase()))
-                    .collect::<String>()
+                "        self.n += 1\n".repeat(n)
+            )
+        };
+        let nested = |n: usize| {
+            format!(
+                "def deco(f):\n    def wrapper():\n{}    return wrapper\n",
+                "        f()\n".repeat(n)
             )
         };
         type Was<'a> = &'a [(u64, bool)];
         let rows: &[(&str, &str, String, String, Was)] = &[
             (
-                "a same-named function grown beside a long one",
-                "src/a.rs",
-                format!("{long}{short}"),
-                format!("{long}{other}"),
-                &[(6, false)],
-            ),
-            (
-                "a same-named function written above a long one",
+                "one of the name on each side, long before",
                 "src/a.rs",
                 long.clone(),
-                format!("{other}{grown}"),
-                &[(1, false), (7, true)],
-            ),
-            (
-                "a short same-named function deleted above a long one",
-                "src/a.rs",
-                format!("{short}{long}"),
                 grown.clone(),
                 &[(1, true)],
             ),
             (
-                "a short one grown as the long same-named one below it is deleted",
+                "a function of another name above it does not stand in for it",
                 "src/a.rs",
-                format!("{short}{long}"),
-                f("    x();\n", 4),
-                &[(1, false)],
+                format!("{}{long}", short.replace("fn a", "fn b")),
+                format!("{}{grown}", short.replace("fn a", "fn b")),
+                &[(4, true)],
             ),
             (
-                "a rewrite sharing only a header and a brace with two of the name is a tie",
-                "src/a.rs",
-                format!("{short}{long}"),
-                other.clone(),
-                &[(1, false)],
-            ),
-            (
-                "and the same tie with the two in the other order",
-                "src/a.rs",
-                format!("{long}{short}"),
-                other.clone(),
-                &[(1, false)],
-            ),
-            (
-                "one long function never vouches for two",
+                "a rewrite that keeps no line is still the one of its name",
                 "src/a.rs",
                 long.clone(),
-                format!("{other}{}", f("    z();\n", 4)),
-                &[(1, false), (7, false)],
-            ),
-            (
-                "a class written above another, whose long __init__ grows",
-                "a.py",
-                py("B", 5),
-                format!("{}{}", py("A", 5), py("B", 6)),
-                &[(2, false), (10, true)],
-            ),
-            (
-                "a rewrite keeps no line, so the one function of the name decides",
-                "src/a.rs",
-                long.clone(),
-                rewritten.clone(),
+                other.clone(),
                 &[(1, true)],
             ),
             (
-                "a rewrite of two of the name says nothing was there",
+                "a second of the name written above a long one",
                 "src/a.rs",
-                format!("{long}{grown}"),
-                format!(
-                    "{rewritten}{}",
-                    f("    y();\n", 1)
-                        .replace("fn a()", "fn a(m: u32)")
-                        .replace('}', "} ")
-                ),
+                long.clone(),
+                format!("{other}{grown}"),
+                &[(1, false), (7, false)],
+            ),
+            (
+                "a short one grown as the long one below it is deleted",
+                "src/a.rs",
+                format!("{short}{long}"),
+                grown.clone(),
                 &[(1, false)],
             ),
             (
-                "a rewrite of one where two of the name stood says the same",
+                "and the same with the long one above it",
                 "src/a.rs",
                 format!("{long}{short}"),
-                rewritten.clone(),
+                grown.clone(),
                 &[(1, false)],
+            ),
+            (
+                "two classes, each with a long __init__",
+                "a.py",
+                format!("{}{}", init("A", 5), init("B", 5)),
+                format!("{}{}", init("A", 5), init("B", 6)),
+                &[(10, false)],
+            ),
+            (
+                "a nested function has its own name",
+                "a.py",
+                nested(5),
+                nested(6),
+                &[(1, true), (2, true)],
             ),
         ];
         for (claim, path, old, new, want) in rows {
@@ -432,9 +370,5 @@ mod tests {
                     .collect();
             assert_eq!(got, *want, "{claim}: {old:?} -> {new:?}");
         }
-    }
-
-    fn long_a() -> String {
-        format!("fn a() {{\n{}}}\n", body(3))
     }
 }
