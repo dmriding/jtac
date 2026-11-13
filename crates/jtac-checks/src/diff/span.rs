@@ -1,7 +1,7 @@
 //! Function spans and brace depths with no parser: braces over scanned code, indentation for
 //! Python (DESIGN.md section 10.3). A brace in a string or comment is already blanked, so what
-//! defeats this is a signature or a call split across lines; `functions_per_language` rows the
-//! shapes that hold.
+//! defeats this is a signature or a call split across lines; the tables in this file's tests
+//! row the shapes that hold.
 
 use regex::Regex;
 use std::sync::LazyLock;
