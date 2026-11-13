@@ -3,8 +3,12 @@
 //! Dev-only: every crate that spawns git in a test depends on this one, so there is one
 //! implementation of the safe environment.
 
+mod feed;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub use feed::feed;
 
 /// A repository under a temp directory, deleted on drop.
 pub struct Repo {

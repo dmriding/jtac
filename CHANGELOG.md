@@ -42,9 +42,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Fixed
 
-- (0.2.16) Two runner tests no longer fail on a slow machine (#144): a child whose pid the
-  test reads back gets two seconds to start and print before the deadline kills it, not
-  300 ms. Tests only.
+- (0.2.16) Tests that failed on a loaded runner, tests only. A child whose pid the test
+  reads back gets two seconds to start and print before the deadline kills it, not 300 ms
+  (#144). A test that pipes stdin to `jtac` takes a closed pipe as the child's early exit,
+  through one `jtac-testkit` helper, where three harnesses unwrapped the write (#145).
 
 ### Security
 

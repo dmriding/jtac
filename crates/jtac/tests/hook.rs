@@ -2,12 +2,11 @@
 //! section 11.3): every line git can hand the hook, a real `git push` through an installed
 //! hook, the root push ahead of the code, and `status` asking the same decision.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use jtac_core::{Covers, FromHead, GitOid, Root};
-use jtac_testkit::Repo;
+use jtac_testkit::{Repo, feed};
 use serde_json::Value;
 
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -100,7 +99,7 @@ fn hook_to(repo: &Repo, remote: &str, stdin: &[u8], extra: &[(&str, &str)]) -> R
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    feed(&mut child, stdin);
     Ran::of(child.wait_with_output().unwrap())
 }
 

@@ -2,10 +2,9 @@
 //! agent's JSON on stdin, the note on stdout as `additionalContext`, exit 0 on every path,
 //! and the same answer `status` and the `pre-push` hook give.
 
-use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-use jtac_testkit::Repo;
+use jtac_testkit::{Repo, feed};
 use serde_json::Value;
 
 fn me() -> String {
@@ -79,7 +78,7 @@ fn capped(repo: &Repo, args: &[&str], stdin: &[u8], cap_ms: &str) -> Ran {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    feed(&mut child, stdin);
     let out = child.wait_with_output().unwrap();
     Ran {
         code: out.status.code().unwrap_or(-1),
