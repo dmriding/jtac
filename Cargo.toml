@@ -12,12 +12,12 @@ authors = ["David Riding"]
 publish = true
 
 [workspace.dependencies]
-jtac-core = { path = "crates/jtac-core", version = "0.2.17" }
-jtac-policy = { path = "crates/jtac-policy", version = "0.2.17" }
-jtac-gate = { path = "crates/jtac-gate", version = "0.2.17" }
-jtac-checks = { path = "crates/jtac-checks", version = "0.2.17" }
-jtac-store = { path = "crates/jtac-store", version = "0.2.17" }
-jtac-sign = { path = "crates/jtac-sign", version = "0.2.17" }
+jtac-core = { path = "crates/jtac-core", version = "=0.2.17" }
+jtac-policy = { path = "crates/jtac-policy", version = "=0.2.17" }
+jtac-gate = { path = "crates/jtac-gate", version = "=0.2.17" }
+jtac-checks = { path = "crates/jtac-checks", version = "=0.2.17" }
+jtac-store = { path = "crates/jtac-store", version = "=0.2.17" }
+jtac-sign = { path = "crates/jtac-sign", version = "=0.2.17" }
 jtac-testkit = { path = "crates/jtac-testkit" }
 
 [workspace.lints.rust]

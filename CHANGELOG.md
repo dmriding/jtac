@@ -42,7 +42,7 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 - (0.2.17) The workspace is ready for crates.io, and nothing is published by this change
   (DESIGN.md decision 52). The six library crates are publishable beside `jtac`, each
   shipping `LICENSE.md` and a README that says it is internal with no API stability
-  promise; `jtac-testkit` stays unpublished and is a dev-dependency by path alone, where
+  promise, and requiring the others at exactly its own version; `jtac-testkit` stays unpublished and is a dev-dependency by path alone, where
   its version failed the upload. Each library's crate docs link `DESIGN.md`.
   `docs/RELEASING.md` gains the publish step, by hand after the release workflow, and
   `scripts/release-check.sh` packages every crate and holds its `LICENSE.md` to the root

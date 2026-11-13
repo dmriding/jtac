@@ -49,16 +49,16 @@ fi
 sh scripts/action-version.sh
 # A crates.io version is never replaced (docs/RELEASING.md step 5), and CI packages nothing: a
 # checkout without symlinks ships the link's text as the license, a bad manifest fails the upload.
-for license in crates/*/LICENSE.md; do
-  if ! cmp -s "$license" LICENSE.md; then
-    echo "$license is not the root LICENSE.md; the crate would ship without the license text"
-    echo "Fix: release from a checkout that keeps symlinks (Linux or macOS), then run scripts/release-check.sh $tag again."
-    exit 1
-  fi
+for manifest in crates/*/Cargo.toml; do
+  license=${manifest%Cargo.toml}LICENSE.md
+  if grep -q '^publish = false' "$manifest" || cmp -s "$license" LICENSE.md; then continue; fi
+  echo "$license is missing or is not the root LICENSE.md; the crate would ship without the license text, in a version that is never replaced"
+  echo "Fix: if git tracks the file, release from a checkout that keeps symlinks (Linux or macOS) and run scripts/release-check.sh $tag again. If it does not, add it as a symlink to ../../LICENSE.md in a pull request and release the version that pull request bumps to, from docs/RELEASING.md step 2; do not set Cargo.toml back to $version."
+  exit 1
 done
 if ! cargo package --workspace --locked; then
-  echo "the workspace does not package for crates.io"
-  echo "Fix: repair what cargo named in a pull request, then run scripts/release-check.sh $tag on its merge commit."
+  echo "the workspace does not package for crates.io, where a version is never replaced"
+  echo "Fix: repair what cargo named in a pull request and release the version that pull request bumps to, from docs/RELEASING.md step 2; do not set Cargo.toml back to $version."
   exit 1
 fi
 echo "release-check: $tag may be tagged at $head"
