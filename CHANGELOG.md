@@ -21,8 +21,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 - (0.2.22) `DESIGN.md` only, no behaviour (#153): section 15.2 gave a developer root that
   leaves a `ci` check out of `unread` two readings, and decided one of them from fields the
-  signer writes. Decision 57: a reader asks the policy file in the root's own commit which
-  checks are `ci`. Such a root is partial, invalid when its `unread` is not that list.
+  signer writes. Decision 57: a reader asks the policy file in the tree the root names which
+  checks are `ci`. A developer root under a policy with a `ci` check is partial, and one
+  whose `unread` is not that list is invalid. A commit whose own policy holds a `ci` check
+  is covered by a merge root alone, whatever developer root lists it.
 - (0.2.20) `DESIGN.md` only, no behaviour: section 5 states that the gate blocks the party
   that cannot get around it and records the party that can; section 15.2 and decisions 53 to
   56 design policy version 2, where a check is run by jtac or read from the team's own CI for
