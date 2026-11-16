@@ -1014,3 +1014,55 @@ fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
         );
     }
 }
+
+/// The merge that brings the `ci` check is judged under the old tip's policy, as any policy
+/// change is; the one after it is judged under the new policy, which no gate reads before M20.
+#[test]
+fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
+    let f = forge();
+    f.dev.git(&["switch", "-q", "-c", "a", "main"]);
+    let read = format!(
+        "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
+         [checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\n",
+        me()
+    );
+    f.dev.write(".jtac/policy.toml", read.as_bytes());
+    let a = f.dev.commit("read e2e from ci");
+    let refused = |ran: Ran| {
+        assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+        assert!(
+            ran.stderr
+                .starts_with("jtac: Check `e2e` in `.jtac/policy.toml` is read from CI"),
+            "{}",
+            ran.stderr
+        );
+    };
+    refused(jtac(&f.dev, &["check"]));
+    f.push("origin", "a", false);
+    f.fetch("origin");
+    let first = f.merge("origin/a");
+    let (code, v, err) = f.job(&a, &f.main);
+    assert_eq!(
+        (code, &v["policy_from"]),
+        (1, &Value::from("base")),
+        "{v}{err}"
+    );
+    f.dev.git(&["fetch", "-q", "origin"]);
+    f.dev.git(&["switch", "-q", "-c", "b", "origin/main"]);
+    f.dev.write("b.txt", b"b\n");
+    let b = f.dev.commit("b");
+    refused(jtac(&f.dev, &["check"]));
+    f.push("origin", "b", false);
+    f.fetch("origin");
+    let second = f.merge("origin/b");
+    f.ci.git(&["push", "-q", "origin", "main"]);
+    refused(jtac(
+        &f.ci,
+        &["check", "--from", &b, "--base", &first, "--push", "origin"],
+    ));
+    let roots = f.second().git(&["for-each-ref", "refs/jtac/roots"]);
+    assert!(roots.contains(&root_ref(&f.main)), "{roots}");
+    for commit in [&a, &b, &first, &second] {
+        assert!(!roots.contains(&root_ref(commit)), "{commit} in {roots}");
+    }
+}

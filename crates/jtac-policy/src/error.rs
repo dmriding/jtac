@@ -5,7 +5,8 @@
 use jtac_core::canonical::MAX_SAFE_INTEGER;
 
 use crate::POLICY_PATH;
-use crate::schema::{DEFAULT_TIMEOUT_SECS, JTAC_DIR_GLOB};
+use crate::check::DEFAULT_TIMEOUT_SECS;
+use crate::schema::JTAC_DIR_GLOB;
 
 /// A policy that does not parse or does not validate. Every one denies; nothing falls back to
 /// defaults (DESIGN.md section 10.2).
@@ -74,6 +75,30 @@ pub enum PolicyError {
         /// Why it is refused.
         detail: String,
     },
+    /// A check read from CI in a version 1 file.
+    #[error("checks.{id}.ci is policy version 2's, and the file says version 1")]
+    CiVersion {
+        /// The check.
+        id: String,
+    },
+    /// A `ci` check's definition file or job that is not spelled in full.
+    #[error("{key} `{value}` is refused: {detail}")]
+    CiPin {
+        /// Dotted key, as `checks.test.ci.workflow`.
+        key: String,
+        /// The value as written.
+        value: String,
+        /// Why it is refused.
+        detail: String,
+    },
+    /// A `ci` check whose definition file no `protected.paths` pattern matches.
+    #[error("checks.{id}.ci.workflow `{workflow}` matches no protected.paths pattern")]
+    CiUnprotected {
+        /// The check.
+        id: String,
+        /// The definition file's path, already a printable-ASCII literal.
+        workflow: String,
+    },
 }
 
 /// The tail every `how` shares: the edit leaves the tree dirty, and only `--preview` runs there.
@@ -87,7 +112,7 @@ fn parse_at(position: &Option<(u32, u32)>, detail: &str, file: &str) -> String {
 }
 
 fn version_in(found: &u32, file: &str) -> String {
-    format!("{file} has version {found}; this build reads policy version 1")
+    format!("{file} has version {found}; this build reads policy versions 1 and 2")
 }
 
 impl PolicyError {
@@ -155,6 +180,21 @@ impl PolicyError {
                 "A pattern that does not compile, or can never match a repository-relative path \
                  or branch, would silently guard nothing."
             }
+            Self::CiVersion { .. } => {
+                "A version 1 file keeps version 1's rules and its hash, so no root written \
+                 under one changes meaning; reading a check from CI is version 2's. A gate \
+                 older than 0.2.21 refuses a version 2 file, so every clone's gate and the \
+                 pinned action move before the file does."
+            }
+            Self::CiPin { .. } => {
+                "A check read from CI is pinned to one definition file and one job by name. \
+                 Both are written in full and in printable ASCII, so a diff shows every byte of \
+                 what the gate will read."
+            }
+            Self::CiUnprotected { .. } => {
+                "An unprotected CI definition could be rewritten to pass with no finding, so a \
+                 check is read only from a file whose change escalates."
+            }
         }
     }
 
@@ -200,6 +240,17 @@ impl PolicyError {
                 "fix {key} in {file}: literals, ?, * and ** only, relative to the \
                  repository root, / between directories"
             ),
+            Self::CiVersion { id } => format!(
+                "set version = 2 in {file} once every gate that reads it is 0.2.21 or newer, \
+                 or give [checks.{id}] a run"
+            ),
+            Self::CiPin { key, .. } => format!(
+                "fix {key} in {file}: the definition file's path from the repository root \
+                 with / between directories, and the job's name as the forge reports it"
+            ),
+            Self::CiUnprotected { workflow, .. } => {
+                format!("add \"{workflow}\" to protected.paths in {file}")
+            }
         }
     }
 }
@@ -221,6 +272,9 @@ pub(crate) mod tests {
             PolicyError::TooLarge { .. } => "too_large",
             PolicyError::TierName { .. } => "tier_name",
             PolicyError::Glob { .. } => "glob",
+            PolicyError::CiVersion { .. } => "ci_version",
+            PolicyError::CiPin { .. } => "ci_pin",
+            PolicyError::CiUnprotected { .. } => "ci_unprotected",
         }
     }
 
@@ -236,7 +290,7 @@ pub(crate) mod tests {
                 detail: text("recursion limit"),
             },
             PolicyError::Version { found: 0 },
-            PolicyError::Version { found: 2 },
+            PolicyError::Version { found: 3 },
             PolicyError::JtacUnprotected,
             PolicyError::CheckId { id: text("Fmt") },
             PolicyError::ReservedId {
@@ -253,6 +307,16 @@ pub(crate) mod tests {
                 pattern: text("["),
                 detail: text("unclosed character class"),
             },
+            PolicyError::CiVersion { id: text("test") },
+            PolicyError::CiPin {
+                key: text("checks.test.ci.job"),
+                value: text(""),
+                detail: text("an empty name names no job"),
+            },
+            PolicyError::CiUnprotected {
+                id: text("test"),
+                workflow: text("ci/build.yml"),
+            },
         ]
     }
 
@@ -260,7 +324,7 @@ pub(crate) mod tests {
     fn every_error_variant_renders_three_parts() {
         let samples = samples();
         let variants: std::collections::BTreeSet<_> = samples.iter().map(kind).collect();
-        assert_eq!(variants.len(), 10, "a variant has no sample");
+        assert_eq!(variants.len(), 13, "a variant has no sample");
         for error in &samples {
             let [what, why, how] = error.three_parts();
             assert_eq!(what, error.to_string());
@@ -316,9 +380,9 @@ pub(crate) mod tests {
         let table: &[(u32, &str, &str)] = &[
             (0, "start at 1", "set version = 1"),
             (
-                2,
+                3,
                 "Do not rewrite the number",
-                "install a jtac that reads policy version 2",
+                "install a jtac that reads policy version 3",
             ),
         ];
         for (found, why_has, how_starts) in table {

@@ -1159,3 +1159,29 @@ fn ci_refuses_a_base_that_does_not_resolve_a_dirty_tree_and_a_missing_policy_wit
         ran.stderr
     );
 }
+
+#[test]
+fn a_check_read_from_ci_is_a_protected_change_until_base_holds_it_and_then_no_gate_judges() {
+    let p = pr(Trusts::Dev);
+    let read = format!(
+        "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
+         [checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\", job = \"e2e\" }}\n",
+        me()
+    );
+    p.repo.write(".jtac/policy.toml", read.as_bytes());
+    p.repo.commit("read e2e from ci");
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["policy_from"], "base");
+    assert_eq!(rules(&v), ["JT-PROT-001"]);
+    p.repo.git(&["branch", "-f", "main", "HEAD"]);
+    p.add("a.txt", "a\n");
+    let ran = jtac(&p.repo, &["ci", "--base", "main"]);
+    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+    assert!(
+        ran.stderr
+            .starts_with("jtac: Check `e2e` in `.jtac/policy.toml` is read from CI"),
+        "{}",
+        ran.stderr
+    );
+}

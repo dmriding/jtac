@@ -6,7 +6,8 @@ use crate::hash::policy_hash;
 use crate::schema::{INTEGRITY_CHECK_ID, Policy};
 
 /// What `gate` needs from `policy` for `commit` and `tree`. Checks come out in policy order
-/// behind the required `integrity` check, which runs first (DESIGN.md section 11.1).
+/// behind the required `integrity` check, which runs first (DESIGN.md section 11.1), each with
+/// its pin when CI holds its result.
 pub fn facts(policy: &Policy, commit: GitOid, tree: GitOid) -> Result<Facts, CanonicalError> {
     Ok(Facts {
         commit,
@@ -15,10 +16,12 @@ pub fn facts(policy: &Policy, commit: GitOid, tree: GitOid) -> Result<Facts, Can
         checks: std::iter::once(CheckSpec {
             id: INTEGRITY_CHECK_ID.to_owned(),
             required: true,
+            pin: None,
         })
         .chain(policy.checks.iter().map(|(id, c)| CheckSpec {
             id: id.clone(),
             required: c.required,
+            pin: c.pin().cloned(),
         }))
         .collect(),
         block_at: policy.integrity.block_at,
@@ -35,8 +38,9 @@ mod tests {
 
     #[test]
     fn facts_carry_checks_in_policy_order_with_required_and_block_at() {
-        let mut toml = String::from(design_example());
+        let mut toml = design_example().replace("version = 1", "version = 2");
         toml.push_str("\n[checks.audit]\nrun = [\"cargo\", \"audit\"]\nrequired = false\n");
+        toml.push_str("[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\" }\n");
         let policy = parse(&toml).unwrap();
         let commit: GitOid = "sha1:0000000000000000000000000000000000000001"
             .parse()
@@ -56,10 +60,15 @@ mod tests {
             [
                 ("integrity", true),
                 ("audit", false),
+                ("e2e", true),
                 ("fmt", true),
                 ("lint", true),
                 ("test", true)
             ]
         );
+        let pins: Vec<_> = (got.checks.iter())
+            .filter_map(|c| Some((c.id.as_str(), c.pin.as_ref()?.workflow.as_str())))
+            .collect();
+        assert_eq!(pins, [("e2e", ".github/workflows/ci.yml")]);
     }
 }

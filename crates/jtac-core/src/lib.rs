@@ -12,6 +12,7 @@ pub mod from;
 pub mod merkle;
 pub mod node;
 pub mod oid;
+pub mod pin;
 pub mod release;
 pub mod root;
 pub mod schema;
@@ -31,6 +32,7 @@ pub use node::{
     Severity,
 };
 pub use oid::GitOid;
+pub use pin::Pin;
 pub use release::{Artifact, From, Release, ReleaseError};
 pub use root::{
     Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError,

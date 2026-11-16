@@ -115,6 +115,9 @@ pub fn judge(
     cache: Option<&dyn Cache>,
     offered: &Offered,
 ) -> Result<Judged, Refusal> {
+    if let Some((id, _)) = loaded.policy.ci_checks().next() {
+        return Err(Refusal::ci_unread(id));
+    }
     let mut facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
     facts.waivable = offered.waivable.clone();
     let node = |body: Body| Node {

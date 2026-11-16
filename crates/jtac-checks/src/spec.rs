@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use jtac_policy::Policy;
+use jtac_policy::{Policy, Source};
 
 /// What the runner needs to run one check.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,17 +15,18 @@ pub struct Spec {
     pub timeout: Duration,
 }
 
-/// Every check in `policy`, in the order `jtac_policy::facts` lists them.
+/// Every check of `policy` that jtac runs, in the order `jtac_policy::facts` lists them. One
+/// read from CI has no argv and is left out.
 pub fn specs(policy: &Policy) -> Vec<Spec> {
-    policy
-        .checks
-        .iter()
-        .map(|(id, c)| Spec {
+    let run = |(id, check): (&String, &jtac_policy::Check)| match &check.source {
+        Source::Run { argv, timeout_secs } => Some(Spec {
             id: id.clone(),
-            argv: c.run.clone(),
-            timeout: Duration::from_secs(c.timeout_secs),
-        })
-        .collect()
+            argv: argv.clone(),
+            timeout: Duration::from_secs(*timeout_secs),
+        }),
+        Source::Ci(_) => None,
+    };
+    policy.checks.iter().filter_map(run).collect()
 }
 
 #[cfg(test)]
@@ -35,7 +36,7 @@ mod tests {
     #[test]
     fn specs_follow_policy_order_with_argv_and_timeout() {
         let policy = jtac_policy::parse(
-            "version = 1\n[checks.test]\nrun = [\"cargo\", \"test\"]\ntimeout_secs = 5\n[checks.fmt]\nrun = [\"cargo\", \"fmt\"]\n",
+            "version = 2\n[checks.test]\nrun = [\"cargo\", \"test\"]\ntimeout_secs = 5\n[checks.fmt]\nrun = [\"cargo\", \"fmt\"]\n[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\" }\n",
         )
         .unwrap();
         assert_eq!(

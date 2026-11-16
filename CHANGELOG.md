@@ -6,6 +6,17 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+### Added
+
+- (0.2.21) Policy version 2 is read (DESIGN.md section 15.2, M19). A check has `run`, as
+  before, or `ci = { workflow = "<path>", job = "<name>" }`, which names the CI definition
+  file and job its result is read from. No gate reads a CI result yet: `check`, `jtac ci`
+  and `check --from` refuse to judge under a policy that holds a `ci` check, naming it. A
+  version 1 file is read as before and keeps its hash. Refused with the three parts: `run`
+  and `ci` together, neither, `timeout_secs` on a `ci` check, `ci` in a version 1 file, a
+  `workflow` that is not one protected path spelled in full, and a `job` that is empty,
+  past 255 bytes or not printable ASCII.
+
 ### Changed
 
 - (0.2.20) `DESIGN.md` only, no behaviour: section 5 states that the gate blocks the party
