@@ -101,31 +101,22 @@ struct Wire {
     runs: Vec<ForgeRun>,
 }
 
-// serde's derive also reads a struct from an array of its fields in order; version 1
-// writes objects alone, so the file, each run and each job must be one.
-fn objects(doc: &Value) -> bool {
-    let all = |list: &Value, each: &dyn Fn(&Value) -> bool| {
-        list.as_array().is_some_and(|items| items.iter().all(each))
-    };
-    doc.is_object()
-        && all(&doc["runs"], &|run| {
-            run.is_object() && all(&run["jobs"], &Value::is_object)
-        })
-}
-
 impl Results {
     /// Read the file's bytes. Refuses a shape this version does not write, a run listed
-    /// twice and an integer a node could not carry
-    /// (`the_reader_refuses_what_version_1_does_not_write`).
+    /// twice and an integer a node could not carry. serde's derive reads spellings no
+    /// writer emits, a struct as an array or an enum as a one-key map, so the file must
+    /// also say, value for value, what this type writes back; whitespace and key order
+    /// are free (`the_reader_refuses_what_version_1_does_not_write`).
     pub fn from_json(bytes: &[u8]) -> Result<Self, ResultsError> {
         let shape = |e: serde_json::Error| ResultsError::Shape(e.to_string());
         let Wire { v, forge, runs } = serde_json::from_slice(bytes).map_err(shape)?;
-        if !objects(&serde_json::from_slice(bytes).map_err(shape)?) {
+        let file = Self { v, forge, runs };
+        let said: Value = serde_json::from_slice(bytes).map_err(shape)?;
+        if serde_json::to_value(&file).map_err(shape)? != said {
             return Err(ResultsError::Shape(
-                "an array stands where an object belongs".into(),
+                "a value is not spelled as version 1 writes it".into(),
             ));
         }
-        let file = Self { v, forge, runs };
         for (i, run) in file.runs.iter().enumerate() {
             let id = run.id;
             if id > MAX_SAFE_INTEGER || run.attempt > MAX_SAFE_INTEGER {
@@ -295,6 +286,11 @@ pub(crate) mod tests {
             (
                 "the file as an array",
                 r#"[1,"github",[]]"#.to_string(),
+                "Shape",
+            ),
+            (
+                "the forge as a one-key map",
+                edit(r#""forge":"github""#, r#""forge":{"github":null}"#),
                 "Shape",
             ),
             (
