@@ -21,9 +21,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 - (0.2.23) `DESIGN.md` only, no behaviour (#156, #157): decisions 58 to 60, settled before
   M20 builds a reader. One order picks the root a commit is read through, for every reader;
-  open question 15 is closed. The CI gate reads a commit's own root and no other. A CI
-  check with two runs for one push takes the worst of them instead of refusing. A policy
-  a partial clone lacks makes every command that judges a root answer 2 with the fetch
+  open question 15 is closed. The CI gate reads its own roots, a CI root covering its
+  first-parent line back to its base, and never the root picked for the row. A CI check
+  with two runs for one push takes the worst of them instead of refusing. A policy a
+  partial clone lacks makes every command that judges a root answer 2 with the fetch
   named, where decision 57 read the root partial. Open question 16: a tag named as the
   branch.
 - (0.2.22) `DESIGN.md` only, no behaviour (#153): section 15.2 gave a developer root that
