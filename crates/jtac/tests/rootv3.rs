@@ -392,6 +392,18 @@ fn a_policy_a_blobless_clone_lacks_is_exit_two_with_the_fetch_named_and_a_row_in
     assert_eq!(v["totals"]["policy_not_held"], 2, "{v}");
     assert!(v["notes"].to_string().contains("policy not held"), "{v}");
 
+    // However the clone spells its promisor, or with none at all: the reading asks the
+    // objects, not the configuration.
+    for spelling in [Some("yes"), None] {
+        match spelling {
+            Some(value) => clone.git(&["config", "remote.origin.promisor", value]),
+            None => clone.git(&["config", "--unset", "remote.origin.promisor"]),
+        };
+        let (_, v) = json(&clone, &["audit", &h.one, "--signers", signers, "--json"]);
+        assert_eq!(row(&v, &h.one).0, "policy_not_held", "{spelling:?}: {v}");
+    }
+    clone.git(&["config", "remote.origin.promisor", "true"]);
+
     let ran = jtac(&clone, &["verify", &h.one, "--signers", signers]);
     assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
     let blob = h
@@ -407,4 +419,34 @@ fn a_policy_a_blobless_clone_lacks_is_exit_two_with_the_fetch_named_and_a_row_in
     let (code, v) = json(&clone, &["verify", &h.one, "--signers", signers, "--json"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["partial"], 1, "{v}");
+}
+
+/// Section 16.3: a commit read partial is not covered at a release, with and without
+/// `--require-ci`, and the merge root is what covers it.
+#[test]
+fn release_refuses_a_partial_commit_by_name_until_a_merge_root_covers_it() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    h.repo.git(&["tag", "-a", "-m", "t1", "t1", &h.one]);
+    for flag in [None, Some("--require-ci")] {
+        let args = ["release", "t1", "--from", &h.zero, "--json"];
+        let args: Vec<&str> = args.into_iter().chain(flag).collect();
+        let (code, v) = json(&h.repo, &args);
+        assert_eq!(code, 1, "{v}");
+        assert_eq!(v["partial"][0], format!("sha1:{}", h.one), "{v}");
+        assert_eq!(v["absent"], serde_json::json!([]), "{v}");
+        assert_eq!(v["not_ci"], serde_json::json!([]), "{v}");
+    }
+    let text = jtac(&h.repo, &["release", "t1", "--from", &h.zero]).stdout;
+    assert!(text.contains("the local gate's root alone"), "{text}");
+    assert!(
+        text.contains("fix       partial: only a merge root"),
+        "{text}"
+    );
+
+    let merge = h.ci_root(&h.merge, &[&h.one, &h.merge], &h.zero, &h.one);
+    put(&h.repo, &h.ci, &h.merge, &merge);
+    let (code, v) = json(&h.repo, &["release", "t1", "--from", &h.zero, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["partial"], serde_json::json!([]), "{v}");
 }

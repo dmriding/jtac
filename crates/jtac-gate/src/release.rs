@@ -59,8 +59,9 @@ pub struct ReleaseVerdict {
 
 /// Judge. A commit lands in one list at most: absent before untrusted before partial
 /// before not CI, and `failed` in place of any of those but untrusted. Declared off by
-/// either gate counts (section 16.3), so a partial root that carries a trusted CI waiver,
-/// a bypass merge under a `ci` check, passes and is listed.
+/// either gate counts (section 16.3), so a partial commit the CI gate reads declared off,
+/// a bypass merge under a `ci` check, passes and is listed; one it reads covered does not,
+/// since no CI root covers a commit and leaves its row partial.
 pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
     let mut v = ReleaseVerdict::default();
     for f in facts {
@@ -71,7 +72,7 @@ pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
                 v.untrusted.push(f.commit);
                 continue;
             }
-            Some(Reading::Partial) if !f.ci => Some(&mut v.partial),
+            Some(Reading::Partial) if !f.ci_off => Some(&mut v.partial),
             Some(_) if held && !f.ci => Some(&mut v.not_ci),
             Some(_) => None,
         };
@@ -82,7 +83,9 @@ pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
             }
             continue;
         }
-        if f.state == Some(Reading::DeclaredOff) || f.ci_waived || (held && f.ci_off) {
+        let partial = f.state == Some(Reading::Partial);
+        let off = f.state == Some(Reading::DeclaredOff) || f.ci_waived;
+        if off || (f.ci_off && (held || partial)) {
             v.waived.push(f.commit);
         }
         let ci_root = f.ci_root.filter(|_| held);
@@ -213,10 +216,18 @@ mod tests {
     fn a_partial_root_that_carries_a_ci_waiver_passes_and_is_listed_as_waived() {
         let mut f = fact(2, true, Some(Reading::Partial), true, true);
         (f.ci_off, f.ci_waived) = (true, true);
+        let mut reached = fact(4, false, Some(Reading::Partial), true, true);
+        reached.ci_off = true;
+        let covered = fact(6, false, Some(Reading::Partial), true, true);
         for require_ci in [false, true] {
-            let v = release(std::slice::from_ref(&f), require_ci);
-            assert!(v.pass, "{v:?}");
-            assert_eq!(v.waived, vec![oid(2)]);
+            let v = release(&[f.clone(), reached.clone(), covered.clone()], require_ci);
+            assert_eq!(
+                v.waived,
+                vec![oid(2), oid(4)],
+                "declared off by either document"
+            );
+            assert_eq!(v.partial, vec![oid(6)], "CI covered is not declared off");
+            assert!(!v.pass, "{v:?}");
         }
     }
 

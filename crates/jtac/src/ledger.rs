@@ -92,7 +92,7 @@ pub fn gather(
         roots: Vec::new(),
         stored: Vec::new(),
         notes: Vec::new(),
-        policies: treepolicy::read(repo, &asked)?,
+        policies: treepolicy::read(repo, format, &asked)?,
     };
     for (k, &i) in touched.iter().enumerate() {
         let (fact, stored) = match &reads[i].stored {

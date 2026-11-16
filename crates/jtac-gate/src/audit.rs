@@ -518,6 +518,13 @@ pub(crate) mod tests {
                 Some(3),
             ),
             (
+                "a declared off covers entry before a covered tree match",
+                commit(2, 20),
+                vec![declared(dev(3, 30, &[2, 3])), dev(1, 20, &[1])],
+                OFF,
+                Some(3),
+            ),
+            (
                 "of two covers entries the covered one is read, the lower id declared off",
                 commit(2, 20),
                 vec![declared(dev(3, 30, &[2, 3])), dev(4, 40, &[2, 4])],
@@ -543,6 +550,19 @@ pub(crate) mod tests {
                 "the developer's root alone leaves a commit under a ci check partial",
                 under_ci(2, 20),
                 vec![partial(dev(2, 20, &[2]))],
+                Some(Reading::Partial),
+                Some(2),
+            ),
+            (
+                "a trusted partial root before an unknown key's complete one",
+                under_ci(2, 20),
+                vec![
+                    partial(dev(2, 20, &[2])),
+                    RootFact {
+                        trust: unknown(),
+                        ..merge(9, 90, &[2, 9], &[9])
+                    },
+                ],
                 Some(Reading::Partial),
                 Some(2),
             ),

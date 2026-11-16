@@ -1,17 +1,18 @@
 //! The `.jtac/policy.toml` of a tree, as coverage asks of it (DESIGN.md section 15.2,
 //! decisions 57 and 60): a root's `unread` and `policy` are its signer's word, so a reader
-//! asks the tree. Read from git and never fetched. git answers `missing` both for a path a
-//! tree lacks and for an object a partial clone does not hold, so in a partial clone each
-//! miss is asked again through the tree: an entry whose blob is not here is `NotHeld`,
-//! never "no policy".
+//! asks the tree. Read from git and never fetched, and classified by the tree's own entry,
+//! the rule `repo::blob_at` loads a policy by: a regular file is parsed, anything else at
+//! the path is unreadable, and only a tree that is here and holds no entry has no policy.
+//! git's answer for a path, `missing`, does not tell a path a tree lacks from an object the
+//! clone does not hold, so the trees are read as objects and no path is asked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use jtac_checks::git::{GitError, git, git_with};
 use jtac_core::GitOid;
 use jtac_gate::PolicyKind;
 use jtac_policy::POLICY_PATH;
+use jtac_store::{StoreError, git_objects};
 
 use crate::refuse::Refusal;
 use crate::repo::{self, RepoError};
@@ -51,109 +52,127 @@ impl TreePolicy {
     }
 }
 
-/// The policy of each of `trees`, each distinct blob parsed once.
+/// One step down the policy path: what the tree says, before the next object is read.
+enum Step {
+    Is(TreePolicy),
+    Next(String),
+}
+
+/// The policy of each of `trees`: three reads, the trees, the directories that hold the
+/// file, the files, each distinct object once. `format` is the repository's hash.
 pub fn read(
     repo: &Path,
+    format: &str,
     trees: &BTreeSet<GitOid>,
 ) -> Result<BTreeMap<GitOid, TreePolicy>, Refusal> {
-    let git_err = |e: GitError| Refusal::repository(&RepoError::Git(e));
-    if trees.is_empty() {
-        return Ok(BTreeMap::new());
+    let width = if format == "sha256" { 32 } else { 20 };
+    let (dir, file) = POLICY_PATH.split_once('/').unwrap_or(("", POLICY_PATH));
+    let tops: Vec<String> = trees.iter().map(GitOid::hex).collect();
+    let top = level(repo, &tops, |tree| match entry(tree, dir, width) {
+        Ok(Some((mode, id))) if mode == "40000" => Step::Next(id),
+        Ok(_) => Step::Is(TreePolicy::None),
+        Err(Malformed) => Step::Is(TreePolicy::Unreadable),
+    })?;
+    let dirs = level(repo, &next(&top), |tree| match entry(tree, file, width) {
+        Ok(Some((mode, id))) if mode == "100644" || mode == "100755" => Step::Next(id),
+        Ok(None) => Step::Is(TreePolicy::None),
+        Ok(Some(_)) | Err(Malformed) => Step::Is(TreePolicy::Unreadable),
+    })?;
+    let files = level(repo, &next(&dirs), |blob| Step::Is(parse(blob)))?;
+    Ok((trees.iter().zip(&tops))
+        .map(|(tree, hex)| (*tree, follow(&top[hex], &[&dirs, &files])))
+        .collect())
+}
+
+/// Walk a tree's steps down the levels below it to what the path holds.
+fn follow<'a>(mut step: &'a Step, below: &[&'a BTreeMap<String, Step>]) -> TreePolicy {
+    for level in below {
+        match step {
+            Step::Is(policy) => return policy.clone(),
+            Step::Next(id) => step = &level[id],
+        }
     }
-    let stdin: String = (trees.iter())
-        .map(|t| format!("{}:{POLICY_PATH}\n", t.hex()))
-        .collect();
-    let args = ["cat-file", "--batch-check"];
-    let out = git_with(repo, &args, Some(stdin.as_bytes()), &[]).map_err(git_err)?;
-    let text = String::from_utf8_lossy(&out);
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() != trees.len() {
-        return Err(Refusal::internal(format!(
-            "cat-file --batch-check answered {} lines for {} trees",
-            lines.len(),
-            trees.len()
-        )));
+    match step {
+        Step::Is(policy) => policy.clone(),
+        Step::Next(_) => TreePolicy::Unreadable,
     }
-    let partial = promisor(repo)?.is_some();
-    let mut entries = Vec::new();
-    for (tree, line) in trees.iter().zip(lines) {
-        entries.push(match line.split(' ').collect::<Vec<_>>()[..] {
-            [blob, "blob", _] => Entry::Blob(blob.to_owned()),
-            [_, _, _] => Entry::Is(TreePolicy::Unreadable),
-            _ if partial => through_tree(repo, tree)?,
-            _ => Entry::Is(TreePolicy::None),
-        });
-    }
-    let blobs: BTreeSet<&str> = (entries.iter())
-        .filter_map(|e| match e {
-            Entry::Blob(b) => Some(b.as_str()),
-            Entry::Is(_) => None,
+}
+
+/// The ids the level above points at, each once.
+fn next(level: &BTreeMap<String, Step>) -> Vec<String> {
+    let ids: BTreeSet<&String> = (level.values())
+        .filter_map(|s| match s {
+            Step::Next(id) => Some(id),
+            Step::Is(_) => None,
         })
         .collect();
-    let mut parsed = BTreeMap::new();
-    for blob in blobs {
-        let bytes = git(repo, &["cat-file", "blob", blob]).map_err(git_err)?;
-        parsed.insert(blob.to_owned(), parse(&bytes));
-    }
-    Ok((trees.iter().zip(entries))
-        .map(|(tree, entry)| match entry {
-            Entry::Blob(blob) => (*tree, parsed[&blob].clone()),
-            Entry::Is(policy) => (*tree, policy),
+    ids.into_iter().cloned().collect()
+}
+
+/// Read `ids` as objects and take one step in each; an object this clone lacks is
+/// `NotHeld` by its own id, the one a fetch must name.
+fn level(
+    repo: &Path,
+    ids: &[String],
+    step: impl Fn(&[u8]) -> Step,
+) -> Result<BTreeMap<String, Step>, Refusal> {
+    let read = git_objects(repo, ids).map_err(|e| match e {
+        StoreError::Git(e) => Refusal::repository(&RepoError::Git(e)),
+        other => Refusal::internal(other),
+    })?;
+    Ok((ids.iter().zip(read))
+        .map(|(id, object)| {
+            let taken = match object {
+                Some(bytes) => step(&bytes),
+                None => Step::Is(TreePolicy::NotHeld(id.clone())),
+            };
+            (id.clone(), taken)
         })
         .collect())
 }
 
-/// The remote a partial clone fetches missing objects from, `None` in a full clone. git
-/// marks the remote `promisor`; older versions name it in `extensions.partialclone`.
+/// A tree object that is not `<mode> <name>\0<id>` repeated.
+struct Malformed;
+
+/// The entry `name` of a raw tree object as (mode, id in hex); `width` is the id's bytes.
+fn entry(tree: &[u8], name: &str, width: usize) -> Result<Option<(String, String)>, Malformed> {
+    let mut rest = tree;
+    while !rest.is_empty() {
+        let nul = rest.iter().position(|b| *b == 0).ok_or(Malformed)?;
+        let (head, tail) = (&rest[..nul], &rest[nul + 1..]);
+        let space = head.iter().position(|b| *b == b' ').ok_or(Malformed)?;
+        let id = tail.get(..width).ok_or(Malformed)?;
+        if &head[space + 1..] == name.as_bytes() {
+            let mode = String::from_utf8_lossy(&head[..space]).into_owned();
+            return Ok(Some((
+                mode,
+                id.iter().map(|b| format!("{b:02x}")).collect(),
+            )));
+        }
+        rest = &tail[width..];
+    }
+    Ok(None)
+}
+
+/// The remote a partial clone fetches missing objects from, for the refusal's command;
+/// `None` in a full clone. It decides no reading.
 pub fn promisor(repo: &Path) -> Result<Option<String>, Refusal> {
-    let git_err = |e: RepoError| Refusal::repository(&e);
-    let marked = repo::probe(
-        repo,
-        &[
-            "config",
-            "--get-regexp",
-            r"^remote\..*\.promisor$",
-            "^true$",
-        ],
-        1,
-    )
-    .map_err(git_err)?;
+    let args = [
+        "config",
+        "--type=bool",
+        "--get-regexp",
+        r"^remote\..*\.promisor$",
+    ];
+    let marked = repo::probe(repo, &args, 1).map_err(|e| Refusal::repository(&e))?;
     let name = |line: &str| {
-        let key = line.split(' ').next()?;
+        let key = line.strip_suffix(" true")?;
         Some(
             key.strip_prefix("remote.")?
                 .strip_suffix(".promisor")?
                 .to_owned(),
         )
     };
-    match marked.as_deref().and_then(|out| out.lines().find_map(name)) {
-        Some(remote) => Ok(Some(remote)),
-        None => repo::config(repo, "extensions.partialclone").map_err(git_err),
-    }
-}
-
-enum Entry {
-    Blob(String),
-    Is(TreePolicy),
-}
-
-/// A miss in a partial clone: the entry as the tree names it, whose object is not here; no
-/// entry; or a tree this clone does not hold either.
-fn through_tree(repo: &Path, tree: &GitOid) -> Result<Entry, Refusal> {
-    let listed = match git(repo, &["ls-tree", &tree.hex(), "--", POLICY_PATH]) {
-        Ok(out) => String::from_utf8_lossy(&out).trim().to_owned(),
-        Err(GitError::Failed { .. }) => {
-            return Ok(Entry::Is(TreePolicy::NotHeld(tree.hex())));
-        }
-        Err(e) => return Err(Refusal::repository(&RepoError::Git(e))),
-    };
-    Ok(Entry::Is(
-        match listed.split(['\t', ' ']).collect::<Vec<_>>()[..] {
-            [""] => TreePolicy::None,
-            [_, "blob", blob, ..] => TreePolicy::NotHeld(blob.to_owned()),
-            _ => TreePolicy::Unreadable,
-        },
-    ))
+    Ok(marked.as_deref().and_then(|out| out.lines().find_map(name)))
 }
 
 fn parse(bytes: &[u8]) -> TreePolicy {
@@ -189,5 +208,111 @@ mod tests {
             assert_eq!(policy.kind(), kind, "{policy:?}");
             assert_eq!(policy.ci_checks().map(<[String]>::to_vec), ci, "{policy:?}");
         }
+    }
+
+    /// A tree built from index entries, so no platform has to make a symlink.
+    fn tree_of(repo: &jtac_testkit::Repo, entries: &[(&str, &str, &str)]) -> GitOid {
+        repo.git(&["read-tree", "--empty"]);
+        for (mode, id, path) in entries {
+            let info = format!("{mode},{id},{path}");
+            repo.git(&["update-index", "--add", "--cacheinfo", &info]);
+        }
+        format!("sha1:{}", repo.git(&["write-tree"]))
+            .parse()
+            .unwrap()
+    }
+
+    /// The gate loads a policy only from a regular file (`repo::blob_at`); the reader
+    /// classifies by the same entry, so a link whose text parses as a policy, a gitlink
+    /// and a directory at the path are unreadable, never "no `ci` check".
+    #[test]
+    fn the_policy_of_a_tree_is_what_its_entry_holds_and_only_a_regular_file_is_parsed() {
+        let repo = jtac_testkit::Repo::init(&[]);
+        let blob = |name: &str, text: &str| {
+            repo.write(name, text.as_bytes());
+            repo.git(&["hash-object", "-w", name])
+        };
+        let plain = blob("plain", "version = 1\n");
+        let ci = blob(
+            "ci",
+            "version = 2\n[protected]\npaths = [\".github/**\"]\n[checks.test]\nci = { workflow = \".github/workflows/ci.yml\" }\n",
+        );
+        repo.write("f", b"f\n");
+        let commit = repo.commit("one");
+        let path = POLICY_PATH;
+        let cases = [
+            (
+                "a regular file",
+                vec![("100644", plain.as_str(), path)],
+                TreePolicy::Read(vec![]),
+            ),
+            (
+                "an executable one",
+                vec![("100755", plain.as_str(), path)],
+                TreePolicy::Read(vec![]),
+            ),
+            (
+                "one with a ci check",
+                vec![("100644", ci.as_str(), path)],
+                TreePolicy::Read(vec!["test".into()]),
+            ),
+            (
+                "no .jtac",
+                vec![("100644", plain.as_str(), "src/policy.toml")],
+                TreePolicy::None,
+            ),
+            (
+                "a .jtac without the file",
+                vec![("100644", plain.as_str(), ".jtac/signers")],
+                TreePolicy::None,
+            ),
+            (
+                "a file named .jtac",
+                vec![("100644", plain.as_str(), ".jtac")],
+                TreePolicy::None,
+            ),
+            (
+                "a link whose text is a policy",
+                vec![("120000", plain.as_str(), path)],
+                TreePolicy::Unreadable,
+            ),
+            (
+                "a gitlink",
+                vec![("160000", commit.as_str(), path)],
+                TreePolicy::Unreadable,
+            ),
+            (
+                "a directory at the path",
+                vec![("100644", plain.as_str(), ".jtac/policy.toml/x")],
+                TreePolicy::Unreadable,
+            ),
+        ];
+        let trees: Vec<GitOid> = cases.iter().map(|(_, e, _)| tree_of(&repo, e)).collect();
+        let absent: GitOid = "sha1:00000000000000000000000000000000000000aa"
+            .parse()
+            .unwrap();
+        let asked: BTreeSet<GitOid> = trees.iter().copied().chain([absent]).collect();
+        let got = read(repo.path(), "sha1", &asked).unwrap();
+        for ((name, _, want), tree) in cases.iter().zip(&trees) {
+            assert_eq!(&got[tree], want, "{name}");
+        }
+        assert_eq!(
+            got[&absent],
+            TreePolicy::NotHeld(absent.hex()),
+            "a tree not held"
+        );
+    }
+
+    #[test]
+    fn a_raw_tree_entry_is_found_by_its_whole_name_and_a_cut_tree_is_malformed() {
+        let mut tree = b"100644 a\0".to_vec();
+        tree.extend([0x11; 20]);
+        tree.extend(b"40000 .jtac\0");
+        tree.extend([0xab; 20]);
+        let found = entry(&tree, ".jtac", 20).ok().flatten().unwrap();
+        assert_eq!(found, ("40000".to_owned(), "ab".repeat(20)));
+        assert!(entry(&tree, "jtac", 20).ok().flatten().is_none());
+        assert!(entry(&tree[..tree.len() - 1], ".jtac", 20).is_err());
+        assert!(entry(b"100644", "a", 20).is_err());
     }
 }

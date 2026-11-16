@@ -1,6 +1,8 @@
 //! Every root in the clone through one `cat-file --batch`. Reading a ref costs three git
 //! children; an audit over a long history reads them all, so the namespace is read in one.
 
+use std::path::Path;
+
 use jtac_core::{Root, from_canonical};
 
 use crate::refs::Listed;
@@ -53,6 +55,34 @@ impl Store {
             })
             .collect())
     }
+}
+
+/// Each of `specs` through one `cat-file --batch`: the object's bytes, or `None` where git
+/// names no such object or this clone does not hold it. Nothing is fetched.
+pub fn git_objects(repo: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stdin: String = specs.iter().map(|s| format!("{s}\n")).collect();
+    let args = ["cat-file", "--batch"];
+    let out = jtac_checks::git::git_with(repo, &args, Some(stdin.as_bytes()), &[])?;
+    let records = records(&out)?;
+    if records.len() != specs.len() {
+        return Err(StoreError::Output {
+            what: format!(
+                "cat-file --batch answered {} records for {} requests",
+                records.len(),
+                specs.len()
+            ),
+        });
+    }
+    Ok(records
+        .into_iter()
+        .map(|r| match r {
+            Record::Object { bytes, .. } => Some(bytes),
+            Record::Missing => None,
+        })
+        .collect())
 }
 
 /// A root from its three records: the ref's object, `root.json`, `root.sig`.
