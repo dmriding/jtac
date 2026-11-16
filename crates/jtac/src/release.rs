@@ -74,6 +74,7 @@ pub fn release(a: &ReleaseArgs, cwd: &Path) -> Result<Printed, Refusal> {
         a.signers.as_deref(),
         Some((&tag.head, &tag.name)),
     )?;
+    s.held("release")?;
     let first = facts::first_parent(&repo, &format, &from.commit, &tag.head.commit)?;
     let verdict = jtac_gate::release(&facts::facts(&s, &first), require_ci);
     let derived = Derived {
@@ -117,7 +118,9 @@ pub fn release(a: &ReleaseArgs, cwd: &Path) -> Result<Printed, Refusal> {
         declared_off: 0,
         absent: Vec::new(),
         untrusted: Vec::new(),
+        partial: Vec::new(),
         not_ci: Vec::new(),
+        failed: Vec::new(),
         waived: Vec::new(),
         roots: Vec::new(),
         require_ci,
@@ -150,7 +153,9 @@ fn unattested(a: &ReleaseArgs, tag: &facts::Tag) -> Result<Printed, Refusal> {
         declared_off: 0,
         absent: Vec::new(),
         untrusted: Vec::new(),
+        partial: Vec::new(),
         not_ci: Vec::new(),
+        failed: Vec::new(),
         waived: Vec::new(),
         roots: Vec::new(),
         require_ci: false,

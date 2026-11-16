@@ -309,7 +309,9 @@ fn an_absent_commit_is_refused_naming_it_and_a_ci_waiver_then_counts() {
 }
 
 /// The first v0.2 tag's case: a tag on the pull request's own commit, whose root is the
-/// developer's; CI's root sits on the merge commit, outside the range.
+/// developer's; CI's root sits on the merge commit, outside the range. Under the CI key's
+/// line alone, an unknown key's own root yields to the trusted merge root that covers the
+/// commit (decision 58), and is named untrusted only once that root is gone.
 #[test]
 fn require_ci_names_a_tag_on_a_pull_request_commit_and_an_untrusted_root() {
     let h = history();
@@ -349,6 +351,24 @@ fn require_ci_names_a_tag_on_a_pull_request_commit_and_an_untrusted_root() {
         &[
             "release",
             "v0.2.0",
+            "--from",
+            "v0.1.0",
+            "--signers",
+            ci_only.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["untrusted"], serde_json::json!([]), "{v}");
+    assert_eq!(v["roots"].as_array().unwrap().len(), 1, "{v}");
+    let merge = h.repo.git(&["rev-parse", "v0.2.0^{commit}"]);
+    let merge_root = format!("refs/jtac/roots/{}/{merge}", &merge[..2]);
+    h.repo.git(&["update-ref", "-d", &merge_root]);
+    let (code, v) = json(
+        &h.repo,
+        &[
+            "release",
+            "v0.1.1",
             "--from",
             "v0.1.0",
             "--signers",

@@ -283,7 +283,8 @@ impl Ctx<'_> {
     }
 }
 
-/// The one line a passing ref gets.
+/// The one line a passing ref gets. The `Failed` arm is never built: `decide` refuses a
+/// failure record, which is no root.
 fn passed(p: &Pass, tip: &str) -> String {
     match p {
         Pass::Delete => "a deletion needs no evidence".to_owned(),
@@ -296,6 +297,7 @@ fn passed(p: &Pass, tip: &str) -> String {
         Pass::Tree { commit } => {
             format!("{tip} has no root of its own; {commit}'s root judged the same tree")
         }
+        Pass::Root(State::Failed) => format!("{tip} has a failure record"),
     }
 }
 

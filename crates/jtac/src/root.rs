@@ -58,6 +58,8 @@ pub fn build(
         state: j.verdict.state,
         evidence,
         levers: j.levers.clone(),
+        observed: Vec::new(),
+        unread: Vec::new(),
         counts: counts(&j.nodes),
         signer,
     };

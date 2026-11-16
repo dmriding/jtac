@@ -64,14 +64,17 @@ impl<'de> Deserialize<'de> for NodeVersion {
     }
 }
 
-/// The `"v"` field of a root: 1, or 2 with `base` and `from` (DESIGN.md sections 9.4 and
-/// 15). Any other number is refused at the reader.
+/// The `"v"` field of a root: 1, 2 with `base` and `from` (DESIGN.md sections 9.4 and 15),
+/// or 3 with `observed`, `unread` and the state `failed` (section 15.2). Any other number is
+/// refused at the reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootVersion {
     /// Names neither `base` nor `from`.
     V1,
     /// Names `base`, and `from` on a merge root.
     V2,
+    /// Version 2 under a policy with a `ci` check, or a failure record.
+    V3,
 }
 
 impl Serialize for RootVersion {
@@ -79,6 +82,7 @@ impl Serialize for RootVersion {
         s.serialize_u8(match self {
             Self::V1 => 1,
             Self::V2 => 2,
+            Self::V3 => 3,
         })
     }
 }
@@ -88,9 +92,10 @@ impl<'de> Deserialize<'de> for RootVersion {
         match u64::deserialize(d)? {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
+            3 => Ok(Self::V3),
             other => Err(serde::de::Error::custom(UnsupportedVersion {
                 got: other,
-                reads: "versions 1 and 2",
+                reads: "root versions 1 to 3",
             })),
         }
     }
@@ -155,22 +160,21 @@ mod tests {
     }
 
     #[test]
-    fn a_root_version_is_one_or_two_and_nothing_else() {
-        assert_eq!(serde_json::to_string(&RootVersion::V2).unwrap(), "2");
-        assert_eq!(
-            serde_json::from_str::<RootVersion>("1").unwrap(),
-            RootVersion::V1
-        );
-        assert_eq!(
-            serde_json::from_str::<RootVersion>("2").unwrap(),
-            RootVersion::V2
-        );
-        for bad in ["0", "3", "\"2\""] {
+    fn a_root_version_is_one_to_three_and_nothing_else() {
+        for (v, text) in [
+            (RootVersion::V1, "1"),
+            (RootVersion::V2, "2"),
+            (RootVersion::V3, "3"),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), text);
+            assert_eq!(serde_json::from_str::<RootVersion>(text).unwrap(), v);
+        }
+        for bad in ["0", "4", "\"2\""] {
             let err = serde_json::from_str::<RootVersion>(bad)
                 .unwrap_err()
                 .to_string();
             assert!(
-                bad == "\"2\"" || err.contains("versions 1 and 2"),
+                bad == "\"2\"" || err.contains("root versions 1 to 3"),
                 "{bad}: {err}"
             );
         }

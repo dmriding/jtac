@@ -134,6 +134,8 @@ pub fn decide(u: &RefUpdate) -> Decision {
         return Decision::Pass(Pass::Delete);
     }
     match &u.tip {
+        // A failure record is no root; the store refuses one under the roots' refs.
+        Coverage::Root(State::Failed) => Decision::Refuse(Refuse::Absent),
         Coverage::Root(state) => Decision::Pass(Pass::Root(*state)),
         Coverage::ByTree { commit } => Decision::Pass(Pass::Tree {
             commit: commit.clone(),

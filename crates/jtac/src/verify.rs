@@ -1,11 +1,13 @@
 //! `jtac verify` (DESIGN.md sections 7.1 and 11.9): the roots that bear on a range, judged;
-//! exit 1 when any is invalid, or with `--require-coverage` when any commit is absent.
+//! exit 1 when any is invalid, or with `--require-coverage` when any commit is absent or
+//! partial, the local gate's root alone under a `ci` check (section 15.2).
 
 use std::fmt::Write;
 use std::path::Path;
 
 use jtac_checks::git::quoted;
 use jtac_core::{GitOid, Sha256Digest};
+use jtac_gate::Reading;
 use serde::Serialize;
 
 use crate::Printed;
@@ -30,10 +32,14 @@ pub struct VerifyOut {
     pub covered: u64,
     /// Declared off, by any route.
     pub declared_off: u64,
-    /// Neither.
+    /// The local gate passed and left a `ci` check unread: not covered.
+    pub partial: u64,
+    /// No valid root bears.
     pub absent: u64,
     /// Absent commits, newest first; only listed when `--require-coverage` fails on them.
     pub absent_commits: Vec<GitOid>,
+    /// Partial commits, listed the same way.
+    pub partial_commits: Vec<GitOid>,
     /// Roots that bear on the range.
     pub roots: u64,
     /// Those that do not count, with why.
@@ -66,7 +72,8 @@ pub struct Invalid {
 /// Gather and render.
 pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let s = survey(cwd, "verify", &a.range, a.signers.as_deref(), None)?;
-    let (covered, declared_off, absent) = s.totals();
+    s.held("verify")?;
+    let t = s.totals();
     let invalid: Vec<Invalid> = s
         .ledger
         .roots
@@ -79,16 +86,15 @@ pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
             })
         })
         .collect();
-    let absent_commits = if a.require_coverage {
-        s.rows
+    let listed = |want: Option<Reading>| -> Vec<GitOid> {
+        let rows = s
+            .rows
             .iter()
-            .filter(|r| r.state.is_none())
-            .map(|r| r.commit)
-            .collect()
-    } else {
-        Vec::new()
+            .filter(|r| a.require_coverage && r.state == want);
+        rows.map(|r| r.commit).collect()
     };
-    let pass = invalid.is_empty() && absent_commits.is_empty();
+    let (absent_commits, partial_commits) = (listed(None), listed(Some(Reading::Partial)));
+    let pass = invalid.is_empty() && absent_commits.is_empty() && partial_commits.is_empty();
     let waivers = s.waivers_out();
     let out = VerifyOut {
         v: 1,
@@ -96,10 +102,12 @@ pub fn verify(a: &VerifyArgs, cwd: &Path) -> Result<Printed, Refusal> {
         range: s.range.clone(),
         signers: s.signers.describe(),
         commits: s.rows.len() as u64,
-        covered,
-        declared_off,
-        absent,
+        covered: t.covered,
+        declared_off: t.declared_off,
+        partial: t.partial,
+        absent: t.absent,
         absent_commits,
+        partial_commits,
         roots: s.ledger.roots.len() as u64,
         unknown_signers: s.unknown_signers(),
         agent_waivers: waivers.iter().filter(|w| w.waiver.agent.is_some()).count() as u64,
@@ -121,13 +129,17 @@ fn render(o: &VerifyOut) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "{} {}: {} commits, {} covered, {} declared off, {} absent; {} roots checked, {} \
+        "{} {}: {} commits, {} covered, {} declared off, {}{} absent; {} roots checked, {} \
          invalid, {} signed by unknown keys",
         if o.pass { "VERIFIED" } else { "INVALID" },
         o.range.join(" "),
         o.commits,
         o.covered,
         o.declared_off,
+        match o.partial {
+            0 => String::new(),
+            n => format!("{n} covered with a ci check unread, "),
+        },
         o.absent,
         o.roots,
         o.invalid.len(),
@@ -142,6 +154,9 @@ fn render(o: &VerifyOut) -> String {
     }
     for c in &o.absent_commits {
         let _ = writeln!(s, "  absent  {}", c.hex());
+    }
+    for c in &o.partial_commits {
+        let _ = writeln!(s, "  partial {}: only a merge root covers it", c.hex());
     }
     if !o.absent_commits.is_empty() {
         let _ = writeln!(

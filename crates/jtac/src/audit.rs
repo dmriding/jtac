@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::Printed;
 use crate::cli::RangeArgs;
 use crate::refuse::Refusal;
-use crate::survey::{RowOut, WaiverRow, survey, via_text};
+use crate::survey::{RowOut, WaiverRow, short, survey, via_text};
 
 /// What `jtac audit` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,7 +41,11 @@ pub struct Totals {
     pub covered: u64,
     /// Declared off, by any route.
     pub declared_off: u64,
-    /// Neither.
+    /// The local gate passed and left a `ci` check unread: not covered (section 15.2).
+    pub partial: u64,
+    /// A policy the reading turns on is not in this clone: not covered (decision 60).
+    pub policy_not_held: u64,
+    /// No valid root bears.
     pub absent: u64,
     /// Of the covered and declared off, those by a tree match.
     pub by_tree: u64,
@@ -60,8 +64,17 @@ pub struct Totals {
 /// Gather and render.
 pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let s = survey(cwd, "audit", &a.range, a.signers.as_deref(), None)?;
-    let (covered, declared_off, absent) = s.totals();
+    let t = s.totals();
+    let (covered, declared_off) = (t.covered, t.declared_off);
     let commits = s.rows.len() as u64;
+    let mut notes = s.ledger.notes.clone();
+    if t.not_held > 0 {
+        notes.push(format!(
+            "{} commits read `policy not held` and are counted not covered: this partial clone \
+             lacks a policy file their reading turns on; `jtac verify` names the fetch",
+            t.not_held
+        ));
+    }
     let rows = s.rows_out();
     let waivers = s.waivers_out();
     let out = AuditOut {
@@ -73,7 +86,9 @@ pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
             commits,
             covered,
             declared_off,
-            absent,
+            partial: t.partial,
+            policy_not_held: t.not_held,
+            absent: t.absent,
             by_tree: rows.iter().filter(|r| r.via == Some("tree")).count() as u64,
             invalid_roots: s
                 .ledger
@@ -90,7 +105,7 @@ pub fn audit(a: &RangeArgs, cwd: &Path) -> Result<Printed, Refusal> {
         },
         rows,
         waivers,
-        notes: s.ledger.notes,
+        notes,
     };
     let text = if a.json {
         crate::render::json(&out)?
@@ -105,12 +120,16 @@ fn render(o: &AuditOut) -> String {
     let t = &o.totals;
     let _ = writeln!(
         s,
-        "AUDIT {}: {} commits, {} covered, {} declared off, {} absent ({}% covered); {} roots \
+        "AUDIT {}: {} commits, {} covered, {} declared off, {}{} absent ({}% covered); {} roots \
          invalid, {} signed by unknown keys",
         o.range.join(" "),
         t.commits,
         t.covered,
         t.declared_off,
+        match t.partial {
+            0 => String::new(),
+            n => format!("{n} covered with a ci check unread, "),
+        },
         t.absent,
         t.percent_covered,
         t.invalid_roots,
@@ -131,14 +150,18 @@ fn render(o: &AuditOut) -> String {
             s,
             "  {} {:<12} {}{who}",
             r.commit.hex(),
-            r.state,
+            match r.state {
+                "partial" => "covered, ci unread",
+                "policy_not_held" => "policy not held",
+                state => state,
+            },
             via_text(r)
         );
         if let Some(h) = &r.head {
             let _ = writeln!(s, "          {}", h.line());
         }
-        if let Some(ci) = r.ci {
-            let _ = writeln!(s, "          ci {ci}: a waiver this root carries");
+        if let Some(line) = ci_line(r) {
+            let _ = writeln!(s, "          {line}");
         }
     }
     for w in &o.waivers {
@@ -148,4 +171,24 @@ fn render(o: &AuditOut) -> String {
         let _ = writeln!(s, "  note    {note}");
     }
     s
+}
+
+/// What the CI gate reads, where the row's own line does not already say it: a CI root of
+/// the commit's own is that line.
+fn ci_line(r: &RowOut) -> Option<String> {
+    let ci = r.ci?;
+    let note = |by: &jtac_core::GitOid| format!("; {}'s CI root reaches it", short(by));
+    let waiver = |root: &str| {
+        format!(
+            "ci declared_off: a waiver {root} carries{}",
+            r.ci_note.as_ref().map(note).unwrap_or_default()
+        )
+    };
+    Some(match (ci, &r.ci_by, r.via) {
+        ("failed", ..) => "ci failed: a failure record reaches it".to_owned(),
+        (_, Some(by), _) if *by == r.commit => waiver("the commit's own root"),
+        (_, Some(by), _) => format!("ci {ci}: {}'s root reaches it", short(by)),
+        ("declared_off", None, Some("own")) if r.head.is_none() => waiver("this root"),
+        _ => return None,
+    })
 }

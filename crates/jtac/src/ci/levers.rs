@@ -11,7 +11,7 @@ use std::path::Path;
 
 use jtac_checks::git::git;
 use jtac_core::{Body, GitOid, Scope, SignedLever};
-use jtac_gate::{CommitFact, RootFact, Trust, rows};
+use jtac_gate::{RootFact, Trust};
 use jtac_sign::Tool;
 use jtac_store::Store;
 
@@ -134,24 +134,18 @@ pub fn gather(
     })
 }
 
-/// The commits a valid root base trusts covers, by its own commit, its `covers`, or its tree.
+/// The commits a valid root base trusts judged, by its own commit, its `covers`, or its
+/// tree. It asks what the local gate judged, which a partial root says in full, and reads
+/// no order (decision 62): section 9.5's readings are not consulted here.
 fn judged(listed: &[range::Listed], roots: &[RootFact]) -> BTreeSet<GitOid> {
-    let facts: Vec<CommitFact> = listed
-        .iter()
-        .map(|l| CommitFact {
-            commit: l.commit,
-            tree: l.tree,
-        })
+    let trusted = || (roots.iter()).filter(|r| r.invalid.is_none() && r.trust == Trust::Trusted);
+    let commits: BTreeSet<GitOid> = trusted()
+        .flat_map(|r| r.covers.iter().copied().chain([r.commit]))
         .collect();
-    let trusted: Vec<RootFact> = roots
-        .iter()
-        .filter(|r| r.invalid.is_none() && r.trust == Trust::Trusted)
-        .cloned()
-        .collect();
-    rows(&facts, &trusted)
-        .into_iter()
-        .filter(|r| r.state.is_some())
-        .map(|r| r.commit)
+    let trees: BTreeSet<GitOid> = trusted().filter_map(|r| r.tree).collect();
+    (listed.iter())
+        .filter(|l| commits.contains(&l.commit) || trees.contains(&l.tree))
+        .map(|l| l.commit)
         .collect()
 }
 

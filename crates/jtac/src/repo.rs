@@ -223,24 +223,48 @@ pub fn dirty(repo: &Path) -> Result<Option<String>, RepoError> {
     }))
 }
 
+/// What a tree holds at a path, as git resolves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// No entry.
+    None,
+    /// One regular file: its blob id.
+    File(String),
+    /// Anything else: a link, a gitlink, a directory, more than one entry.
+    Other,
+}
+
+/// The entry at `path` in `treeish`. The one reading of "a regular file is here", for the
+/// gate that loads a policy and for every reader that asks what a tree's policy is, so the
+/// two cannot disagree on a tree (`the_policy_of_a_tree_is_what_git_resolves_at_the_path`).
+/// git resolves the path; nothing here parses a tree.
+pub fn entry_at(repo: &Path, treeish: &str, path: &str) -> Result<Entry, RepoError> {
+    let out = git(repo, &["ls-tree", "-z", treeish, "--", path])?;
+    let listed = String::from_utf8_lossy(&out);
+    let entries: Vec<&str> = listed.split('\0').filter(|e| !e.is_empty()).collect();
+    Ok(match entries[..] {
+        [] => Entry::None,
+        [one] => match one.split(['\t', ' ']).collect::<Vec<_>>()[..] {
+            ["100644" | "100755", "blob", sha, ..] => Entry::File(sha.to_owned()),
+            _ => Entry::Other,
+        },
+        _ => Entry::Other,
+    })
+}
+
 /// The blob at `path` in `head`'s tree as `(sha, bytes)`; `None` when there is no entry.
 pub fn blob_at(
     repo: &Path,
     head: &Head,
     path: &str,
 ) -> Result<Option<(String, Vec<u8>)>, RepoError> {
-    let commit = head.commit.hex();
-    let entry = text(&git(repo, &["ls-tree", "-z", &commit, "--", path])?);
-    if entry.is_empty() {
-        return Ok(None);
-    }
-    let fields: Vec<&str> = entry.split(['\t', ' ']).collect();
-    match fields[..] {
-        ["100644" | "100755", "blob", sha, ..] => {
-            let bytes = git(repo, &["cat-file", "blob", sha])?;
-            Ok(Some((sha.to_owned(), bytes)))
+    match entry_at(repo, &head.commit.hex(), path)? {
+        Entry::None => Ok(None),
+        Entry::File(sha) => {
+            let bytes = git(repo, &["cat-file", "blob", &sha])?;
+            Ok(Some((sha, bytes)))
         }
-        _ => Err(RepoError::NotAFile {
+        Entry::Other => Err(RepoError::NotAFile {
             path: path.to_owned(),
         }),
     }

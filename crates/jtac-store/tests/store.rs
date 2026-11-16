@@ -43,6 +43,8 @@ fn root(repo: &Repo, ts: &str) -> Root {
         state: State::Covered,
         evidence: EMPTY.parse().unwrap(),
         levers: vec![],
+        observed: vec![],
+        unread: vec![],
         counts: Counts::default(),
         signer: Signer {
             principal: "dev@example.com".into(),

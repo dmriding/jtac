@@ -27,6 +27,23 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.27) The readers of root version 3 (`DESIGN.md` sections 9.5 and 15.2, M20, decisions
+  58, 62 and 63). No gate writes one yet: every gate still refuses a policy that holds a
+  `ci` check. `audit`, `verify` and `release` read each commit through the first root in
+  section 9.5's order, where the order of the refs chose before, and the CI gate through
+  its own documents: the commit's own root, then a CI root that reaches it. Readings that
+  move in a repository of version 1 and 2 roots: of two roots that bear by one route the
+  covered one is read before the declared off one; a trusted root is read before an unknown
+  key's; a CI root stands for the CI gate only on its own first-parent line, so
+  `release --require-ci` refuses a commit it covers by `covers` or by tree alone and passes
+  one in its reach that holds a developer's root; and where no trust file is read the CI
+  gate reads nothing. A root without `from` whose `unread` is not the `ci` checks of the
+  policy in the tree it names is invalid; one under a `ci` check is partial: `audit` prints
+  `covered, ci unread`, `verify --require-coverage` and `release` refuse it. A policy file
+  a partial clone does not hold makes `verify` and `release` exit 2 naming the fetch, and
+  `audit` print `policy not held`. `audit --json` rows carry `ci` wherever the CI gate
+  reads the commit, with `ci_by` and `ci_note`; `verify` gains `partial` and
+  `partial_commits`; `release` gains `partial` and `failed`.
 - (0.2.26) `DESIGN.md` only, no behaviour (#159): decision 62, six readings of the CI gate
   settled before M20 builds its reader. The CI gate reads a commit's own root first, so a
   CI waiver signed on a commit stays its reading when a later tip's CI root reaches it. A

@@ -17,7 +17,8 @@ use crate::waiver::{OutOfScope, Waivable, scope_at};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Root {
-    /// Schema version: 1, or 2 with `base` and `from` (DESIGN.md section 15).
+    /// Schema version: 1, 2 with `base` and `from` (DESIGN.md section 15), or 3 with
+    /// `observed`, `unread` and the state `failed` (section 15.2).
     pub v: RootVersion,
     /// The tip commit.
     pub commit: GitOid,
@@ -45,6 +46,12 @@ pub struct Root {
     pub evidence: Sha256Digest,
     /// Every waiver the verdict applied, with its signature.
     pub levers: Vec<SignedLever>,
+    /// Version 3, a root with `from` alone: each check read from CI, its node in full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed: Vec<Node>,
+    /// Version 3, a root without `from` alone: the `ci` checks its gate left to CI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<String>,
     /// Derived from the nodes. Replay recomputes it; a mismatch invalidates the root.
     pub counts: Counts,
     /// Who signed.
@@ -62,10 +69,22 @@ impl Root {
         canonical_digest(self)
     }
 
-    /// Shape rules a reader checks before trusting any field. Signature, Merkle root, and
-    /// counts are checked by their own code; this is only what the type cannot express.
+    /// A root as `refs/jtac/roots/` may hold one: its shape, and never the state `failed`,
+    /// so a failure record placed there passes for no root (DESIGN.md section 15.2).
     pub fn validate(&self) -> Result<(), RootError> {
+        self.shape()?;
+        match self.state {
+            State::Failed => Err(RootError::FailedRoot),
+            _ => Ok(()),
+        }
+    }
+
+    /// Shape rules a reader checks before trusting any field, a root's and a failure
+    /// record's alike. Signature, Merkle root, and counts are checked by their own code;
+    /// this is only what the type cannot express.
+    pub fn shape(&self) -> Result<(), RootError> {
         self.validate_version()?;
+        self.validate_observed()?;
         self.validate_levers()?;
         // DESIGN.md 11.6: a commit waiver and declared_off imply each other.
         let commit_waived = self.levers.iter().any(SignedLever::covers_commit);
@@ -73,7 +92,9 @@ impl Root {
             State::DeclaredOff if !commit_waived => {
                 return Err(RootError::DeclaredOffWithoutWaiver);
             }
-            State::Covered if commit_waived => return Err(RootError::CoveredWithCommitWaiver),
+            State::Covered | State::Failed if commit_waived => {
+                return Err(RootError::CoveredWithCommitWaiver);
+            }
             _ => {}
         }
         if self.counts.waivers != self.levers.len() as u64 {
@@ -127,8 +148,14 @@ impl Root {
         if self.v == RootVersion::V1 {
             return match (&self.base, &self.from) {
                 (None, None) => Ok(()),
-                (Some(_), _) => Err(RootError::VersionField { field: "base" }),
-                (None, Some(_)) => Err(RootError::VersionField { field: "from" }),
+                (Some(_), _) => Err(RootError::VersionField {
+                    v: 1,
+                    field: "base",
+                }),
+                (None, Some(_)) => Err(RootError::VersionField {
+                    v: 1,
+                    field: "from",
+                }),
             };
         }
         match &self.base {
@@ -162,6 +189,58 @@ impl Root {
             if self.parents.len() > 1 || self.parents.iter().any(|p| Some(p.commit) != self.base) {
                 return Err(RootError::FromParents);
             }
+        }
+        Ok(())
+    }
+
+    /// Version 3's shape, as far as a root alone shows it (DESIGN.md section 15.2): `unread`
+    /// on a root without `from`, a check read from CI on one with it, each for this root's
+    /// commit, tree and policy; `failed` on a failure record, which names `from`; and a
+    /// version 3 document with none of the three is no version 3 document. Whether `unread`
+    /// is the policy's `ci` checks is the reader's to ask of the tree (decision 57).
+    fn validate_observed(&self) -> Result<(), RootError> {
+        let v = match self.v {
+            RootVersion::V1 => 1,
+            RootVersion::V2 => 2,
+            RootVersion::V3 => 3,
+        };
+        let failed = self.state == State::Failed;
+        if v < 3 {
+            let field = match () {
+                () if !self.observed.is_empty() => "observed",
+                () if !self.unread.is_empty() => "unread",
+                () if failed => return Err(RootError::FailedShape),
+                () => return Ok(()),
+            };
+            return Err(RootError::VersionField { v, field });
+        }
+        match &self.from {
+            Some(_) if !self.unread.is_empty() => return Err(RootError::UnreadWithFrom),
+            None if !self.observed.is_empty() => return Err(RootError::ObservedWithoutFrom),
+            None if failed => return Err(RootError::FailedShape),
+            _ => {}
+        }
+        if self.observed.is_empty() && self.unread.is_empty() && !failed {
+            return Err(RootError::VersionThreeEmpty);
+        }
+        let mut ids = Vec::new();
+        for (index, node) in self.observed.iter().enumerate() {
+            let Body::Observed(check) = &node.body else {
+                return Err(RootError::ObservedNode { index });
+            };
+            let ours = node.tree == self.tree
+                && node.policy == self.policy.hash
+                && check.observed.commit == self.commit;
+            if !ours || !check.coherent() {
+                return Err(RootError::ObservedNode { index });
+            }
+            if ids.contains(&&check.id) {
+                return Err(RootError::ObservedDuplicate { index });
+            }
+            ids.push(&check.id);
+        }
+        if (1..self.unread.len()).any(|i| self.unread[i..].contains(&self.unread[i - 1])) {
+            return Err(RootError::UnreadDuplicate);
         }
         Ok(())
     }
@@ -270,7 +349,8 @@ pub struct GateRef {
     pub binary: Sha256Digest,
 }
 
-/// Coverage state a root can assert. Absent is the missing root, never a value.
+/// Coverage state a root can assert, and `failed`, which a failure record alone holds.
+/// Absent is the missing root, never a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -278,6 +358,8 @@ pub enum State {
     Covered,
     /// A waiver covers the whole commit.
     DeclaredOff,
+    /// The merge job's verdict failed: a failure record's, never a root's (section 15.2).
+    Failed,
 }
 
 /// Totals derived from the nodes (DESIGN.md section 9.4).
@@ -363,8 +445,8 @@ pub enum RootError {
     /// `declared_off` needs a waiver that covers the whole commit.
     #[error("state is declared_off but no lever waives the whole commit")]
     DeclaredOffWithoutWaiver,
-    /// A commit waiver turns the gate off; the root cannot claim `covered`.
-    #[error("state is covered but a lever waives the whole commit")]
+    /// A commit waiver turns the gate off; the root cannot claim `covered`, nor a failure.
+    #[error("state is not declared_off but a lever waives the whole commit")]
     CoveredWithCommitWaiver,
     /// `counts.waivers` is not the length of `levers`.
     #[error("counts.waivers is not the number of levers")]
@@ -390,12 +472,49 @@ pub enum RootError {
     /// A git id whose hash algorithm differs from `commit`'s.
     #[error("every git id in a root must use the commit's hash algorithm")]
     OidAlgorithm,
-    /// A version 1 root with a version 2 field.
-    #[error("a version 1 root has no `{field}` field")]
+    /// A root with a later version's field.
+    #[error("a version {v} root has no `{field}` field")]
     VersionField {
-        /// `base` or `from`.
+        /// The root's version, 1 or 2.
+        v: u8,
+        /// `base`, `from`, `observed` or `unread`.
         field: &'static str,
     },
+    /// The state `failed` under `refs/jtac/roots/`.
+    #[error("the state `failed` is a failure record's, under refs/jtac/failed/, never a root's")]
+    FailedRoot,
+    /// `failed` on anything but a version 3 document with `from`.
+    #[error("the state `failed` is a version 3 failure record's, which names `from`")]
+    FailedShape,
+    /// `unread` beside `from`: the merge job reads every check.
+    #[error("a root with `from` lists no `unread`; the merge job reads every check")]
+    UnreadWithFrom,
+    /// A check read from CI in a root the local gate wrote.
+    #[error("a root without `from` holds no check read from CI")]
+    ObservedWithoutFrom,
+    /// An `observed` entry that is not a coherent version 3 check node for this root's
+    /// commit, tree and policy.
+    #[error(
+        "observed[{index}] is not a check read from CI for this root's commit, tree and policy"
+    )]
+    ObservedNode {
+        /// Where.
+        index: usize,
+    },
+    /// Two `observed` entries for one check.
+    #[error("observed[{index}] repeats an earlier check id")]
+    ObservedDuplicate {
+        /// Where.
+        index: usize,
+    },
+    /// `unread` lists a check twice.
+    #[error("unread lists a check twice")]
+    UnreadDuplicate,
+    /// A version 3 document that needs no version 3.
+    #[error(
+        "a version 3 root holds a check read from CI, lists one unread, or is a failure record"
+    )]
+    VersionThreeEmpty,
     /// `base` is the root's own commit.
     #[error("base is the root's own commit")]
     BaseIsTip,
@@ -428,8 +547,8 @@ pub(crate) mod tests {
     use crate::canonical::from_canonical;
     use crate::compare::Compared;
     use crate::node::tests::{
-        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, lever, rule_waiver, signer,
-        waiver,
+        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, lever, observed_node,
+        rule_waiver, signer, waiver,
     };
     use crate::node::{Action, Gate};
 
@@ -464,6 +583,8 @@ pub(crate) mod tests {
             state: State::Covered,
             evidence: EMPTY.parse().unwrap(),
             levers: vec![],
+            observed: vec![],
+            unread: vec![],
             counts: Counts::default(),
             signer: signer(),
         }
@@ -562,8 +683,8 @@ pub(crate) mod tests {
         let good = serde_json::to_value(declared_off()).unwrap();
         let mut extra = good.clone();
         extra["note"] = "x".into();
-        let mut v3 = good.clone();
-        v3["v"] = 3.into();
+        let mut v4 = good.clone();
+        v4["v"] = 4.into();
         let mut bad_state = good.clone();
         bad_state["state"] = "absent".into();
         let mut extra_counts = good.clone();
@@ -578,7 +699,7 @@ pub(crate) mod tests {
         range["covers"] = serde_json::json!({"base": COMMIT_ZERO, "tip": COMMIT_ONE, "x": 1});
         for (name, doc) in [
             ("extra key", extra),
-            ("v3", v3),
+            ("v4", v4),
             ("state absent", bad_state),
             ("extra count", extra_counts),
             ("extra lever key", extra_lever),
@@ -1017,7 +1138,10 @@ pub(crate) mod tests {
                     base: Some(zero),
                     ..root()
                 },
-                Err(RootError::VersionField { field: "base" }),
+                Err(RootError::VersionField {
+                    v: 1,
+                    field: "base",
+                }),
             ),
             (
                 "v1 with a from",
@@ -1025,7 +1149,10 @@ pub(crate) mod tests {
                     from: Some(from_head()),
                     ..root()
                 },
-                Err(RootError::VersionField { field: "from" }),
+                Err(RootError::VersionField {
+                    v: 1,
+                    field: "from",
+                }),
             ),
             (
                 "base is the tip",
@@ -1279,5 +1406,222 @@ pub(crate) mod tests {
                 Err(RootError::OidAlgorithm),
             ),
         ]);
+    }
+
+    fn v3_local() -> Root {
+        Root {
+            v: RootVersion::V3,
+            unread: vec!["test".into()],
+            ..v2()
+        }
+    }
+
+    fn v3_merge() -> Root {
+        Root {
+            v: RootVersion::V3,
+            from: Some(from_head()),
+            parents: vec![parent(COMMIT_ZERO.parse().unwrap())],
+            observed: vec![observed_node()],
+            ..v2()
+        }
+    }
+
+    #[test]
+    fn version_three_is_unread_without_from_or_observed_with_it_or_a_failure_record() {
+        let failed = || Root {
+            state: State::Failed,
+            ..v3_merge()
+        };
+        check(vec![
+            ("the local gate's root lists unread", v3_local(), Ok(())),
+            ("the merge root holds the check read", v3_merge(), Ok(())),
+            (
+                "a failure record under refs/jtac/roots/",
+                failed(),
+                Err(RootError::FailedRoot),
+            ),
+            (
+                "unread beside from",
+                Root {
+                    unread: vec!["test".into()],
+                    ..v3_merge()
+                },
+                Err(RootError::UnreadWithFrom),
+            ),
+            (
+                "a check read from CI without from",
+                Root {
+                    observed: vec![observed_node()],
+                    ..v3_local()
+                },
+                Err(RootError::ObservedWithoutFrom),
+            ),
+            (
+                "failed without from",
+                Root {
+                    state: State::Failed,
+                    ..v3_local()
+                },
+                Err(RootError::FailedShape),
+            ),
+            (
+                "failed in version 2",
+                Root {
+                    v: RootVersion::V2,
+                    observed: vec![],
+                    ..failed()
+                },
+                Err(RootError::FailedShape),
+            ),
+            (
+                "version 3 with nothing version 3 holds",
+                Root {
+                    unread: vec![],
+                    ..v3_local()
+                },
+                Err(RootError::VersionThreeEmpty),
+            ),
+            (
+                "a failure that a commit waiver would have declared off",
+                Root {
+                    levers: vec![signed(commit_waiver())],
+                    counts: Counts {
+                        waivers: 1,
+                        ..Counts::default()
+                    },
+                    ..failed()
+                },
+                Err(RootError::CoveredWithCommitWaiver),
+            ),
+            (
+                "unread in version 2",
+                Root {
+                    v: RootVersion::V2,
+                    ..v3_local()
+                },
+                Err(RootError::VersionField {
+                    v: 2,
+                    field: "unread",
+                }),
+            ),
+            (
+                "observed in version 2",
+                Root {
+                    v: RootVersion::V2,
+                    ..v3_merge()
+                },
+                Err(RootError::VersionField {
+                    v: 2,
+                    field: "observed",
+                }),
+            ),
+        ]);
+        assert_eq!(failed().shape(), Ok(()), "a failure record's own shape");
+        assert_eq!(
+            Root {
+                observed: vec![],
+                ..failed()
+            }
+            .shape(),
+            Ok(()),
+            "a failure record under a policy with no ci check"
+        );
+    }
+
+    #[test]
+    fn a_version_three_root_holds_each_check_once_for_its_own_commit_tree_and_policy() {
+        let observed = |edit: fn(&mut Node)| {
+            let mut node = observed_node();
+            edit(&mut node);
+            Root {
+                observed: vec![node],
+                ..v3_merge()
+            }
+        };
+        check(vec![
+            (
+                "a run's node in observed",
+                Root {
+                    observed: vec![check_node()],
+                    ..v3_merge()
+                },
+                Err(RootError::ObservedNode { index: 0 }),
+            ),
+            (
+                "a check read for another commit",
+                observed(|n| {
+                    if let Body::Observed(c) = &mut n.body {
+                        c.observed.commit = COMMIT_ZERO.parse().unwrap();
+                    }
+                }),
+                Err(RootError::ObservedNode { index: 0 }),
+            ),
+            (
+                "a check read under another policy",
+                observed(|n| n.policy = Sha256Digest::of(b"other")),
+                Err(RootError::ObservedNode { index: 0 }),
+            ),
+            (
+                "a pass over the forge's failure",
+                observed(|n| {
+                    if let Body::Observed(c) = &mut n.body {
+                        c.observed.conclusion = "failure".into();
+                    }
+                }),
+                Err(RootError::ObservedNode { index: 0 }),
+            ),
+            (
+                "one check read twice",
+                Root {
+                    observed: vec![observed_node(), observed_node()],
+                    ..v3_merge()
+                },
+                Err(RootError::ObservedDuplicate { index: 1 }),
+            ),
+            (
+                "one check unread twice",
+                Root {
+                    unread: vec!["test".into(), "e2e".into(), "test".into()],
+                    ..v3_local()
+                },
+                Err(RootError::UnreadDuplicate),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn root_v3_id_known_answer() {
+        // DESIGN.md section 9.4: the version 2 known answer, written by a local gate that
+        // left `test` to CI. Changing these bytes changes every version 3 root id.
+        let r = v3_local();
+        let json = String::from_utf8(r.canonical_bytes().unwrap()).unwrap();
+        let want = concat!(
+            r#"{"base":"sha1:0000000000000000000000000000000000000000""#,
+            r#","commit":"sha1:0000000000000000000000000000000000000001","counts":{"checks":0,"fail":0"#,
+            r#","findings":{"blocker":0,"major":0,"minor":0},"pass":0,"waivers":0}"#,
+            r#","covers":["sha1:0000000000000000000000000000000000000001"]"#,
+            r#","evidence":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855""#,
+            r#","gate":{"binary":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","version":"0.1.0"}"#,
+            r#","levers":[],"parents":[]"#,
+            r#","policy":{"hash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","source":"repo""#,
+            r#","version":1},"signer":{"fingerprint":"SHA256:AAAA","principal":"dev@example.com"},"state":"covered""#,
+            r#","tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z""#,
+            r#","unread":["test"],"v":3}"#
+        );
+        assert_eq!(json, want);
+        assert_eq!(
+            r.id().unwrap().to_string(),
+            "sha256:992ac6676a2b1422dd7343434c5ab326f382e084249616c4e7ba1206fc74fad2"
+        );
+        assert_eq!(from_canonical::<Root>(json.as_bytes()).unwrap(), r);
+        let merge = String::from_utf8(v3_merge().canonical_bytes().unwrap()).unwrap();
+        assert!(
+            merge.contains(r#""observed":[{"body":{"id":"test","observed":{"#),
+            "{merge}"
+        );
+        assert_eq!(
+            from_canonical::<Root>(merge.as_bytes()).unwrap(),
+            v3_merge()
+        );
     }
 }

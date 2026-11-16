@@ -159,6 +159,38 @@ pub fn reachable(
         .collect()
 }
 
+/// A CI root's reach (DESIGN.md section 9.5): `tip` and the first-parent line back to, and
+/// excluding, `base`, both commits in the clone. `None` when `base` is not on that line
+/// (decision 63): the line then runs past the diff the root judged.
+pub fn reach(
+    repo: &Path,
+    format: &str,
+    tip: &GitOid,
+    base: &GitOid,
+) -> Result<Option<Vec<GitOid>>, Refusal> {
+    let (tip, not) = (tip.hex(), format!("^{}", base.hex()));
+    let args = [
+        "rev-list",
+        "--first-parent",
+        "--parents",
+        "--end-of-options",
+        &tip,
+        &not,
+    ];
+    let out = git(repo, &args).map_err(|e| Refusal::repository(&RepoError::Git(e)))?;
+    let text = String::from_utf8_lossy(&out);
+    let lines: Vec<Vec<&str>> = text.lines().map(|l| l.split(' ').collect()).collect();
+    let on_line = lines.last().and_then(|l| l.get(1)) == Some(&base.hex().as_str());
+    if !on_line {
+        return Ok(None);
+    }
+    lines
+        .iter()
+        .map(|l| oid(format, l[0]))
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 /// What a `Covers::Range` root vouches for: every commit on a path from `base` to `tip`,
 /// both included. The writer's exact set is not recoverable from the two ends (DESIGN.md
 /// section 9.4); a side line merged in between them is not on such a path and reads absent,
