@@ -1,0 +1,46 @@
+# Sign-off gate on every pull request. See CLA.md section 10. On `pull_request`, not
+# `pull_request_target`: it reads commits and needs no secret or write token (#163).
+name: signoff
+
+on:
+  pull_request:
+    # `edited` covers a changed base branch: the commits checked are base..head.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    steps:
+      # This file comes from the pull request's merge commit: a pull request that edits it
+      # changes the gate, so review it as one. The base is checked out; commits are only read.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - name: every commit carries a Signed-off-by trailer
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          git fetch -q --no-tags origin "refs/pull/${PR}/head"
+          commits=$(git rev-list "${PR_BASE}..${PR_HEAD}")
+          missing=
+          for c in $commits; do
+            if git show -s --format=%B "$c" | grep -Eq '^Signed-off-by: .+ <.+@.+>'; then continue; fi
+            # An unsigned merge passes only as the clean merge of its two parents: nothing of its own (#74).
+            set -- $(git show -s --format=%P "$c")
+            if [ $# -eq 2 ] && clean=$(git merge-tree --write-tree "$1" "$2" 2>/dev/null) \
+               && [ "$clean" = "$(git show -s --format=%T "$c")" ]; then continue; fi
+            missing="$missing $c"
+          done
+          if [ -n "$missing" ]; then
+            echo "Commits without a Signed-off-by trailer (CLA.md section 10):"
+            for c in $missing; do echo "$c"; done
+            echo 'Fix: git rebase --signoff origin/main, then force-push your branch.'
+            exit 1
+          fi
