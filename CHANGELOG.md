@@ -27,6 +27,13 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.26) `DESIGN.md` only, no behaviour (#159): decision 62, six readings of the CI gate
+  settled before M20 builds its reader. The CI gate reads a commit's own root first, so a
+  CI waiver signed on a commit stays its reading when a later tip's CI root reaches it. A
+  failure record reaches the first-parent line a CI root does, so every commit of a failed
+  rebase reads `failed`. A root counts for the CI gate only when its signer and every
+  waiver it carries are trusted. A commit waiver's carry takes a partial root's tree match.
+  Decision 58 names its third moved reading, a direct push whose tree a CI root judged.
 - (0.2.25) Repository CI only, no behaviour (#163). The `signoff` check runs on
   `pull_request` from its own workflow, `signoff.yml`, with a read-only token. GitHub blocks
   `pull_request_target` from 2026-12-02 on a public repository with no Actions event policy;
