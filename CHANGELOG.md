@@ -6,6 +6,15 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+### Changed
+
+- (0.2.20) `DESIGN.md` only, no behaviour: section 5 states that the gate blocks the party
+  that cannot get around it and records the party that can; section 15.2 and decisions 53 to
+  56 design policy version 2, where a check is run by jtac or read from the team's own CI for
+  the exact commit, node and root version 3, which carry where a result came from and which
+  checks a gate did not read, and the failure record, which tells a merge whose checks
+  failed from one never judged. Milestones M19 to M22 and open questions 11 to 14.
+
 ### Fixed
 
 - (0.2.19) README links to the repository's own files by absolute URL. crates.io resolves a
