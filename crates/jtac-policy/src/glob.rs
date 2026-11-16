@@ -58,6 +58,7 @@ const COMPONENT: &str = "a path has no empty, . or .. component";
 const CHARACTER: &str = "printable ASCII only: match other characters with *";
 const NEGATION: &str = "no leading !: there is no negation, write the pattern you want matched";
 const EDGE: &str = "a pattern does not start or end with whitespace";
+const WILDCARD: &str = "one file is named in full: no * or ?";
 const BRANCH: &str = "git refuses this as a branch name: see git check-ref-format --branch";
 
 /// Why `pattern` can never match a repository-relative path or a branch name, if it cannot
@@ -92,6 +93,11 @@ fn unmatchable(pattern: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Why `path` is not one repository-relative file spelled the way a glob is, if it is not.
+pub(crate) fn not_a_file(path: &str) -> Option<&'static str> {
+    unmatchable(path).or(path.contains(['*', '?']).then_some(WILDCARD))
 }
 
 /// `unmatchable` plus the branch-name rules of `git check-ref-format --branch` that the path

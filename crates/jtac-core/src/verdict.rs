@@ -4,6 +4,7 @@
 use crate::digest::Sha256Digest;
 use crate::node::{Body, LeverBody, Node, Outcome, Scope, Severity};
 use crate::oid::GitOid;
+use crate::pin::Pin;
 use crate::root::State;
 use crate::time::Ts;
 use crate::waiver::{Waivable, covers_finding, scope_at};
@@ -33,6 +34,8 @@ pub struct CheckSpec {
     pub id: String,
     /// Whether a non-`pass` fails the verdict.
     pub required: bool,
+    /// Where CI holds the result; `None` for a check jtac runs (DESIGN.md section 15.2).
+    pub pin: Option<Pin>,
 }
 
 /// The decision and everything that went into it.
@@ -197,6 +200,7 @@ mod tests {
                 .map(|(id, required)| CheckSpec {
                     id: (*id).into(),
                     required: *required,
+                    pin: None,
                 })
                 .collect(),
             block_at,

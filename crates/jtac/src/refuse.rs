@@ -231,6 +231,24 @@ impl Refusal {
         )
     }
 
+    /// The judging policy reads a check from CI, which no gate does before M20 (DESIGN.md 15.2).
+    pub fn ci_unread(id: &str) -> Self {
+        Self::new(
+            format!(
+                "Check `{id}` in the `{POLICY_PATH}` this gate judges under is read from CI, and \
+                 this build reads no CI result."
+            ),
+            "A check nobody ran or read must never look like one that passed, so no gate \
+             judges under a policy it can only read in part. `jtac check` judges under HEAD's \
+             policy; `jtac ci` and `check --from` judge under the base branch's, so an edit on \
+             the pull request's own branch changes nothing there.",
+            format!(
+                "Install a jtac that reads CI results, or give `[checks.{id}]` a `run` in that \
+                 `{POLICY_PATH}`, commit it, and run the same jtac command again."
+            ),
+        )
+    }
+
     /// The policy blob is not UTF-8.
     pub fn policy_bytes() -> Self {
         Self::new(
@@ -749,7 +767,7 @@ mod tests {
 
     #[test]
     fn every_refusal_has_three_non_empty_parts_and_names_the_next_command() {
-        let parse = jtac_policy::parse("version = 2\n").unwrap_err();
+        let parse = jtac_policy::parse("version = 3\n").unwrap_err();
         let spawn = RepoError::Git(GitError::Spawn {
             argv: vec!["git".into()],
             source: std::io::Error::other("nope"),
@@ -791,6 +809,7 @@ mod tests {
             Refusal::no_policy(),
             Refusal::policy(&parse),
             Refusal::policy_bytes(),
+            Refusal::ci_unread("test"),
             Refusal::internal("hash"),
             Refusal::arguments(&args),
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),

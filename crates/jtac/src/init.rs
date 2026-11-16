@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn every_init_refusal_has_three_parts_and_names_the_next_command() {
         let io = std::io::Error::other("denied");
-        let parse = jtac_policy::parse("version = 2\n").unwrap_err();
+        let parse = jtac_policy::parse("version = 3\n").unwrap_err();
         let git = jtac_checks::git::GitError::Failed {
             argv: vec!["git".into()],
             status: Some(255),

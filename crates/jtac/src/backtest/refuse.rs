@@ -199,7 +199,7 @@ mod tests {
         let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
-        let parse = jtac_policy::parse("version = 2\n").unwrap_err();
+        let parse = jtac_policy::parse("version = 3\n").unwrap_err();
         let path = Path::new("/workspace/rows\nnegotiation: forged");
         let git = GitError::Failed {
             argv: vec!["git".into(), "diff".into()],

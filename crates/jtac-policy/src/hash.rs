@@ -45,6 +45,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_version_1_file_keeps_its_hash_and_version_2_and_each_pin_move_it() {
+        let run = "[checks.fmt]\nrun = [\"cargo\", \"fmt\"]\n";
+        let ci = "[checks.test]\nci = { workflow = \".github/workflows/ci.yml\" }\n";
+        let one = hash(&format!("version = 1\n{run}"));
+        let two = hash(&format!("version = 2\n{run}"));
+        let read = hash(&format!("version = 2\n{run}{ci}"));
+        let job = ci.replace(" }", ", job = \"test\" }");
+        assert_eq!(
+            one,
+            "sha256:57922ad9096c16efba557ed1f3cec5593c52afaa8e55e4f36a79f8cd0fae5fff"
+        );
+        assert!(one != two && two != read);
+        assert_ne!(read, hash(&format!("version = 2\n{run}{job}")));
+    }
+
+    #[test]
     fn required_default_and_explicit_true_hash_the_same() {
         let run = "[checks.fmt]\nrun = [\"cargo\", \"fmt\"]\n";
         assert_eq!(

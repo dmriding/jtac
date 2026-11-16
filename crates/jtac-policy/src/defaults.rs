@@ -4,9 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::{
-    Check, DEFAULT_TIMEOUT_SECS, Fences, Integrity, Policy, Protected, Scope, strings,
-};
+use crate::check::{Check, DEFAULT_TIMEOUT_SECS, Source};
+use crate::schema::{Fences, Integrity, Policy, Protected, Scope, strings};
 
 /// What the CLI found in the tree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -106,9 +105,11 @@ pub fn default_policy(d: &Detected) -> Policy {
     let mut checks = BTreeMap::new();
     let mut add = |prefix: &str, kind: &str, run: Vec<String>, timeout_secs| {
         let check = Check {
-            run,
+            source: Source::Run {
+                argv: run,
+                timeout_secs,
+            },
             required: true,
-            timeout_secs,
         };
         checks.insert(format!("{prefix}-{kind}"), check);
     };
@@ -154,9 +155,11 @@ mod tests {
         rows.iter()
             .map(|(id, run, timeout_secs)| {
                 let check = Check {
-                    run: strings(run),
+                    source: Source::Run {
+                        argv: strings(run),
+                        timeout_secs: *timeout_secs,
+                    },
                     required: true,
-                    timeout_secs: *timeout_secs,
                 };
                 ((*id).to_owned(), check)
             })

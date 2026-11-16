@@ -99,7 +99,7 @@ mod tests {
                 &format!("version = 1\n{CHECK}timeout_secs = 9007199254740992"),
                 "too_large",
             ),
-            ("version = 2", "version"),
+            ("version = 3", "version"),
             ("version = 0", "version"),
             ("version = 1\n[checks.fmt]\nrun = []", "empty_argv"),
             ("version = 1\n[checks.fmt]\nrun = [\"\"]", "empty_argv"),
@@ -125,6 +125,122 @@ mod tests {
         for (text, want) in table {
             assert_eq!(refused(text), *want, "{text:?}");
         }
+    }
+
+    const CI: &str = "ci = { workflow = \".github/workflows/ci.yml\", job = \"test\" }";
+
+    fn pinned(workflow: &str, job: &str) -> String {
+        format!("version = 2\n[checks.test]\nci = {{ workflow = \"{workflow}\", job = \"{job}\" }}")
+    }
+
+    #[test]
+    fn version_2_refusal_table() {
+        let ci = "ci = { workflow = \"ci/build.yml\" }";
+        let wf = ".github/workflows/ci.yml";
+        let table: &[(&str, &str)] = &[
+            (&format!("version = 1\n[checks.test]\n{CI}"), "ci_version"),
+            (
+                &format!("version = 2\n[checks.test]\n{ci}"),
+                "ci_unprotected",
+            ),
+            (
+                &format!("version = 2\n[checks.test]\n{CI}\n[protected]\npaths = []"),
+                "ci_unprotected",
+            ),
+            (
+                &format!("version = 2\n[checks.test]\n{CI}\nrun = [\"x\"]"),
+                "parse",
+            ),
+            ("version = 2\n[checks.test]\nrequired = true", "parse"),
+            (
+                &format!("version = 2\n[checks.test]\n{CI}\ntimeout_secs = 5"),
+                "parse",
+            ),
+            (
+                &format!("version = 2\n[checks.test]\n{CI}\nwhen = \"x\""),
+                "parse",
+            ),
+            (
+                &format!("version = 2\n[checks.integrity]\n{CI}"),
+                "reserved_id",
+            ),
+            (&format!("version = 2\n[checks.Test]\n{CI}"), "check_id"),
+            (&pinned("", "test"), "ci_pin"),
+            (&pinned(".github/workflows/*.yml", "test"), "ci_pin"),
+            (&pinned(".github/**", "test"), "ci_pin"),
+            (&pinned(".github/workflows/c?.yml", "test"), "ci_pin"),
+            (&pinned("/.github/workflows/ci.yml", "test"), "ci_pin"),
+            (
+                &pinned(".github/../.github/workflows/ci.yml", "test"),
+                "ci_pin",
+            ),
+            (&pinned(".github\\\\workflows\\\\ci.yml", "test"), "ci_pin"),
+            (
+                &pinned(".github/workflows/ci\u{200b}.yml", "test"),
+                "ci_pin",
+            ),
+            (&pinned(wf, ""), "ci_pin"),
+            (&pinned(wf, "test\u{200b}"), "ci_pin"),
+            (&pinned(wf, "t\u{0435}st"), "ci_pin"),
+            (&pinned(wf, "test\\n"), "ci_pin"),
+            (&pinned(wf, " test"), "ci_pin"),
+            (&pinned(wf, "test "), "ci_pin"),
+            (&pinned(wf, &"x".repeat(256)), "ci_pin"),
+        ];
+        for (text, want) in table {
+            assert_eq!(refused(text), *want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn version_2_reads_run_and_ci_checks_side_by_side() {
+        let matrix = "test (ubuntu-latest, stable)";
+        let text = format!(
+            "version = 2\n{CHECK}[checks.test]\n{CI}\n[checks.build]\n\
+             ci = {{ workflow = \".github/workflows/ci.yml\" }}\nrequired = false\n\
+             [checks.legs]\nci = {{ workflow = \"deny.toml\", job = \"{matrix}\" }}\n\
+             [checks.long]\nci = {{ workflow = \".jtac/x\", job = \"{}\" }}",
+            "x".repeat(255)
+        );
+        let policy = parse(&text).unwrap();
+        let pins: Vec<_> = policy
+            .ci_checks()
+            .map(|(id, pin)| (id, pin.workflow.as_str(), pin.job.as_deref()))
+            .collect();
+        assert_eq!(pins.len(), 4);
+        assert_eq!(pins[0], ("build", ".github/workflows/ci.yml", None));
+        assert_eq!(pins[1], ("legs", "deny.toml", Some(matrix)));
+        assert_eq!(pins[3], ("test", ".github/workflows/ci.yml", Some("test")));
+        assert!(policy.checks["fmt"].pin().is_none());
+        assert!(!policy.checks["build"].required && policy.checks["test"].required);
+    }
+
+    #[test]
+    fn a_version_2_refusal_names_the_check_and_the_fix() {
+        let unprotected = parse("version = 2\n[checks.test]\nci = { workflow = \"ci/b.yml\" }");
+        let [what, _, how] = unprotected.unwrap_err().three_parts();
+        assert!(
+            what.starts_with("checks.test.ci.workflow `ci/b.yml`"),
+            "{what}"
+        );
+        assert!(
+            how.starts_with("add the path `ci/b.yml` to protected.paths"),
+            "{how}"
+        );
+        let hidden = parse(&pinned(".github/workflows/ci.yml", "test\u{200b}")).unwrap_err();
+        let [what, _, how] = hidden.three_parts();
+        assert!(
+            what.starts_with(r"checks.test.ci.job `test\u{200B}`"),
+            "{what}"
+        );
+        assert!(how.starts_with("fix checks.test.ci.job in"), "{how}");
+        let both = parse(&format!("version = 2\n[checks.test]\n{CI}\nrun = [\"x\"]"));
+        let [what, _, how] = both.unwrap_err().three_parts();
+        assert!(what.contains("never both"), "{what}");
+        assert!(
+            how.starts_with("edit .jtac/policy.toml line 2, column 1"),
+            "{how}"
+        );
     }
 
     #[test]

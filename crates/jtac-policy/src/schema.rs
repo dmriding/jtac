@@ -1,16 +1,18 @@
-//! The policy file's shape, version 1 (DESIGN.md section 10.2). Every section is optional and
-//! defaulted; the serialized form is the resolved policy that gets hashed (decision 25).
+//! The policy file's shape, versions 1 and 2 (DESIGN.md sections 10.2 and 15.2). Every section is
+//! optional and defaulted; the serialized form is the resolved policy that gets hashed (decision 25).
 
 use std::collections::BTreeMap;
 
-use jtac_core::Severity;
+use jtac_core::{Pin, Severity};
 use serde::{Deserialize, Serialize};
+
+use crate::check::Check;
 
 /// A resolved policy: the file as written with every default filled in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-    /// Schema version. Only 1 is read.
+    /// Schema version: 1, or 2 where a check may be read from CI.
     pub version: u32,
     /// Checks by id. Every required check runs every time.
     #[serde(default)]
@@ -32,29 +34,11 @@ pub struct Policy {
     pub scope: Scope,
 }
 
-/// One configured check.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Check {
-    /// The argv to spawn. No shell.
-    pub run: Vec<String>,
-    /// Whether the verdict needs this check to pass.
-    #[serde(default = "yes")]
-    pub required: bool,
-    /// Seconds before the check is killed.
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-}
-
-/// Seconds a check runs before it is killed, unless the policy says otherwise.
-pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
-
-fn yes() -> bool {
-    true
-}
-
-fn default_timeout() -> u64 {
-    DEFAULT_TIMEOUT_SECS
+impl Policy {
+    /// Every check read from CI, with its pin, in policy order.
+    pub fn ci_checks(&self) -> impl Iterator<Item = (&str, &Pin)> {
+        (self.checks.iter()).filter_map(|(id, check)| Some((id.as_str(), check.pin()?)))
+    }
 }
 
 /// Diff-integrity thresholds.

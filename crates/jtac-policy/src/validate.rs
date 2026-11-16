@@ -1,10 +1,13 @@
-//! Rules the types cannot express (DESIGN.md sections 9.1 and 10.2). The order is fixed, so a
-//! policy with several faults always reports the same one first.
+//! Rules the types cannot express (DESIGN.md sections 9.1, 10.2 and 15.2). The order is fixed, so
+//! a policy with several faults always reports the same one first.
 
+use jtac_core::Pin;
 use jtac_core::canonical::MAX_SAFE_INTEGER;
 
+use crate::check::Source;
 use crate::echo::shown;
 use crate::error::PolicyError;
+use crate::glob::{Matcher, not_a_file};
 use crate::schema::{INTEGRITY_CHECK_ID, JTAC_DIR_GLOB, Policy};
 
 /// Longest check id or tier name, in bytes.
@@ -21,7 +24,7 @@ fn is_name(s: &str) -> bool {
 
 /// Refuse what parses but cannot be enforced as written.
 pub fn validate(p: &Policy) -> Result<(), PolicyError> {
-    if p.version != 1 {
+    if !matches!(p.version, 1 | 2) {
         return Err(PolicyError::Version { found: p.version });
     }
     if !p.protected.paths.iter().any(|path| path == JTAC_DIR_GLOB) {
@@ -34,17 +37,17 @@ pub fn validate(p: &Policy) -> Result<(), PolicyError> {
         if id == INTEGRITY_CHECK_ID {
             return Err(PolicyError::ReservedId { id: id.clone() });
         }
+        let Source::Run { argv, timeout_secs } = &check.source else {
+            continue;
+        };
         let id = id.clone();
-        if check.run.first().is_none_or(String::is_empty) {
+        if argv.first().is_none_or(String::is_empty) {
             return Err(PolicyError::EmptyArgv { id });
         }
-        if check.timeout_secs == 0 {
+        if *timeout_secs == 0 {
             return Err(PolicyError::Timeout { id });
         }
-        safe_integer(
-            format!("checks.{id}.timeout_secs"),
-            Some(check.timeout_secs),
-        )?;
+        safe_integer(format!("checks.{id}.timeout_secs"), Some(*timeout_secs))?;
     }
     let i = &p.integrity;
     safe_integer(
@@ -57,7 +60,52 @@ pub fn validate(p: &Policy) -> Result<(), PolicyError> {
     if let Some(name) = p.tiers.keys().find(|name| !is_name(name)) {
         return Err(PolicyError::TierName { name: shown(name) });
     }
-    p.matchers().map(drop)
+    let protected = p.matchers()?.protected;
+    (p.ci_checks()).try_for_each(|(id, pin)| pinned(p.version, id, pin, &protected))
+}
+
+/// Longest job name, in bytes.
+const MAX_JOB_BYTES: usize = 255;
+
+/// A `ci` check is version 2's, names one protected file in full, and a job a diff shows whole.
+fn pinned(version: u32, id: &str, pin: &Pin, protected: &Matcher) -> Result<(), PolicyError> {
+    if version < 2 {
+        return Err(PolicyError::CiVersion { id: id.to_owned() });
+    }
+    let refused = |field: &str, value: &str, detail: &str| PolicyError::CiPin {
+        key: format!("checks.{id}.ci.{field}"),
+        value: shown(value),
+        detail: detail.to_owned(),
+    };
+    if let Some(why) = not_a_file(&pin.workflow) {
+        return Err(refused("workflow", &pin.workflow, why));
+    }
+    if let Some(job) = &pin.job
+        && let Some(why) = not_a_job(job)
+    {
+        return Err(refused("job", job, why));
+    }
+    if !protected.is_match(&pin.workflow) {
+        return Err(PolicyError::CiUnprotected {
+            id: id.to_owned(),
+            workflow: pin.workflow.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn not_a_job(job: &str) -> Option<&'static str> {
+    if job.is_empty() {
+        Some("an empty name names no job: leave `job` out to read the run's own conclusion")
+    } else if job.len() > MAX_JOB_BYTES {
+        Some("a job name is at most 255 bytes")
+    } else if job.chars().any(|c| !(' '..='~').contains(&c)) {
+        Some("printable ASCII only, so a diff shows every byte: rename the job")
+    } else if job.starts_with(' ') || job.ends_with(' ') {
+        Some("a job name does not start or end with a space")
+    } else {
+        None
+    }
 }
 
 fn safe_integer(key: impl Into<String>, value: Option<u64>) -> Result<(), PolicyError> {
@@ -104,7 +152,14 @@ mod tests {
                 "integrity.max_added_lines",
             ),
             (
-                |p, v| p.checks.get_mut("fmt").unwrap().timeout_secs = v,
+                |p, v| {
+                    let Source::Run { timeout_secs, .. } =
+                        &mut p.checks.get_mut("fmt").unwrap().source
+                    else {
+                        panic!("fmt is a run check");
+                    };
+                    *timeout_secs = v;
+                },
                 "checks.fmt.timeout_secs",
             ),
         ];
