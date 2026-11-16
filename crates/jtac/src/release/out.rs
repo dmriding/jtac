@@ -39,8 +39,12 @@ pub struct ReleaseOut {
     pub absent: Vec<GitOid>,
     /// A root the trust file does not vouch for.
     pub untrusted: Vec<GitOid>,
+    /// The local gate's root alone, a `ci` check left unread (DESIGN.md section 15.2).
+    pub partial: Vec<GitOid>,
     /// First-parent commits the CI gate never judged, under `--require-ci`.
     pub not_ci: Vec<GitOid>,
+    /// Refused as absent, partial or not CI's, where CI's verdict failed.
+    pub failed: Vec<GitOid>,
     /// Declared off.
     pub waived: Vec<GitOid>,
     /// Every root the range stands on.
@@ -64,11 +68,14 @@ impl ReleaseOut {
     pub fn decide(&mut self, v: &ReleaseVerdict) {
         self.absent.clone_from(&v.absent);
         self.untrusted.clone_from(&v.untrusted);
+        self.partial.clone_from(&v.partial);
         self.not_ci.clone_from(&v.not_ci);
+        self.failed.clone_from(&v.failed);
         self.waived.clone_from(&v.waived);
         self.roots.clone_from(&v.roots);
         self.declared_off = v.waived.len() as u64;
-        let named = (v.absent.len() + v.untrusted.len() + v.not_ci.len()) as u64;
+        let named = [&v.absent, &v.untrusted, &v.partial, &v.not_ci, &v.failed];
+        let named = named.iter().map(|l| l.len() as u64).sum::<u64>();
         self.covered = self
             .commits
             .saturating_sub(self.declared_off)
@@ -127,10 +134,24 @@ pub fn render(o: &ReleaseOut) -> String {
             c.hex()
         );
     }
+    for c in &o.partial {
+        let _ = writeln!(
+            s,
+            "  partial   {} the local gate's root alone; its policy reads a check from CI",
+            c.hex()
+        );
+    }
     for c in &o.not_ci {
         let _ = writeln!(
             s,
             "  not ci    {} on the first-parent line without CI's root",
+            c.hex()
+        );
+    }
+    for c in &o.failed {
+        let _ = writeln!(
+            s,
+            "  failed    {} CI's verdict on its merge failed",
             c.hex()
         );
     }
@@ -157,6 +178,21 @@ pub fn render(o: &ReleaseOut) -> String {
             s,
             "  fix       not ci: tag the merge commit the forge made, not the pull request's \
              own; a merge made around CI takes {waive}"
+        );
+    }
+    if !o.partial.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       partial: only a merge root covers a commit whose policy reads a check \
+             from CI; `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings one that was \
+             pushed, and a commit merged around CI takes {waive}"
+        );
+    }
+    if !o.failed.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       failed: a later attempt that passes writes the root; to ship over the \
+             failure, {waive}, once for each commit of a rebase"
         );
     }
     if !o.artifacts.is_empty() {

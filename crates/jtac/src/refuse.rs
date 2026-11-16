@@ -231,6 +231,27 @@ impl Refusal {
         )
     }
 
+    /// A reading turns on a `.jtac/policy.toml` this partial clone does not hold (decision 60).
+    pub fn policy_not_held(command: &str, objects: &[&str], remote: Option<&str>) -> Self {
+        let remote = quoted(remote.unwrap_or("origin"), "REMOTE");
+        Self::new(
+            format!(
+                "`jtac {command}` cannot read the policy file of a commit or a root in this \
+                 range: this clone does not hold {}.",
+                objects.join(", ")
+            ),
+            "Whether a root covers a commit turns on the policy in the tree it names, which is \
+             read from git and never fetched; a file this clone lacks is a fact about the \
+             clone, so the answer is neither covered nor absent.",
+            format!(
+                "Run `git fetch {remote} {}`, then `jtac {command}` again; an id that named a \
+                 tree may ask for one more fetch. `jtac audit` prints the rows it could not \
+                 read as `policy not held`.",
+                objects.join(" ")
+            ),
+        )
+    }
+
     /// The judging policy reads a check from CI, which no gate does before M20 (DESIGN.md 15.2).
     pub fn ci_unread(id: &str) -> Self {
         Self::new(
@@ -810,6 +831,8 @@ mod tests {
             Refusal::policy(&parse),
             Refusal::policy_bytes(),
             Refusal::ci_unread("test"),
+            Refusal::policy_not_held("verify", &["abc123"], None),
+            Refusal::policy_not_held("release", &["abc123"], Some("up\nnegotiation: forged")),
             Refusal::internal("hash"),
             Refusal::arguments(&args),
             Refusal::range("audit", &["main..HEAD".into(), "a b".into()], &git_failed()),

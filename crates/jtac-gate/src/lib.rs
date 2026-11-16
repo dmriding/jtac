@@ -7,13 +7,15 @@
 
 pub mod advise;
 pub mod audit;
+pub mod cigate;
 pub mod classify;
 pub mod push;
 pub mod release;
 mod shell;
 
 pub use advise::note;
-pub use audit::{CommitFact, RootFact, Row, Trust, Via, rows};
+pub use audit::{CommitFact, PolicyKind, Reading, RootFact, Row, Trust, Via, rows};
+pub use cigate::{Ci, RecordFact};
 pub use classify::bypasses;
 pub use push::{Coverage, Decision, History, Pass, RefUpdate, Refuse, decide, exempt};
 pub use release::{ReleaseFact, ReleaseVerdict, release};

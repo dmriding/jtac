@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use jtac_core::{GitOid, Scope, Sha256Digest, Signer, State};
-use jtac_gate::{CommitFact, Row, Trust, Via};
+use jtac_core::{GitOid, Sha256Digest, Signer, State};
+use jtac_gate::{Ci, CommitFact, PolicyKind, Reading, Row, Trust, Via};
 use jtac_store::Store;
 use serde::Serialize;
 
@@ -19,6 +19,8 @@ use crate::{coverage, repo};
 
 /// Everything gathered for one range.
 pub struct Survey {
+    /// The repository.
+    pub repo: std::path::PathBuf,
     /// The range as given, or the default.
     pub range: Vec<String>,
     /// Where trust came from.
@@ -65,9 +67,11 @@ pub fn survey(
         .map(|c| CommitFact {
             commit: c.commit,
             tree: c.tree,
+            policy: (ledger.policies.get(&c.tree)).map_or(PolicyKind::Run, |p| p.kind()),
         })
         .collect();
-    let rows = jtac_gate::rows(&facts, &ledger.roots);
+    // Failure records are gathered with their writer (DESIGN.md section 15.2, M20c).
+    let rows = jtac_gate::rows(&facts, &ledger.roots, &[]);
     let mut heads = Vec::new();
     for (fact, stored) in ledger.roots.iter().zip(&ledger.stored) {
         let from = stored
@@ -80,6 +84,7 @@ pub fn survey(
         });
     }
     Ok(Survey {
+        repo,
         range,
         signers,
         ledger,
@@ -93,7 +98,8 @@ pub fn survey(
 pub struct RowOut {
     /// The commit.
     pub commit: GitOid,
-    /// `covered`, `declared_off`, or `absent`.
+    /// `covered`, `declared_off`, `partial` (the local gate passed and left a `ci` check
+    /// unread), `policy_not_held`, or `absent`.
     pub state: &'static str,
     /// `own`, `covers`, or `tree`; absent has none.
     pub via: Option<&'static str>,
@@ -114,10 +120,16 @@ pub struct RowOut {
     /// For a merge root of the commit's own: its head (DESIGN.md section 15).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head: Option<HeadOut>,
-    /// `declared_off` when the commit's own root carries a CI waiver naming it and is not
-    /// CI's (DESIGN.md section 9.5); absent otherwise, since the CI gate is read by its roots.
+    /// What the CI gate reads (DESIGN.md section 9.5): `covered`, `declared_off` or
+    /// `failed`; absent when no document of that gate's counts for the commit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<&'static str>,
+    /// The commit whose root gave the CI gate's reading, when not this row's root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_by: Option<GitOid>,
+    /// Beside a CI waiver: the commit whose CI root reaches this one from a later tip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_note: Option<GitOid>,
 }
 
 /// One waiver a valid root in the range applies, as shown.
@@ -151,13 +163,40 @@ fn trust_name(t: &Trust) -> &'static str {
     }
 }
 
-/// The name a state prints as.
+/// The name a root's state prints as.
 pub fn state_name(state: Option<State>) -> &'static str {
     match state {
         Some(State::Covered) => "covered",
         Some(State::DeclaredOff) => "declared_off",
+        Some(State::Failed) => "failed",
         None => "absent",
     }
+}
+
+/// The name a row's reading prints as in `--json`.
+pub fn reading_name(state: Option<Reading>) -> &'static str {
+    match state {
+        Some(Reading::Covered) => "covered",
+        Some(Reading::DeclaredOff) => "declared_off",
+        Some(Reading::Partial) => "partial",
+        Some(Reading::NotHeld) => "policy_not_held",
+        None => "absent",
+    }
+}
+
+/// Commits by reading. Only `covered` and `declared_off` count as covered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// Covered, by any route.
+    pub covered: u64,
+    /// Declared off, by any route.
+    pub declared_off: u64,
+    /// The local gate's root alone, a `ci` check unread.
+    pub partial: u64,
+    /// A policy the reading turns on is not in this clone.
+    pub not_held: u64,
+    /// No valid root bears.
+    pub absent: u64,
 }
 
 impl Survey {
@@ -169,7 +208,7 @@ impl Survey {
                 let fact = r.root.map(|i| &self.ledger.roots[i]);
                 RowOut {
                     commit: r.commit,
-                    state: state_name(r.state),
+                    state: reading_name(r.state),
                     via: r.via.as_ref().map(|v| match v {
                         Via::Own => "own",
                         Via::Covers { .. } => "covers",
@@ -190,13 +229,49 @@ impl Survey {
                         (Some(Via::Own), Some(i)) => self.heads[i].clone(),
                         _ => None,
                     },
-                    ci: match (&r.via, r.root) {
-                        (Some(Via::Own), Some(i)) => self.ci_state(i, &r.commit),
+                    ci: match r.ci {
+                        Ci::Absent => None,
+                        Ci::Covered { .. } => Some("covered"),
+                        Ci::DeclaredOff { .. } => Some("declared_off"),
+                        Ci::Failed { .. } => Some("failed"),
+                    },
+                    ci_by: (self.ci_root(r).filter(|i| Some(*i) != r.root))
+                        .map(|i| self.ledger.roots[i].commit),
+                    ci_note: match r.ci {
+                        Ci::DeclaredOff { note, .. } => note.map(|i| self.ledger.roots[i].commit),
                         _ => None,
                     },
                 }
             })
             .collect()
+    }
+
+    /// The root the CI gate read `row` through, when it read one.
+    pub fn ci_root(&self, row: &Row) -> Option<usize> {
+        match row.ci {
+            Ci::Covered { root } | Ci::DeclaredOff { root, .. } => Some(root),
+            Ci::Absent | Ci::Failed { .. } => None,
+        }
+    }
+
+    /// Refuse when a reading turns on a policy this clone does not hold (decision 60): a
+    /// command that judges answers 2 with the fetch named, where a report prints the row.
+    pub fn held(&self, command: &str) -> Result<(), Refusal> {
+        if !self.rows.iter().any(|r| r.state == Some(Reading::NotHeld)) {
+            return Ok(());
+        }
+        let objects: Vec<&str> = (self.ledger.policies.values())
+            .filter_map(|p| match p {
+                crate::treepolicy::TreePolicy::NotHeld(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let remote = crate::treepolicy::promisor(&self.repo)?;
+        Err(Refusal::policy_not_held(
+            command,
+            &objects,
+            remote.as_deref(),
+        ))
     }
 
     /// Every waiver a valid root applies, in root order.
@@ -219,23 +294,6 @@ impl Survey {
         out
     }
 
-    /// `declared_off` when root `i`, the commit's own and not CI's, carries a CI waiver
-    /// naming the commit (DESIGN.md section 9.5).
-    pub fn ci_state(&self, i: usize, commit: &GitOid) -> Option<&'static str> {
-        let stored = self.ledger.stored[i]
-            .as_ref()
-            .filter(|_| self.ledger.roots[i].invalid.is_none())?;
-        let names = |l: &jtac_core::SignedLever| match &l.node.body {
-            jtac_core::Body::Lever(b) => {
-                b.gate().is_some()
-                    && matches!(&b.scope, Some(Scope::Commit { commit: c, .. }) if c == commit)
-            }
-            _ => false,
-        };
-        (stored.root.from.is_none() && stored.root.levers.iter().any(names))
-            .then_some("declared_off")
-    }
-
     /// Valid roots whose signer, or any of whose waivers' signers, no trust file names.
     pub fn unknown_signers(&self) -> u64 {
         let unknown = |t: &Trust| !matches!(t, Trust::Trusted);
@@ -248,15 +306,19 @@ impl Survey {
             .count() as u64
     }
 
-    /// Commits by state: covered, declared off, absent.
-    pub fn totals(&self) -> (u64, u64, u64) {
-        let count =
-            |want: Option<State>| self.rows.iter().filter(|r| r.state == want).count() as u64;
-        (
-            count(Some(State::Covered)),
-            count(Some(State::DeclaredOff)),
-            count(None),
-        )
+    /// Commits by reading.
+    pub fn totals(&self) -> Tally {
+        let mut t = Tally::default();
+        for r in &self.rows {
+            *match r.state {
+                Some(Reading::Covered) => &mut t.covered,
+                Some(Reading::DeclaredOff) => &mut t.declared_off,
+                Some(Reading::Partial) => &mut t.partial,
+                Some(Reading::NotHeld) => &mut t.not_held,
+                None => &mut t.absent,
+            } += 1;
+        }
+        t
     }
 }
 
@@ -266,6 +328,7 @@ pub fn via_text(row: &RowOut) -> String {
         (Some("own"), _) => "own root".to_owned(),
         (Some("covers"), Some(by)) => format!("covered by {}'s root", short(&by)),
         (Some("tree"), Some(by)) => format!("by tree, {}'s root", short(&by)),
+        _ if row.state == "policy_not_held" => "a policy it turns on is not in this clone".into(),
         _ => match &row.invalid {
             Some(why) => format!("root invalid: {why}"),
             None => "no root".to_owned(),

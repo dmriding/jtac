@@ -5,18 +5,21 @@
 //! git child, not a signature check per root. A root for a commit the clone lacks has no tree
 //! to compare and no chain to walk: it counts for a tree match only. A version 2 root's
 //! `base` is an ancestor of its tip and bounds the chain its `covers` is checked against,
-//! entry by entry and never for completeness (DESIGN.md section 15).
+//! entry by entry and never for completeness (DESIGN.md section 15). A root without `from`
+//! is held to the policy in the tree it names (section 15.2, decision 57); one with `from`
+//! gets its reach, what the CI gate reads it for (section 9.5).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use jtac_core::{Body, Covers, GitOid, RootVersion, Sha256Digest, State};
-use jtac_gate::{RootFact, Trust};
+use jtac_gate::{PolicyKind, RootFact, Trust};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot};
 
 use crate::range::{self, Listed};
 use crate::refuse::Refusal;
+use crate::treepolicy::{self, TreePolicy};
 use crate::{output, repo, trust::Signers};
 
 /// The touched roots as facts, with the stored form of each readable one beside it.
@@ -27,6 +30,8 @@ pub struct Ledger {
     pub stored: Vec<Option<StoredRoot>>,
     /// Skipped refs and parent roots this clone lacks.
     pub notes: Vec<String>,
+    /// The policy in each tree a commit of the range or a touched root without `from` names.
+    pub policies: BTreeMap<GitOid, TreePolicy>,
 }
 
 /// Read the namespace and judge the roots that bear on `commits`.
@@ -76,10 +81,18 @@ pub fn gather(
     let trees = range::trees(repo, format, &commits)?;
     let kinds = range::kinds(repo, &commits)?;
     let shallow = repo::shallow(repo).map_err(|e| Refusal::repository(&e))?;
+    let local = |i: &usize| match &reads[*i].stored {
+        Ok(s) if s.root.from.is_none() => Some(s.root.tree),
+        _ => None,
+    };
+    let asked: BTreeSet<GitOid> = (touched.iter().filter_map(local))
+        .chain(range_trees)
+        .collect();
     let mut ledger = Ledger {
         roots: Vec::new(),
         stored: Vec::new(),
         notes: Vec::new(),
+        policies: treepolicy::read(repo, &asked)?,
     };
     for (k, &i) in touched.iter().enumerate() {
         let (fact, stored) = match &reads[i].stored {
@@ -92,7 +105,9 @@ pub fn gather(
                     command,
                     format,
                     shallow,
+                    based: false,
                     ids: &ids,
+                    policies: &ledger.policies,
                     notes: &mut notes,
                 };
                 let kind = kinds[k].as_deref();
@@ -113,6 +128,10 @@ fn unreadable(commit: GitOid, why: &str) -> RootFact {
         id: None,
         state: State::Covered,
         covers: Vec::new(),
+        from: false,
+        reach: Vec::new(),
+        policy: PolicyKind::Run,
+        ci_waiver: false,
         signer: None,
         trust: Trust::Unchecked,
         waiver_trust: Vec::new(),
@@ -129,7 +148,10 @@ struct Judge<'a> {
     command: &'a str,
     format: &'a str,
     shallow: bool,
+    /// Set by `base`: the root's base is a commit this clone holds.
+    based: bool,
     ids: &'a BTreeMap<GitOid, Sha256Digest>,
+    policies: &'a BTreeMap<GitOid, TreePolicy>,
     notes: &'a mut Vec<String>,
 }
 
@@ -145,7 +167,7 @@ impl Judge<'_> {
         covers: &mut Vec<GitOid>,
     ) -> Result<Option<String>, Refusal> {
         let Some(base) = root.base else {
-            let parented = root.v == RootVersion::V2
+            let parented = root.v != RootVersion::V1
                 && tree.is_some()
                 && range::has_parent(self.repo, &root.commit)
                     .map_err(|e| Refusal::repository(&e))?;
@@ -173,8 +195,56 @@ impl Judge<'_> {
                     base.hex()
                 ))
             }
-            Some("commit") => None,
+            Some("commit") => {
+                self.based = true;
+                None
+            }
             Some(kind) => Some(format!("its base {} is a {kind}, not a commit", base.hex())),
+        })
+    }
+
+    /// Why a root without `from` is invalid by its tree's policy (decision 57): its
+    /// `unread` is not that file's `ci` checks. Where nothing shows which checks it left
+    /// out, it is partial whatever it lists, or not held.
+    fn unread(&self, root: &jtac_core::Root, fact: &mut RootFact) -> Option<String> {
+        let policy = self.policies.get(&root.tree)?;
+        fact.policy = policy.kind();
+        let ci = policy.ci_checks().filter(|ci| *ci != root.unread)?;
+        let list = |ids: &[String]| match ids {
+            [] => "no check".to_owned(),
+            ids => format!("`{}`", ids.join("`, `")),
+        };
+        Some(format!(
+            "it lists {} unread, and the policy in the tree it names leaves {} to CI",
+            list(&root.unread),
+            list(ci)
+        ))
+    }
+
+    /// What the CI gate reads a root with `from` for (DESIGN.md section 9.5): its commit and
+    /// the first-parent line back to its base, or its commit alone where that line does not
+    /// hold the base (decision 63) or this clone does not; nothing for a commit it lacks.
+    fn reach(
+        &mut self,
+        root: &jtac_core::Root,
+        tree: Option<GitOid>,
+    ) -> Result<Vec<GitOid>, Refusal> {
+        Ok(match (&root.from, tree, root.base) {
+            (None, ..) | (_, None, _) => Vec::new(),
+            (Some(_), Some(_), Some(base)) if self.based => {
+                match range::reach(self.repo, self.format, &root.commit, &base)? {
+                    Some(reach) => reach,
+                    None => {
+                        self.notes.push(format!(
+                            "{}'s root names a base that is not on its first-parent line; the \
+                             CI gate reads it for its own commit alone",
+                            root.commit.hex()
+                        ));
+                        vec![root.commit]
+                    }
+                }
+            }
+            (Some(_), Some(_), _) => vec![root.commit],
         })
     }
 
@@ -197,6 +267,12 @@ impl Judge<'_> {
             signer: Some(root.signer.clone()),
             trust: Trust::Unchecked,
             waiver_trust: Vec::new(),
+            from: root.from.is_some(),
+            reach: Vec::new(),
+            policy: PolicyKind::Run,
+            ci_waiver: root.from.is_none()
+                && (root.levers.iter())
+                    .any(|l| matches!(&l.node.body, Body::Lever(b) if b.gate().is_some())),
             policy_version: root.policy.version,
             gate_version: root.gate.version.clone(),
             invalid: None,
@@ -234,6 +310,12 @@ impl Judge<'_> {
         if let Some(why) = self.base(root, tree, &mut fact.covers)? {
             return invalid(fact, why);
         }
+        if root.from.is_none()
+            && let Some(why) = self.unread(root, &mut fact)
+        {
+            return invalid(fact, why);
+        }
+        fact.reach = self.reach(root, tree)?;
         let bytes = root.canonical_bytes().map_err(Refusal::internal)?;
         let sig = String::from_utf8_lossy(&s.sig);
         let verified = jtac_sign::verify(

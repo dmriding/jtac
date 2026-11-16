@@ -296,6 +296,8 @@ fn passed(p: &Pass, tip: &str) -> String {
         Pass::Tree { commit } => {
             format!("{tip} has no root of its own; {commit}'s root judged the same tree")
         }
+        // Never built: `decide` refuses a failure record, which is no root.
+        Pass::Root(State::Failed) => format!("{tip} has a failure record"),
     }
 }
 

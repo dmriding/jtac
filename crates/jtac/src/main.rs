@@ -42,6 +42,7 @@ mod show;
 mod state;
 mod status;
 mod survey;
+mod treepolicy;
 mod trust;
 mod update;
 mod verify;

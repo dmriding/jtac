@@ -7,7 +7,7 @@ use std::path::Path;
 
 use jtac_checks::git::{GitError, git};
 use jtac_core::{Artifact, From, GitOid, Sha256Digest};
-use jtac_gate::{ReleaseFact, Trust, Via};
+use jtac_gate::{Ci, ReleaseFact};
 use jtac_store::Store;
 
 use crate::range;
@@ -168,26 +168,26 @@ pub fn first_parent(
 }
 
 /// One fact per row. Trusted means the root's signer and every applied waiver's signer are
-/// named: a covered verdict that leaned on an unknown key's waiver is an unknown key's.
+/// named: a covered verdict that leaned on an unknown key's waiver is an unknown key's. The
+/// CI gate's reading is its own (DESIGN.md section 9.5), never read off the row's root.
 pub fn facts(s: &Survey, first: &BTreeSet<GitOid>) -> Vec<ReleaseFact> {
     s.rows
         .iter()
         .map(|r| {
             let fact = r.root.map(|i| &s.ledger.roots[i]);
-            let stored = r.root.and_then(|i| s.ledger.stored[i].as_ref());
-            let trusted = fact.is_some_and(|f| {
-                f.trust == Trust::Trusted && f.waiver_trust.iter().all(|t| *t == Trust::Trusted)
-            });
-            let ci_waived = matches!((&r.via, r.root), (Some(Via::Own), Some(i))
-                if s.ci_state(i, &r.commit).is_some());
+            let ci_root = s.ci_root(r).map(|i| &s.ledger.roots[i]);
+            let ci_off = matches!(r.ci, Ci::DeclaredOff { .. });
             ReleaseFact {
                 commit: r.commit,
                 first_parent: first.contains(&r.commit),
                 state: r.state,
-                trusted,
-                ci: ci_waived || stored.is_some_and(|st| st.root.from.is_some()),
-                ci_waived,
+                trusted: fact.is_some_and(|f| f.whole()),
+                ci: ci_root.is_some(),
+                ci_off,
+                ci_waived: ci_off && ci_root.is_some_and(|f| !f.from),
+                failed: matches!(r.ci, Ci::Failed { .. }),
                 root: fact.and_then(|f| f.id),
+                ci_root: ci_root.and_then(|f| f.id),
             }
         })
         .collect()

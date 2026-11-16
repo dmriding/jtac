@@ -356,6 +356,26 @@ fn require_ci_names_a_tag_on_a_pull_request_commit_and_an_untrusted_root() {
             "--json",
         ],
     );
+    // Decision 58: an unknown key's own root yields to the trusted merge root that covers
+    // the commit, so the range stands on CI's root alone.
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["untrusted"], serde_json::json!([]), "{v}");
+    assert_eq!(v["roots"].as_array().unwrap().len(), 1, "{v}");
+    let merge = h.repo.git(&["rev-parse", "v0.2.0^{commit}"]);
+    let merge_root = format!("refs/jtac/roots/{}/{merge}", &merge[..2]);
+    h.repo.git(&["update-ref", "-d", &merge_root]);
+    let (code, v) = json(
+        &h.repo,
+        &[
+            "release",
+            "v0.1.1",
+            "--from",
+            "v0.1.0",
+            "--signers",
+            ci_only.to_str().unwrap(),
+            "--json",
+        ],
+    );
     assert_eq!(code, 1, "{v}");
     assert_eq!(
         hexes(&v["untrusted"]),
