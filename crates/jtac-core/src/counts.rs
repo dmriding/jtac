@@ -34,7 +34,7 @@ pub fn counts(nodes: &[Node]) -> Counts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::tests::{check_node, commit_waiver};
+    use crate::node::tests::{check_node, commit_waiver, observed_node};
     use crate::node::{Body, CheckBody, FindingBody};
     use crate::root::FindingCounts;
 
@@ -42,6 +42,14 @@ mod tests {
         let mut n = check_node();
         if let Body::Check(CheckBody { outcome: o, .. }) = &mut n.body {
             *o = outcome;
+        }
+        n
+    }
+
+    fn observed(outcome: Outcome) -> Node {
+        let mut n = observed_node();
+        if let Body::Observed(c) = &mut n.body {
+            c.outcome = outcome;
         }
         n
     }
@@ -72,13 +80,15 @@ mod tests {
             finding(Severity::Minor),
             finding(Severity::Minor),
             commit_waiver(),
+            observed_node(),
+            observed(Outcome::Error),
         ];
         assert_eq!(
             counts(&nodes),
             Counts {
-                checks: 4,
-                pass: 1,
-                fail: 3,
+                checks: 6,
+                pass: 2,
+                fail: 4,
                 findings: FindingCounts {
                     blocker: 1,
                     major: 0,

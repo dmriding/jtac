@@ -2,16 +2,16 @@
 //! (DESIGN.md section 15.2). The binary reads it and never calls a forge (decision 40).
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 use crate::canonical::MAX_SAFE_INTEGER;
 use crate::observed::Forge;
 use crate::oid::GitOid;
 use crate::schema::V1;
 
-/// The file, version 1. An unknown key, version or forge is refused, so a later format is
-/// never half-read as this one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// The file, version 1. `from_json` is the one way in: the type has no `Deserialize` of its
+/// own, so no caller reads a file past the reader's refusals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Results {
     /// The file's version.
     pub v: V1,
@@ -91,13 +91,41 @@ pub enum ResultsError {
     },
 }
 
+// What `from_json` parses. An unknown key, version or forge is refused, so a later format
+// is never half-read as this one.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wire {
+    v: V1,
+    forge: Forge,
+    runs: Vec<ForgeRun>,
+}
+
+// serde's derive also reads a struct from an array of its fields in order; version 1
+// writes objects alone, so the file, each run and each job must be one.
+fn objects(doc: &Value) -> bool {
+    let all = |list: &Value, each: &dyn Fn(&Value) -> bool| {
+        list.as_array().is_some_and(|items| items.iter().all(each))
+    };
+    doc.is_object()
+        && all(&doc["runs"], &|run| {
+            run.is_object() && all(&run["jobs"], &Value::is_object)
+        })
+}
+
 impl Results {
     /// Read the file's bytes. Refuses a shape this version does not write, a run listed
     /// twice and an integer a node could not carry
     /// (`the_reader_refuses_what_version_1_does_not_write`).
     pub fn from_json(bytes: &[u8]) -> Result<Self, ResultsError> {
-        let file: Self =
-            serde_json::from_slice(bytes).map_err(|e| ResultsError::Shape(e.to_string()))?;
+        let shape = |e: serde_json::Error| ResultsError::Shape(e.to_string());
+        let Wire { v, forge, runs } = serde_json::from_slice(bytes).map_err(shape)?;
+        if !objects(&serde_json::from_slice(bytes).map_err(shape)?) {
+            return Err(ResultsError::Shape(
+                "an array stands where an object belongs".into(),
+            ));
+        }
+        let file = Self { v, forge, runs };
         for (i, run) in file.runs.iter().enumerate() {
             let id = run.id;
             if id > MAX_SAFE_INTEGER || run.attempt > MAX_SAFE_INTEGER {
@@ -264,6 +292,31 @@ pub(crate) mod tests {
                 "UnsafeInteger",
             ),
             ("one run twice", twice.unwrap(), "DuplicateRun"),
+            (
+                "the file as an array",
+                r#"[1,"github",[]]"#.to_string(),
+                "Shape",
+            ),
+            (
+                "a run as an array",
+                format!(
+                    r#"{{"v":1,"forge":"github","runs":[["{WORKFLOW}","{COMMIT_ONE}","push","main",1,1,"completed","success",[]]]}}"#
+                ),
+                "Shape",
+            ),
+            (
+                "a job as an array",
+                edit(
+                    r#"{"name":"test","conclusion":"success"}"#,
+                    r#"["test","success"]"#,
+                ),
+                "Shape",
+            ),
+            (
+                "a job as a short array",
+                edit(r#"{"name":"test","conclusion":"success"}"#, r#"["test"]"#),
+                "Shape",
+            ),
         ];
         for (name, doc, want) in rows {
             let err = Results::from_json(doc.as_bytes()).expect_err(name);

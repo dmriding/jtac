@@ -35,7 +35,9 @@ pub struct Reading {
 /// Read `pin` for `commit` from the runs a push to `branch` started. Every matching run is
 /// read whole: pending while any is, then missing when any is, else the worst outcome from
 /// the lowest run id that holds it. A run for another commit, event, ref or definition file
-/// is never one of them (`selection_table`, `two_runs_for_one_push_take_the_worst`).
+/// is never one of them
+/// (`only_this_commits_push_to_this_branch_of_this_file_is_selected`,
+/// `two_runs_for_one_push_take_the_worst`).
 pub fn select(results: &Results, pin: &Pin, commit: &GitOid, branch: &str) -> Selected {
     let mut runs: Vec<&ForgeRun> = results
         .runs
@@ -94,7 +96,7 @@ fn read(forge: Forge, run: &ForgeRun, job: Option<&str>) -> Selected {
         outcome: if twice {
             Outcome::Error
         } else {
-            outcome(forge, word)
+            forge.outcome(word)
         },
         run: run.id,
         attempt: run.attempt,
@@ -111,16 +113,6 @@ fn push(forge: Forge) -> &'static str {
 fn completed(forge: Forge) -> &'static str {
     match forge {
         Forge::Github => "completed",
-    }
-}
-
-// Every word but these four is `error`: a check that did not run must not look like a pass.
-fn outcome(forge: Forge, word: &str) -> Outcome {
-    match (forge, word) {
-        (Forge::Github, "success") => Outcome::Pass,
-        (Forge::Github, "failure" | "timed_out") => Outcome::Fail,
-        (Forge::Github, "skipped") => Outcome::Skipped,
-        (Forge::Github, _) => Outcome::Error,
     }
 }
 
@@ -168,7 +160,7 @@ mod tests {
     /// DESIGN.md section 15.2, M20's done-when: a run for anything but this commit's push
     /// to this branch of this file is not selected.
     #[test]
-    fn selection_table() {
+    fn only_this_commits_push_to_this_branch_of_this_file_is_selected() {
         let test = Some("test");
         let pass = got(Outcome::Pass, 1, "success");
         let rows = vec![
@@ -307,6 +299,15 @@ mod tests {
                 got(Outcome::Error, 1, "success"),
             ),
             (
+                "a job name held twice keeps the run's word, not a job's",
+                with(|r| {
+                    r.jobs = vec![job("test", Some("success")), job("test", Some("success"))];
+                    r.conclusion = Some("failure".into());
+                }),
+                test,
+                got(Outcome::Error, 1, "failure"),
+            ),
+            (
                 "a job name held twice in a run with no word yet",
                 with(|r| {
                     r.jobs = vec![job("test", Some("success")), job("test", Some("success"))];
@@ -379,7 +380,7 @@ mod tests {
             for (j, b) in words.iter().enumerate() {
                 let worse = if i <= j { a } else { b };
                 let id = if i <= j { 5 } else { 9 };
-                let want = got(outcome(Forge::Github, worse), id, worse);
+                let want = got(Forge::Github.outcome(worse), id, worse);
                 assert_eq!(
                     pick(vec![run(5, a), run(9, b)], Some("test")),
                     want,

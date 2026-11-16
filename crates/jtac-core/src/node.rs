@@ -300,6 +300,11 @@ impl<'de> Deserialize<'de> for Node {
             Kind::Lever => serde_json::from_value(w.body).map(Body::Lever),
         }
         .map_err(serde::de::Error::custom)?;
+        if matches!(&body, Body::Observed(c) if !c.coherent()) {
+            return Err(serde::de::Error::custom(
+                "a version 3 node's outcome is neither what its conclusion maps to nor error",
+            ));
+        }
         let node = Node {
             tree: w.tree,
             policy: w.policy,
@@ -699,6 +704,45 @@ pub(crate) mod tests {
             big.id().unwrap_err(),
             CanonicalError::UnsafeInteger { ref path } if path == ".body.observed.run"
         ));
+    }
+
+    /// The mapping is part of version 3: a node cannot say `pass` over the forge's
+    /// `failure`. `error` is read under any word, since a job name held twice writes it.
+    #[test]
+    fn a_version_3_node_says_what_its_conclusion_says_or_error() {
+        let doc = |outcome: &str, word: &str| {
+            let mut v = serde_json::to_value(observed_node()).unwrap();
+            v["body"]["outcome"] = outcome.into();
+            v["body"]["observed"]["conclusion"] = word.into();
+            serde_json::from_value::<Node>(v)
+        };
+        let rows = [
+            ("pass", "success", true),
+            ("fail", "failure", true),
+            ("fail", "timed_out", true),
+            ("skipped", "skipped", true),
+            ("error", "cancelled", true),
+            ("error", "success", true),
+            ("error", "", true),
+            ("pass", "failure", false),
+            ("pass", "", false),
+            ("pass", "cancelled", false),
+            ("pass", "skipped", false),
+            ("pass", "Success", false),
+            ("skipped", "success", false),
+            ("fail", "success", false),
+        ];
+        for (outcome, word, reads) in rows {
+            let got = doc(outcome, word);
+            assert_eq!(got.is_ok(), reads, "{outcome} over {word:?}");
+            if let Err(e) = got {
+                assert!(
+                    e.to_string()
+                        .contains("neither what its conclusion maps to"),
+                    "{e}"
+                );
+            }
+        }
     }
 
     #[test]

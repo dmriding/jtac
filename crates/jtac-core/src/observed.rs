@@ -58,3 +58,27 @@ pub enum Forge {
     /// GitHub Actions.
     Github,
 }
+
+impl Forge {
+    /// What this forge's `word` for a conclusion maps to: the one mapping, for selection
+    /// and for the node's reader. Every word but four is `error`, so a check that did not
+    /// run never looks like a pass (`every_conclusion_but_four_is_an_error`).
+    pub fn outcome(self, word: &str) -> Outcome {
+        match (self, word) {
+            (Self::Github, "success") => Outcome::Pass,
+            (Self::Github, "failure" | "timed_out") => Outcome::Fail,
+            (Self::Github, "skipped") => Outcome::Skipped,
+            (Self::Github, _) => Outcome::Error,
+        }
+    }
+}
+
+impl ObservedCheck {
+    /// Whether `outcome` is what the forge's word says, or `error`, which a job name held
+    /// twice reads under any word. The node's reader refuses the rest
+    /// (`a_version_3_node_says_what_its_conclusion_says_or_error`).
+    pub fn coherent(&self) -> bool {
+        let read = self.observed.forge.outcome(&self.observed.conclusion);
+        self.outcome == read || self.outcome == Outcome::Error
+    }
+}
