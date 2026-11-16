@@ -1179,8 +1179,9 @@ fn a_check_read_from_ci_is_a_protected_change_until_base_holds_it_and_then_no_ga
     let ran = jtac(&p.repo, &["ci", "--base", "main"]);
     assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
     assert!(
-        ran.stderr
-            .starts_with("jtac: Check `e2e` in `.jtac/policy.toml` is read from CI"),
+        ran.stderr.starts_with(
+            "jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"
+        ),
         "{}",
         ran.stderr
     );

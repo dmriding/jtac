@@ -231,18 +231,20 @@ impl Refusal {
         )
     }
 
-    /// The policy reads a check from CI, which no gate does before M20 (DESIGN.md 15.2).
+    /// The judging policy reads a check from CI, which no gate does before M20 (DESIGN.md 15.2).
     pub fn ci_unread(id: &str) -> Self {
         Self::new(
             format!(
-                "Check `{id}` in `{POLICY_PATH}` is read from CI, and this build reads no CI \
-                 result."
+                "Check `{id}` in the `{POLICY_PATH}` this gate judges under is read from CI, and \
+                 this build reads no CI result."
             ),
             "A check nobody ran or read must never look like one that passed, so no gate \
-             judges under a policy it can only read in part.",
+             judges under a policy it can only read in part. `jtac check` judges under HEAD's \
+             policy; `jtac ci` and `check --from` judge under the base branch's, so an edit on \
+             the pull request's own branch changes nothing there.",
             format!(
-                "Install a jtac that reads CI results, or give `[checks.{id}]` a `run` in \
-                 `{POLICY_PATH}`, commit it, and run `jtac check` again."
+                "Install a jtac that reads CI results, or give `[checks.{id}]` a `run` in that \
+                 `{POLICY_PATH}`, commit it, and run the same jtac command again."
             ),
         )
     }

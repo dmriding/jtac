@@ -224,7 +224,7 @@ mod tests {
             "{what}"
         );
         assert!(
-            how.starts_with("add \"ci/b.yml\" to protected.paths"),
+            how.starts_with("add the path `ci/b.yml` to protected.paths"),
             "{how}"
         );
         let hidden = parse(&pinned(".github/workflows/ci.yml", "test\u{200b}")).unwrap_err();

@@ -249,7 +249,7 @@ impl PolicyError {
                  with / between directories, and the job's name as the forge reports it"
             ),
             Self::CiUnprotected { workflow, .. } => {
-                format!("add \"{workflow}\" to protected.paths in {file}")
+                format!("add the path `{workflow}` to protected.paths in {file}")
             }
         }
     }

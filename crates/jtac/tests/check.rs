@@ -879,17 +879,25 @@ fn a_version_2_policy_is_judged_until_it_reads_a_check_from_ci() {
     repo.commit("version 2, every check run");
     let (code, v) = json(&repo, &["check", "--preview", "--json"]);
     assert_eq!(code, 0, "{v}");
-    let read = format!("{two}[checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\n");
+    let read = format!(
+        "{two}[checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\nrequired = false\n"
+    );
     repo.write(".jtac/policy.toml", read.as_bytes());
-    repo.commit("one check read from ci");
+    repo.commit("one optional check read from ci");
     let ran = jtac(&repo, &["check", "--preview"]);
     assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
     assert!(
-        ran.stderr
-            .starts_with("jtac: Check `e2e` in `.jtac/policy.toml` is read from CI"),
+        ran.stderr.starts_with(
+            "jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"
+        ),
         "{}",
         ran.stderr
     );
     let next = "negotiation: Install a jtac that reads CI results, or give `[checks.e2e]` a `run`";
     assert!(ran.stderr.contains(next), "{}", ran.stderr);
+    assert!(
+        ran.stderr.contains("the same jtac command again"),
+        "{}",
+        ran.stderr
+    );
 }

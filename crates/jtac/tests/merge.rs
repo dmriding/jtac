@@ -1032,7 +1032,7 @@ fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
         assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
         assert!(
             ran.stderr
-                .starts_with("jtac: Check `e2e` in `.jtac/policy.toml` is read from CI"),
+                .starts_with("jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"),
             "{}",
             ran.stderr
         );
