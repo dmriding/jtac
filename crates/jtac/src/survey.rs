@@ -2,6 +2,7 @@
 //! the range's commits, the roots that bear on them, and the state of each commit as
 //! `jtac_gate::rows` assigns it. Both read it; neither decides.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_core::{GitOid, Sha256Digest, Signer, State};
@@ -34,7 +35,10 @@ pub struct Survey {
 }
 
 /// Gather for `command`. An empty `range` is `HEAD`; trust is HEAD's tree, or `at`'s, shown
-/// by its name, when a command stands on another commit (a release reads the tag's).
+/// by its name, when a command stands on another commit (a release reads the tag's). No
+/// failure record is read yet: they are gathered with their writer (section 15.2). A commit
+/// whose policy the ledger did not ask is given `NotHeld`: no reading consults it, and one
+/// that did would refuse, never pass.
 pub fn survey(
     cwd: &Path,
     command: &str,
@@ -67,10 +71,9 @@ pub fn survey(
         .map(|c| CommitFact {
             commit: c.commit,
             tree: c.tree,
-            policy: (ledger.policies.get(&c.tree)).map_or(PolicyKind::Run, |p| p.kind()),
+            policy: (ledger.policies.get(&c.tree)).map_or(PolicyKind::NotHeld, |p| p.kind()),
         })
         .collect();
-    // Failure records are gathered with their writer (DESIGN.md section 15.2, M20c).
     let rows = jtac_gate::rows(&facts, &ledger.roots, &[]);
     let mut heads = Vec::new();
     for (fact, stored) in ledger.roots.iter().zip(&ledger.stored) {
@@ -260,12 +263,13 @@ impl Survey {
         if !self.rows.iter().any(|r| r.state == Some(Reading::NotHeld)) {
             return Ok(());
         }
-        let objects: Vec<&str> = (self.ledger.policies.values())
+        let objects: BTreeSet<&str> = (self.ledger.policies.values())
             .filter_map(|p| match p {
                 crate::treepolicy::TreePolicy::NotHeld(id) => Some(id.as_str()),
                 _ => None,
             })
             .collect();
+        let objects: Vec<&str> = objects.into_iter().collect();
         let remote = crate::treepolicy::promisor(&self.repo)?;
         Err(Refusal::policy_not_held(
             command,

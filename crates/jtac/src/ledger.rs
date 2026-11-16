@@ -30,7 +30,10 @@ pub struct Ledger {
     pub stored: Vec<Option<StoredRoot>>,
     /// Skipped refs and parent roots this clone lacks.
     pub notes: Vec<String>,
-    /// The policy in each tree a commit of the range or a touched root without `from` names.
+    /// The policy in each tree a reading turns on (DESIGN.md section 15.2): the tree a
+    /// touched root without `from` names, and the tree of each commit of the range such a
+    /// root lists in `covers`, since it covers only a commit whose own policy holds no `ci`
+    /// check. No other tree is asked: one git child per tree is the cost.
     pub policies: BTreeMap<GitOid, TreePolicy>,
 }
 
@@ -49,6 +52,7 @@ pub fn gather(
     let reads = store.read_all(&roots.listed).map_err(Refusal::store)?;
     let in_range: BTreeSet<GitOid> = commits.iter().map(|c| c.commit).collect();
     let range_trees: BTreeSet<GitOid> = commits.iter().map(|c| c.tree).collect();
+    let tree_of: BTreeMap<GitOid, GitOid> = commits.iter().map(|c| (c.commit, c.tree)).collect();
     let mut ids = BTreeMap::new();
     let mut covers = Vec::new();
     for r in &reads {
@@ -81,18 +85,20 @@ pub fn gather(
     let trees = range::trees(repo, format, &commits)?;
     let kinds = range::kinds(repo, &commits)?;
     let shallow = repo::shallow(repo).map_err(|e| Refusal::repository(&e))?;
-    let local = |i: &usize| match &reads[*i].stored {
-        Ok(s) if s.root.from.is_none() => Some(s.root.tree),
-        _ => None,
-    };
-    let asked: BTreeSet<GitOid> = (touched.iter().filter_map(local))
-        .chain(range_trees)
-        .collect();
+    let mut asked = BTreeSet::new();
+    for &i in &touched {
+        if let Ok(s) = &reads[i].stored
+            && s.root.from.is_none()
+        {
+            asked.insert(s.root.tree);
+            asked.extend(covers[i].iter().filter_map(|c| tree_of.get(c)));
+        }
+    }
     let mut ledger = Ledger {
         roots: Vec::new(),
         stored: Vec::new(),
         notes: Vec::new(),
-        policies: treepolicy::read(repo, format, &asked)?,
+        policies: treepolicy::read(repo, &asked)?,
     };
     for (k, &i) in touched.iter().enumerate() {
         let (fact, stored) = match &reads[i].stored {
@@ -248,6 +254,49 @@ impl Judge<'_> {
         })
     }
 
+    /// Each waiver's signature and its signer's trust, in `levers` order; the first that
+    /// does not hold is why the root is invalid. A waiver written under an agent session
+    /// is a note.
+    fn waivers(
+        &mut self,
+        root: &jtac_core::Root,
+        trust: &mut Vec<Trust>,
+    ) -> Result<Option<String>, Refusal> {
+        for (index, lever) in root.levers.iter().enumerate() {
+            let Body::Lever(body) = &lever.node.body else {
+                return Ok(Some(format!("levers[{index}] is not a lever node")));
+            };
+            let bytes = lever.node.canonical_bytes().map_err(Refusal::internal)?;
+            let verified = jtac_sign::verify(
+                self.tool,
+                self.signers.as_sign(),
+                &body.signer,
+                Namespace::Lever,
+                lever.node.ts,
+                &bytes,
+                &lever.sig,
+            )
+            .map_err(|e| self.signers.refusal(self.command, &e))?;
+            trust.push(match verified {
+                Verified::Trusted => Trust::Trusted,
+                Verified::Unknown { why } => Trust::Unknown { why },
+                Verified::Invalid { what } => {
+                    return Ok(Some(format!(
+                        "its waiver {index}'s signature does not hold: {what}"
+                    )));
+                }
+            });
+            if let Some(marker) = &body.agent {
+                self.notes.push(format!(
+                    "{}'s root applies a waiver written under an agent session ({})",
+                    root.commit.hex(),
+                    output::plain(marker)
+                ));
+            }
+        }
+        Ok(None)
+    }
+
     /// Object kind, tree, base, signature in the namespace the root's shape picks, each
     /// waiver's signature, covers, parents, in that order; the first failure is the reason.
     fn root(
@@ -335,38 +384,8 @@ impl Judge<'_> {
                 return invalid(fact, format!("its signature does not hold: {what}"));
             }
         };
-        for (index, lever) in root.levers.iter().enumerate() {
-            let Body::Lever(body) = &lever.node.body else {
-                return invalid(fact, format!("levers[{index}] is not a lever node"));
-            };
-            let bytes = lever.node.canonical_bytes().map_err(Refusal::internal)?;
-            let verified = jtac_sign::verify(
-                self.tool,
-                self.signers.as_sign(),
-                &body.signer,
-                Namespace::Lever,
-                lever.node.ts,
-                &bytes,
-                &lever.sig,
-            )
-            .map_err(|e| self.signers.refusal(self.command, &e))?;
-            fact.waiver_trust.push(match verified {
-                Verified::Trusted => Trust::Trusted,
-                Verified::Unknown { why } => Trust::Unknown { why },
-                Verified::Invalid { what } => {
-                    return invalid(
-                        fact,
-                        format!("its waiver {index}'s signature does not hold: {what}"),
-                    );
-                }
-            });
-            if let Some(marker) = &body.agent {
-                self.notes.push(format!(
-                    "{}'s root applies a waiver written under an agent session ({})",
-                    root.commit.hex(),
-                    output::plain(marker)
-                ));
-            }
+        if let Some(why) = self.waivers(root, &mut fact.waiver_trust)? {
+            return invalid(fact, why);
         }
         let mut parents: Vec<GitOid> = root.parents.iter().map(|p| p.commit).collect();
         parents.extend(root.base);

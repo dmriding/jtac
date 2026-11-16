@@ -302,6 +302,9 @@ fn a_developers_root_under_a_ci_check_is_partial_and_one_that_leaves_it_out_is_i
     assert!(why.starts_with("it lists `test` unread"), "{why}");
 }
 
+/// The pull request's own commit reads covered through the merge root beside the
+/// developer's partial one, with no reading of the CI gate's; every commit of the rebase
+/// is the CI gate's through the tip's root.
 #[test]
 fn the_merge_root_covers_the_pull_request_and_the_ci_gate_reads_its_first_parent_line() {
     let h = history();
@@ -314,8 +317,6 @@ fn the_merge_root_covers_the_pull_request_and_the_ci_gate_reads_its_first_parent
     let (code, v) = json(&h.repo, &["audit", "--json"]);
     assert_eq!(code, 0, "{v}");
     let read = |c: &str| row(&v, c);
-    // The pull request's own commit: covered through the merge root beside the developer's
-    // partial one, and no reading of the CI gate's.
     assert_eq!(
         read(&h.one),
         ("covered".into(), "covers".into(), "-".into())
@@ -324,7 +325,6 @@ fn the_merge_root_covers_the_pull_request_and_the_ci_gate_reads_its_first_parent
         read(&h.merge),
         ("covered".into(), "own".into(), "covered".into())
     );
-    // Every commit of the rebase is the CI gate's through the tip's root.
     assert_eq!(
         read(&h.r1),
         ("covered".into(), "covers".into(), "covered".into())
@@ -409,8 +409,8 @@ fn a_policy_a_blobless_clone_lacks_is_exit_two_with_the_fetch_named_and_a_row_in
     let blob = h
         .repo
         .git(&["rev-parse", &format!("{}:.jtac/policy.toml", h.one)]);
-    let fetch = format!("git fetch origin {blob}");
-    assert!(ran.stderr.contains(&fetch), "{}", ran.stderr);
+    let named = ran.stderr.contains("git fetch origin ") && ran.stderr.contains(&blob);
+    assert!(named, "{}", ran.stderr);
 
     let zero = h
         .repo

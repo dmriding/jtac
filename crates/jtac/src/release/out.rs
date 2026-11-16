@@ -99,6 +99,49 @@ impl ReleaseOut {
     }
 }
 
+/// One `fix` line for each kind of refusal the range holds.
+fn fixes(o: &ReleaseOut, s: &mut String) {
+    let waive = "`jtac waive <commit> --ci --reason <why>` with that commit checked out, then \
+                 `jtac check` there, so a root carries the waiver";
+    if !o.absent.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       absent: `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings a root \
+             that was pushed; a commit merged around the gate takes {waive}; then tag the next \
+             patch, since a tag is never moved"
+        );
+    }
+    if !o.untrusted.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       untrusted: add the signer's key to .jtac/signers in a reviewed commit \
+             the next tag descends from, or {waive}"
+        );
+    }
+    if !o.not_ci.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       not ci: tag the merge commit the forge made, not the pull request's \
+             own; a merge made around CI takes {waive}"
+        );
+    }
+    if !o.partial.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       partial: only a merge root covers a commit whose policy reads a check \
+             from CI; `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings one that was \
+             pushed, and a commit merged around CI takes {waive}"
+        );
+    }
+    if !o.failed.is_empty() {
+        let _ = writeln!(
+            s,
+            "  fix       failed: a later attempt that passes writes the root; to ship over the \
+             failure, {waive}, once for each commit of a rebase"
+        );
+    }
+}
+
 /// Human form.
 pub fn render(o: &ReleaseOut) -> String {
     let mut s = String::new();
@@ -156,45 +199,7 @@ pub fn render(o: &ReleaseOut) -> String {
         );
     }
     let tag = quoted(&o.tag, "<tag>");
-    let waive = "`jtac waive <commit> --ci --reason <why>` with that commit checked out, then \
-                 `jtac check` there, so a root carries the waiver";
-    if !o.absent.is_empty() {
-        let _ = writeln!(
-            s,
-            "  fix       absent: `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings a root \
-             that was pushed; a commit merged around the gate takes {waive}; then tag the next \
-             patch, since a tag is never moved"
-        );
-    }
-    if !o.untrusted.is_empty() {
-        let _ = writeln!(
-            s,
-            "  fix       untrusted: add the signer's key to .jtac/signers in a reviewed commit \
-             the next tag descends from, or {waive}"
-        );
-    }
-    if !o.not_ci.is_empty() {
-        let _ = writeln!(
-            s,
-            "  fix       not ci: tag the merge commit the forge made, not the pull request's \
-             own; a merge made around CI takes {waive}"
-        );
-    }
-    if !o.partial.is_empty() {
-        let _ = writeln!(
-            s,
-            "  fix       partial: only a merge root covers a commit whose policy reads a check \
-             from CI; `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings one that was \
-             pushed, and a commit merged around CI takes {waive}"
-        );
-    }
-    if !o.failed.is_empty() {
-        let _ = writeln!(
-            s,
-            "  fix       failed: a later attempt that passes writes the root; to ship over the \
-             failure, {waive}, once for each commit of a rebase"
-        );
-    }
+    fixes(o, &mut s);
     if !o.artifacts.is_empty() {
         let _ = writeln!(s, "  artifacts {}", o.artifacts.len());
     }
