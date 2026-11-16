@@ -27,6 +27,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.25) Repository CI only, no behaviour (#163). The `signoff` check runs on
+  `pull_request` from its own workflow, `signoff.yml`, with a read-only token. GitHub blocks
+  `pull_request_target` from 2026-12-02 on a public repository with no Actions event policy;
+  `accept` still runs on it. A changed base branch now re-runs the check.
 - (0.2.23) `DESIGN.md` only, no behaviour (#156, #157): decisions 58 to 60, settled before
   M20 builds a reader. One order picks the root a commit is read through, for every reader;
   open question 15 is closed. The CI gate reads its own roots, a CI root covering its
