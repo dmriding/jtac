@@ -28,13 +28,16 @@ impl<'de> Deserialize<'de> for V1 {
     }
 }
 
-/// A node's `v`: 2 only on a waiver whose commit scope names a gate (DESIGN.md section 9.2).
+/// A node's `v`: 2 only on a waiver whose commit scope names a gate, 3 only on a check read
+/// from CI (DESIGN.md section 9.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeVersion {
     /// The v0.1 shape.
     V1,
     /// Version 1 plus `scope.gate`.
     V2,
+    /// A check whose body holds `observed` in place of a run's fields.
+    V3,
 }
 
 impl Serialize for NodeVersion {
@@ -42,6 +45,7 @@ impl Serialize for NodeVersion {
         s.serialize_u8(match self {
             Self::V1 => 1,
             Self::V2 => 2,
+            Self::V3 => 3,
         })
     }
 }
@@ -51,9 +55,10 @@ impl<'de> Deserialize<'de> for NodeVersion {
         match u64::deserialize(d)? {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
+            3 => Ok(Self::V3),
             other => Err(serde::de::Error::custom(UnsupportedVersion {
                 got: other,
-                reads: "versions 1 and 2",
+                reads: "versions 1 to 3",
             })),
         }
     }
@@ -132,17 +137,21 @@ mod tests {
     }
 
     #[test]
-    fn a_node_version_is_one_or_two_and_nothing_else() {
-        assert_eq!(serde_json::to_string(&NodeVersion::V1).unwrap(), "1");
-        assert_eq!(serde_json::to_string(&NodeVersion::V2).unwrap(), "2");
-        assert_eq!(
-            serde_json::from_str::<NodeVersion>("2").unwrap(),
-            NodeVersion::V2
-        );
-        let err = serde_json::from_str::<NodeVersion>("3")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("versions 1 and 2"), "{err}");
+    fn a_node_version_is_one_to_three_and_nothing_else() {
+        for (v, text) in [
+            (NodeVersion::V1, "1"),
+            (NodeVersion::V2, "2"),
+            (NodeVersion::V3, "3"),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), text);
+            assert_eq!(serde_json::from_str::<NodeVersion>(text).unwrap(), v);
+        }
+        for bad in ["0", "4"] {
+            let err = serde_json::from_str::<NodeVersion>(bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("versions 1 to 3"), "{bad}: {err}");
+        }
     }
 
     #[test]

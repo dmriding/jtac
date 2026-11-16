@@ -1,7 +1,8 @@
 //! `counts` derived from a root's leaves (DESIGN.md section 9.4, decision 19): one
 //! implementation for the writer and for `jtac replay`, so a mismatch means the leaves changed.
 
-use crate::node::{Action, Body, Node, Outcome, Severity};
+use crate::node::{Action, Body, CheckBody, Node, Outcome, Severity};
+use crate::observed::ObservedCheck;
 use crate::root::Counts;
 
 /// Totals over `nodes`. Waivers are the lever leaves with action `waive`.
@@ -9,13 +10,14 @@ pub fn counts(nodes: &[Node]) -> Counts {
     let mut c = Counts::default();
     for n in nodes {
         match &n.body {
-            Body::Check(b) if b.outcome == Outcome::Pass => {
+            Body::Check(CheckBody { outcome, .. })
+            | Body::Observed(ObservedCheck { outcome, .. }) => {
                 c.checks += 1;
-                c.pass += 1;
-            }
-            Body::Check(_) => {
-                c.checks += 1;
-                c.fail += 1;
+                if *outcome == Outcome::Pass {
+                    c.pass += 1;
+                } else {
+                    c.fail += 1;
+                }
             }
             Body::Finding(f) => match f.severity {
                 Severity::Blocker => c.findings.blocker += 1,
@@ -32,7 +34,7 @@ pub fn counts(nodes: &[Node]) -> Counts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::tests::{check_node, commit_waiver};
+    use crate::node::tests::{check_node, commit_waiver, observed_node};
     use crate::node::{Body, CheckBody, FindingBody};
     use crate::root::FindingCounts;
 
@@ -40,6 +42,14 @@ mod tests {
         let mut n = check_node();
         if let Body::Check(CheckBody { outcome: o, .. }) = &mut n.body {
             *o = outcome;
+        }
+        n
+    }
+
+    fn observed(outcome: Outcome) -> Node {
+        let mut n = observed_node();
+        if let Body::Observed(c) = &mut n.body {
+            c.outcome = outcome;
         }
         n
     }
@@ -70,13 +80,15 @@ mod tests {
             finding(Severity::Minor),
             finding(Severity::Minor),
             commit_waiver(),
+            observed_node(),
+            observed(Outcome::Error),
         ];
         assert_eq!(
             counts(&nodes),
             Counts {
-                checks: 4,
-                pass: 1,
-                fail: 3,
+                checks: 6,
+                pass: 2,
+                fail: 4,
                 findings: FindingCounts {
                     blocker: 1,
                     major: 0,

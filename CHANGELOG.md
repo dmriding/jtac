@@ -8,6 +8,14 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Added
 
+- (0.2.24) The pure half of reading a check from CI (`DESIGN.md` section 15.2, M20, decision
+  61). No command reads a result yet, and every gate still refuses a policy that holds a
+  `ci` check. `jtac-core` gains node version 3, a check node that holds `observed` in place
+  of a run's fields; the results file, version 1, with its reader; and selection, which
+  picks a `ci` check's result from the file: pending while any matching run is, missing
+  when none matches or one lacks the job, else the worst outcome. The verdict counts a
+  version 3 node only for its check's pin and commit, and a check node its check does not
+  count now fails the verdict as `UncountedCheck`.
 - (0.2.21) Policy version 2 is read (DESIGN.md section 15.2, M19). A check has `run`, as
   before, or `ci = { workflow = "<path>", job = "<name>" }`, which names the CI definition
   file and job its result is read from. No gate reads a CI result yet: `check`, `jtac ci`

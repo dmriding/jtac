@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::canonical::{CanonicalError, canonical_bytes, canonical_digest};
 use crate::digest::Sha256Digest;
+use crate::observed::ObservedCheck;
 use crate::oid::GitOid;
 use crate::schema::NodeVersion;
 use crate::signer::Signer;
@@ -25,11 +26,14 @@ pub struct Node {
 }
 
 impl Node {
-    /// Version 2 exactly when the body is a waiver naming a gate, so one content has one id
-    /// (`a_node_is_version_2_exactly_when_its_scope_names_a_gate`).
+    /// Version 2 exactly when the body is a waiver naming a gate and 3 exactly when it is a
+    /// check read from CI, so one content has one id
+    /// (`a_node_is_version_2_exactly_when_its_scope_names_a_gate`,
+    /// `a_node_is_version_3_exactly_when_its_check_was_read_from_ci`).
     pub fn version(&self) -> NodeVersion {
         match &self.body {
             Body::Lever(b) if b.gate().is_some() => NodeVersion::V2,
+            Body::Observed(_) => NodeVersion::V3,
             _ => NodeVersion::V1,
         }
     }
@@ -37,7 +41,7 @@ impl Node {
     /// The kind the body carries.
     pub fn kind(&self) -> Kind {
         match self.body {
-            Body::Check(_) => Kind::Check,
+            Body::Check(_) | Body::Observed(_) => Kind::Check,
             Body::Finding(_) => Kind::Finding,
             Body::Lever(_) => Kind::Lever,
         }
@@ -72,6 +76,8 @@ pub enum Kind {
 pub enum Body {
     /// See [`CheckBody`].
     Check(CheckBody),
+    /// See [`ObservedCheck`]: kind `check`, node version 3.
+    Observed(ObservedCheck),
     /// See [`FindingBody`].
     Finding(FindingBody),
     /// See [`LeverBody`].
@@ -286,11 +292,19 @@ impl<'de> Deserialize<'de> for Node {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let w = Wire::<serde_json::Value>::deserialize(d)?;
         let body = match w.kind {
+            Kind::Check if w.v == NodeVersion::V3 => {
+                serde_json::from_value(w.body).map(Body::Observed)
+            }
             Kind::Check => serde_json::from_value(w.body).map(Body::Check),
             Kind::Finding => serde_json::from_value(w.body).map(Body::Finding),
             Kind::Lever => serde_json::from_value(w.body).map(Body::Lever),
         }
         .map_err(serde::de::Error::custom)?;
+        if matches!(&body, Body::Observed(c) if !c.coherent()) {
+            return Err(serde::de::Error::custom(
+                "a version 3 node's outcome is neither what its conclusion maps to nor error",
+            ));
+        }
         let node = Node {
             tree: w.tree,
             policy: w.policy,
@@ -301,6 +315,7 @@ impl<'de> Deserialize<'de> for Node {
             return Err(serde::de::Error::custom(match w.v {
                 NodeVersion::V1 => "a version 1 node names a gate",
                 NodeVersion::V2 => "a version 2 node is a waiver naming a gate, and this is not",
+                NodeVersion::V3 => "a version 3 node is a check read from CI, and this is not",
             }));
         }
         Ok(node)
@@ -311,11 +326,13 @@ impl<'de> Deserialize<'de> for Node {
 pub(crate) mod tests {
     use super::*;
     use crate::canonical::{ReadError, from_canonical};
+    use crate::observed::{Forge, Observed};
 
     pub(crate) const EMPTY: &str =
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     pub(crate) const TS: &str = "2026-10-10T18:30:00Z";
     pub(crate) const COMMIT_ONE: &str = "sha1:0000000000000000000000000000000000000001";
+    const BLOB: &str = "sha1:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
 
     pub(crate) fn signer() -> Signer {
         Signer {
@@ -395,6 +412,27 @@ pub(crate) mod tests {
         )
     }
 
+    /// `test` read as passing from job `test` of run 1234 for `COMMIT_ONE`.
+    pub(crate) fn observed_node() -> Node {
+        Node {
+            body: Body::Observed(ObservedCheck {
+                id: "test".into(),
+                outcome: Outcome::Pass,
+                observed: Observed {
+                    forge: Forge::Github,
+                    workflow: ".github/workflows/ci.yml".into(),
+                    blob: BLOB.parse().unwrap(),
+                    job: Some("test".into()),
+                    commit: COMMIT_ONE.parse().unwrap(),
+                    run: 1234,
+                    attempt: 1,
+                    conclusion: "success".into(),
+                },
+            }),
+            ..check_node()
+        }
+    }
+
     pub(crate) fn lever(action: Action) -> Node {
         let mut node = commit_waiver();
         if let Body::Lever(b) = &mut node.body {
@@ -449,6 +487,7 @@ pub(crate) mod tests {
             ci_waiver(),
             rule_waiver(),
             lever(Action::Init),
+            observed_node(),
         ] {
             let bytes = node.canonical_bytes().unwrap();
             let back: Node = from_canonical(&bytes).unwrap();
@@ -563,6 +602,147 @@ pub(crate) mod tests {
             node.id().unwrap().to_string(),
             "sha256:26e125af62c32f0afebd37d2424e3b8e857fc3951aad464f207443de115f8715"
         );
+    }
+
+    #[test]
+    fn node_v3_id_known_answer() {
+        // DESIGN.md section 9.2. Changing these bytes changes every observed check's id.
+        let want = concat!(
+            r#"{"body":{"id":"test","observed":{"attempt":1,"blob":"sha1:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391","#,
+            r#""commit":"sha1:0000000000000000000000000000000000000001","conclusion":"success","forge":"github","#,
+            r#""job":"test","run":1234,"workflow":".github/workflows/ci.yml"},"outcome":"pass"},"kind":"check","#,
+            r#""policy":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","#,
+            r#""tree":"sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904","ts":"2026-10-10T18:30:00Z","v":3}"#
+        );
+        let node = observed_node();
+        assert_eq!(
+            String::from_utf8(node.canonical_bytes().unwrap()).unwrap(),
+            want
+        );
+        assert_eq!(
+            node.id().unwrap().to_string(),
+            "sha256:200806607c04edde9445926a7fe83d6214ad5007ae82ceaf16ca63972102682c"
+        );
+        assert_eq!(from_canonical::<Node>(want.as_bytes()).unwrap(), node);
+    }
+
+    /// One content, one id: a check read from CI is version 3 and nothing else is, a reader
+    /// refuses a `v` that disagrees with the body either way, and neither check body reads
+    /// as the other.
+    #[test]
+    fn a_node_is_version_3_exactly_when_its_check_was_read_from_ci() {
+        let node = observed_node();
+        assert_eq!(
+            (node.version(), node.kind()),
+            (NodeVersion::V3, Kind::Check)
+        );
+        let v3 = String::from_utf8(node.canonical_bytes().unwrap()).unwrap();
+        let run = String::from_utf8(check_node().canonical_bytes().unwrap()).unwrap();
+        let waiver = String::from_utf8(ci_waiver().canonical_bytes().unwrap()).unwrap();
+        assert!(v3.ends_with(r#""v":3}"#), "{v3}");
+        let mut jobless = node.clone();
+        if let Body::Observed(c) = &mut jobless.body {
+            c.observed.job = None;
+        }
+        let no_job = String::from_utf8(jobless.canonical_bytes().unwrap()).unwrap();
+        assert!(!no_job.contains(r#""job""#), "{no_job}");
+        assert_eq!(from_canonical::<Node>(no_job.as_bytes()).unwrap(), jobless);
+        let mut both = serde_json::to_value(&node).unwrap();
+        both["body"]["exit"] = 0.into();
+        let mut extra = serde_json::to_value(&node).unwrap();
+        extra["body"]["observed"]["url"] = "x".into();
+        let mut forge = serde_json::to_value(&node).unwrap();
+        forge["body"]["observed"]["forge"] = "example".into();
+        let mut no_commit = serde_json::to_value(&node).unwrap();
+        no_commit["body"]["observed"]
+            .as_object_mut()
+            .unwrap()
+            .remove("commit");
+        for (name, doc) in [
+            (
+                "observed body as version 1",
+                v3.replace(r#""v":3}"#, r#""v":1}"#),
+            ),
+            (
+                "observed body as version 2",
+                v3.replace(r#""v":3}"#, r#""v":2}"#),
+            ),
+            (
+                "a run's body as version 3",
+                run.replace(r#""v":1}"#, r#""v":3}"#),
+            ),
+            (
+                "a waiver as version 3",
+                waiver.replace(r#""v":2}"#, r#""v":3}"#),
+            ),
+            (
+                "observed body under kind finding",
+                v3.replace(r#""kind":"check""#, r#""kind":"finding""#),
+            ),
+            ("a run's field beside observed", both.to_string()),
+            ("an unknown observed key", extra.to_string()),
+            ("an unknown forge", forge.to_string()),
+            ("no commit", no_commit.to_string()),
+        ] {
+            assert!(
+                serde_json::from_str::<Node>(&doc).is_err(),
+                "{name} was accepted"
+            );
+        }
+        let err = serde_json::from_str::<Node>(&waiver.replace(r#""v":2}"#, r#""v":3}"#))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("a version 3 node is a check read from CI"),
+            "{err}"
+        );
+        let mut big = node;
+        if let Body::Observed(c) = &mut big.body {
+            c.observed.run = u64::MAX;
+        }
+        assert!(matches!(
+            big.id().unwrap_err(),
+            CanonicalError::UnsafeInteger { ref path } if path == ".body.observed.run"
+        ));
+    }
+
+    /// The mapping is part of version 3: a node cannot say `pass` over the forge's
+    /// `failure`. `error` is read under any word, since a job name held twice writes it.
+    #[test]
+    fn a_version_3_node_says_what_its_conclusion_says_or_error() {
+        let doc = |outcome: &str, word: &str| {
+            let mut v = serde_json::to_value(observed_node()).unwrap();
+            v["body"]["outcome"] = outcome.into();
+            v["body"]["observed"]["conclusion"] = word.into();
+            serde_json::from_value::<Node>(v)
+        };
+        let rows = [
+            ("pass", "success", true),
+            ("fail", "failure", true),
+            ("fail", "timed_out", true),
+            ("skipped", "skipped", true),
+            ("error", "cancelled", true),
+            ("error", "success", true),
+            ("error", "", true),
+            ("pass", "failure", false),
+            ("pass", "", false),
+            ("pass", "cancelled", false),
+            ("pass", "skipped", false),
+            ("pass", "Success", false),
+            ("skipped", "success", false),
+            ("fail", "success", false),
+        ];
+        for (outcome, word, reads) in rows {
+            let got = doc(outcome, word);
+            assert_eq!(got.is_ok(), reads, "{outcome} over {word:?}");
+            if let Err(e) = got {
+                assert!(
+                    e.to_string()
+                        .contains("neither what its conclusion maps to"),
+                    "{e}"
+                );
+            }
+        }
     }
 
     #[test]

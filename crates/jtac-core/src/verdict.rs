@@ -3,6 +3,7 @@
 
 use crate::digest::Sha256Digest;
 use crate::node::{Body, LeverBody, Node, Outcome, Scope, Severity};
+use crate::observed::Observed;
 use crate::oid::GitOid;
 use crate::pin::Pin;
 use crate::root::State;
@@ -38,6 +39,19 @@ pub struct CheckSpec {
     pub pin: Option<Pin>,
 }
 
+impl CheckSpec {
+    /// Whether a node from `source` (`None` for a run) is this check's on `commit`: a run
+    /// never satisfies a check read from CI, nor a version 3 node a check jtac runs
+    /// (`a_ci_check_counts_only_a_version_3_node_for_its_pin_and_commit`).
+    pub fn counts(&self, source: Option<&Observed>, commit: &GitOid) -> bool {
+        match (&self.pin, source) {
+            (None, None) => true,
+            (Some(pin), Some(o)) => o.is_for(pin, commit),
+            _ => false,
+        }
+    }
+}
+
 /// The decision and everything that went into it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict {
@@ -45,8 +59,8 @@ pub struct Verdict {
     pub pass: bool,
     /// `DeclaredOff` when a commit waiver applied.
     pub state: State,
-    /// Why it would fail, in order: checks in policy order, unknown check ids in node order,
-    /// then findings in node order. A commit waiver keeps them so the root stays loud.
+    /// Why it would fail, in order: checks in policy order, unknown and uncounted check
+    /// nodes in node order, then findings in node order. A commit waiver keeps them so the root stays loud.
     pub reasons: Vec<Reason>,
     /// Positions in `nodes` of the levers the root carries: the waivers that changed the
     /// outcome, and a CI waiver naming the commit, which changes nothing (DESIGN.md 11.2).
@@ -68,6 +82,11 @@ pub enum Reason {
     },
     /// A check node for an id the policy does not name.
     UnknownCheck {
+        /// The check id.
+        id: String,
+    },
+    /// A check node its check does not count: from the other source, pin or commit.
+    UncountedCheck {
         /// The check id.
         id: String,
     },
@@ -94,36 +113,46 @@ pub enum Reason {
 }
 
 /// Decide. Check and finding nodes on another tree or policy are ignored; waivers may be
-/// older than the tree, and a repeated waiver node counts once. Blocks when
-/// `severity <= block_at`: `Severity` orders Blocker first, pinned by
-/// `severity_orders_blocker_first`.
+/// older than the tree, and a repeated waiver node counts once. A check counts a node from
+/// its own source alone (`CheckSpec::counts`), and a node on this tree and policy that its
+/// check does not count is a reason, never ignored: one policy hash names one source, so
+/// such a node is no leftover. Blocks when `severity <= block_at`: `Severity` orders Blocker
+/// first, pinned by `severity_orders_blocker_first`.
 pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
     let here = |n: &Node| n.tree == facts.tree && n.policy == facts.policy;
     let mut reasons = Vec::new();
     let mut applied = Vec::new();
-    let checks: Vec<_> = nodes
+    let checks: Vec<(&str, Outcome, Option<&Observed>)> = nodes
         .iter()
         .filter_map(|n| match &n.body {
-            Body::Check(c) if here(n) => Some(c),
+            Body::Check(c) if here(n) => Some((c.id.as_str(), c.outcome, None)),
+            Body::Observed(c) if here(n) => Some((c.id.as_str(), c.outcome, Some(&c.observed))),
             _ => None,
         })
         .collect();
     for spec in &facts.checks {
         let id = spec.id.clone();
-        let mut found = checks.iter().filter(|c| c.id == spec.id);
+        let mut found = checks
+            .iter()
+            .filter(|(seen, _, source)| *seen == spec.id && spec.counts(*source, &facts.commit));
         match (found.next(), found.next()) {
             (None, _) if spec.required => reasons.push(Reason::MissingCheck { id }),
             (Some(_), Some(_)) => reasons.push(Reason::DuplicateCheck { id }),
-            (Some(c), None) if spec.required && c.outcome != Outcome::Pass => {
-                let outcome = c.outcome;
+            (Some((_, outcome, _)), None) if spec.required && *outcome != Outcome::Pass => {
+                let outcome = *outcome;
                 reasons.push(Reason::CheckNotPass { id, outcome });
             }
             _ => {}
         }
     }
-    for c in &checks {
-        if !facts.checks.iter().any(|s| s.id == c.id) {
-            reasons.push(Reason::UnknownCheck { id: c.id.clone() });
+    for (seen, _, source) in &checks {
+        let id = (*seen).into();
+        match facts.checks.iter().find(|s| s.id == *seen) {
+            None => reasons.push(Reason::UnknownCheck { id }),
+            Some(spec) if !spec.counts(*source, &facts.commit) => {
+                reasons.push(Reason::UncountedCheck { id });
+            }
+            Some(_) => {}
         }
     }
     let mut waivers: Vec<(usize, &LeverBody)> = Vec::new();
@@ -182,9 +211,10 @@ pub fn gate(facts: &Facts, nodes: &[Node], now: Ts) -> Verdict {
 mod tests {
     use super::*;
     use crate::node::tests::{
-        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, rule_waiver,
+        COMMIT_ONE, EMPTY, TS, check_node, ci_waiver, commit_waiver, observed_node, rule_waiver,
     };
     use crate::node::{CheckBody, FindingBody};
+    use crate::observed::ObservedCheck;
 
     const OTHER_TREE: &str = "sha1:0000000000000000000000000000000000000009";
     const OTHER_POLICY: &str =
@@ -546,6 +576,7 @@ mod tests {
                 Reason::MissingCheck { id } => format!("missing {id}"),
                 Reason::CheckNotPass { id, .. } => format!("notpass {id}"),
                 Reason::UnknownCheck { id } => format!("unknown {id}"),
+                Reason::UncountedCheck { id } => format!("uncounted {id}"),
                 Reason::Finding { rule, .. } => format!("finding {rule}"),
                 Reason::DuplicateCheck { id } => format!("dup {id}"),
             })
@@ -561,6 +592,115 @@ mod tests {
                 "finding JT-A"
             ]
         );
+    }
+
+    /// DESIGN.md sections 11.2 and 15.2: the pin, the commit and the node's version each
+    /// decide, and a check node its check does not count fails the verdict where it stands.
+    #[test]
+    fn a_ci_check_counts_only_a_version_3_node_for_its_pin_and_commit() {
+        let mut f = facts(&[("fmt", true), ("test", true)], Severity::Major);
+        f.checks[1].pin = Some(Pin {
+            workflow: ".github/workflows/ci.yml".into(),
+            job: Some("test".into()),
+        });
+        let seen = |edit: &dyn Fn(&mut ObservedCheck)| {
+            let mut node = observed_node();
+            if let Body::Observed(c) = &mut node.body {
+                edit(c);
+            }
+            node
+        };
+        let fmt = || check("fmt", Outcome::Pass);
+        let missing = || Reason::MissingCheck { id: id("test") };
+        let uncounted = |of: &str| Reason::UncountedCheck { id: id(of) };
+        let rows = vec![
+            (
+                "the pinned job passed",
+                vec![fmt(), observed_node()],
+                vec![],
+            ),
+            (
+                "the pinned job failed",
+                vec![fmt(), seen(&|c| c.outcome = Outcome::Fail)],
+                vec![Reason::CheckNotPass {
+                    id: id("test"),
+                    outcome: Outcome::Fail,
+                }],
+            ),
+            (
+                "a run's node for the ci check",
+                vec![fmt(), check("test", Outcome::Pass)],
+                vec![missing(), uncounted("test")],
+            ),
+            (
+                "a failing run's node beside the observed pass",
+                vec![fmt(), observed_node(), check("test", Outcome::Fail)],
+                vec![uncounted("test")],
+            ),
+            (
+                "a version 3 node for the run check",
+                vec![seen(&|c| c.id = "fmt".into()), observed_node()],
+                vec![Reason::MissingCheck { id: id("fmt") }, uncounted("fmt")],
+            ),
+            (
+                "another definition file",
+                vec![
+                    fmt(),
+                    seen(&|c| c.observed.workflow = ".github/workflows/x.yml".into()),
+                ],
+                vec![missing(), uncounted("test")],
+            ),
+            (
+                "another job",
+                vec![fmt(), seen(&|c| c.observed.job = Some("lint".into()))],
+                vec![missing(), uncounted("test")],
+            ),
+            (
+                "the run's word where policy names a job",
+                vec![fmt(), seen(&|c| c.observed.job = None)],
+                vec![missing(), uncounted("test")],
+            ),
+            (
+                "another commit",
+                vec![
+                    fmt(),
+                    seen(&|c| c.observed.commit = OTHER_TREE.parse().unwrap()),
+                ],
+                vec![missing(), uncounted("test")],
+            ),
+            (
+                "two results for the pin",
+                vec![fmt(), observed_node(), seen(&|c| c.observed.run = 9)],
+                vec![Reason::DuplicateCheck { id: id("test") }],
+            ),
+            (
+                "an id the policy does not name",
+                vec![fmt(), observed_node(), seen(&|c| c.id = "extra".into())],
+                vec![Reason::UnknownCheck { id: id("extra") }],
+            ),
+            (
+                "a version 3 node on another tree is not here at all",
+                vec![fmt(), elsewhere(observed_node(), OTHER_TREE, EMPTY)],
+                vec![missing()],
+            ),
+        ];
+        for (name, nodes, want) in rows {
+            let verdict = run(&f, nodes);
+            assert_eq!(verdict.reasons, want, "{name}");
+            assert_eq!(verdict.pass, want.is_empty(), "{name}");
+        }
+        let mut jobless = f.clone();
+        jobless.checks[1].pin = Some(Pin {
+            workflow: ".github/workflows/ci.yml".into(),
+            job: None,
+        });
+        assert!(run(&jobless, vec![fmt(), seen(&|c| c.observed.job = None)]).pass);
+        let verdict = run(&jobless, vec![fmt(), observed_node()]);
+        assert_eq!(verdict.reasons, vec![missing(), uncounted("test")]);
+        f.checks[1].required = false;
+        assert!(run(&f, vec![fmt()]).pass);
+        let verdict = run(&f, vec![fmt(), check("test", Outcome::Pass)]);
+        assert_eq!(verdict.reasons, vec![uncounted("test")]);
     }
 
     #[test]
