@@ -5,7 +5,7 @@
 [![release](https://img.shields.io/github/v/release/dmriding/jtac)](https://github.com/dmriding/jtac/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/jtac)](https://crates.io/crates/jtac)
 [![msrv](https://img.shields.io/crates/msrv/jtac)](https://crates.io/crates/jtac)
-[![license](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](LICENSE.md)
+[![license](https://img.shields.io/badge/license-FSL--1.1--ALv2-blue)](https://github.com/dmriding/jtac/blob/main/LICENSE.md)
 
 AI agents write code faster than anyone can review it. jtac is a gate that
 runs before a push: it checks the change, and on a pass signs a record of what
@@ -54,15 +54,17 @@ refusal: the gate could not answer.
 
 ## What it is today
 
-**v0.2.18 is the latest release.** [`DESIGN.md`](DESIGN.md) is the source of
+**v0.2.18 is the latest release.**
+[`DESIGN.md`](https://github.com/dmriding/jtac/blob/main/DESIGN.md) is the source of
 truth; `main` is the development line; a release is a signed `v*` tag
-([`docs/RELEASING.md`](docs/RELEASING.md)).
+([`docs/RELEASING.md`](https://github.com/dmriding/jtac/blob/main/docs/RELEASING.md)).
 
 The terms: a **root** is the signed record of one gate run on one
 commit's tree, kept under `refs/jtac/roots/` and pushed with the code.
 `jtac audit` reads each commit as **covered**, **declared off** or **absent**
-from the roots that bear on it; [`DESIGN.md`](DESIGN.md) section 9.5 defines
-the three. `CLEARED HOT` is the gate's pass and `ABORT` its block; the
+from the roots that bear on it;
+[`DESIGN.md`](https://github.com/dmriding/jtac/blob/main/DESIGN.md) section 9.5
+defines the three. `CLEARED HOT` is the gate's pass and `ABORT` its block; the
 vocabulary follows the tool's name, which `DESIGN.md` explains.
 
 What works now:
@@ -263,8 +265,8 @@ apply: an environment holding the key, a CODEOWNERS line, and two rulesets:
 jtac init --ci github
 ```
 
-[`docs/CI.md`](docs/CI.md) has the steps it prints, what the check says, fork
-pull requests, bypass merges, and what reads as the developer's.
+[`docs/CI.md`](https://github.com/dmriding/jtac/blob/main/docs/CI.md) has the
+steps it prints, what the check says, fork pull requests, bypass merges, and what reads as the developer's.
 
 ## Numbers
 
@@ -299,16 +301,22 @@ competing-use case the license reserves.
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`DESIGN.md`](DESIGN.md).
+Read [`CONTRIBUTING.md`](https://github.com/dmriding/jtac/blob/main/CONTRIBUTING.md),
+then [`DESIGN.md`](https://github.com/dmriding/jtac/blob/main/DESIGN.md).
 Design decisions are recorded in `DESIGN.md` section 21, licensing and
-contribution terms in [`docs/adr/`](docs/adr/), and proposals to change the
-design go through [`docs/rfc/`](docs/rfc/). Security reports go through
-[`SECURITY.md`](SECURITY.md).
+contribution terms in
+[`docs/adr/`](https://github.com/dmriding/jtac/tree/main/docs/adr), and proposals
+to change the design go through
+[`docs/rfc/`](https://github.com/dmriding/jtac/tree/main/docs/rfc). Security
+reports go through
+[`SECURITY.md`](https://github.com/dmriding/jtac/blob/main/SECURITY.md).
 
 ## License
 
 jtac is source-available under the Functional Source License, version 1.1,
-with an Apache 2.0 future grant ([`LICENSE.md`](LICENSE.md), SPDX `FSL-1.1-ALv2`). You may
+with an Apache 2.0 future grant
+([`LICENSE.md`](https://github.com/dmriding/jtac/blob/main/LICENSE.md), SPDX
+`FSL-1.1-ALv2`). You may
 use, copy, modify, and redistribute it for any purpose except offering it, or
 a derivative, as a commercial product or service that competes with it. Each
 release becomes Apache 2.0 two years after publication. This is not an

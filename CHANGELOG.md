@@ -6,6 +6,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+### Fixed
+
+- (0.2.19) README links to the repository's own files by absolute URL. crates.io resolves a
+  relative link against `crates/jtac`, so nine links on the 0.2.18 page are dead and the
+  license link opens a symlink; that page stays as published, the next version's is right.
+
 ## [0.2.18] - 2026-11-14
 
 ### Added
