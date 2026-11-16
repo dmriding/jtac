@@ -1,7 +1,8 @@
 //! `counts` derived from a root's leaves (DESIGN.md section 9.4, decision 19): one
 //! implementation for the writer and for `jtac replay`, so a mismatch means the leaves changed.
 
-use crate::node::{Action, Body, Node, Outcome, Severity};
+use crate::node::{Action, Body, CheckBody, Node, Outcome, Severity};
+use crate::observed::ObservedCheck;
 use crate::root::Counts;
 
 /// Totals over `nodes`. Waivers are the lever leaves with action `waive`.
@@ -9,13 +10,14 @@ pub fn counts(nodes: &[Node]) -> Counts {
     let mut c = Counts::default();
     for n in nodes {
         match &n.body {
-            Body::Check(b) if b.outcome == Outcome::Pass => {
+            Body::Check(CheckBody { outcome, .. })
+            | Body::Observed(ObservedCheck { outcome, .. }) => {
                 c.checks += 1;
-                c.pass += 1;
-            }
-            Body::Check(_) => {
-                c.checks += 1;
-                c.fail += 1;
+                if *outcome == Outcome::Pass {
+                    c.pass += 1;
+                } else {
+                    c.fail += 1;
+                }
             }
             Body::Finding(f) => match f.severity {
                 Severity::Blocker => c.findings.blocker += 1,

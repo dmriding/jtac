@@ -11,11 +11,14 @@ pub mod digest;
 pub mod from;
 pub mod merkle;
 pub mod node;
+pub mod observed;
 pub mod oid;
 pub mod pin;
 pub mod release;
+pub mod results;
 pub mod root;
 pub mod schema;
+pub mod select;
 pub mod signer;
 pub mod time;
 pub mod verdict;
@@ -31,14 +34,17 @@ pub use node::{
     Action, Body, Capture, CheckBody, FindingBody, Gate, Kind, LeverBody, Node, Outcome, Scope,
     Severity,
 };
+pub use observed::{Forge, Observed, ObservedCheck};
 pub use oid::GitOid;
 pub use pin::Pin;
 pub use release::{Artifact, From, Release, ReleaseError};
+pub use results::{ForgeJob, ForgeRun, Results, ResultsError};
 pub use root::{
     Counts, Covers, FindingCounts, GateRef, Parent, PolicyRef, PolicySource, Root, RootError,
     SignedLever, State,
 };
 pub use schema::{NodeVersion, RootVersion, V1};
+pub use select::{Reading, Selected, select};
 pub use signer::Signer;
 pub use time::{Ts, TsError};
 pub use verdict::{CheckSpec, Facts, Reason, Verdict, gate};

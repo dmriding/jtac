@@ -51,7 +51,8 @@ const NOT_PASS: &str = "A required check that is not `pass` fails the verdict. `
                         one that passed.";
 
 const EVIDENCE: &str = "The verdict is computed from one node per policy check; a node missing, \
-                        doubled, or unnamed by the policy is evidence the gate cannot vouch for.";
+                        doubled, unnamed by the policy, or from another source than it names is \
+                        evidence the gate cannot vouch for.";
 
 const AGAIN: &str = "Run `jtac check` again; if it repeats, report it with this output.";
 
@@ -69,6 +70,10 @@ pub fn explain(reason: &Reason, p: &Judged) -> Explained {
         Reason::MissingCheck { id } => other(id, "has no result for this tree and policy"),
         Reason::DuplicateCheck { id } => other(id, "has two results for this tree and policy"),
         Reason::UnknownCheck { id } => other(id, "is not a check the policy names"),
+        Reason::UncountedCheck { id } => other(
+            id,
+            "has a result from another source, pin or commit than the policy names",
+        ),
     }
 }
 

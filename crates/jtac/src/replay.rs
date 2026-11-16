@@ -257,6 +257,7 @@ fn brief(r: &Reason) -> String {
         Reason::MissingCheck { id } => format!("check `{id}` has no node"),
         Reason::DuplicateCheck { id } => format!("check `{id}` has two nodes"),
         Reason::UnknownCheck { id } => format!("check `{id}` is not in the policy"),
+        Reason::UncountedCheck { id } => format!("check `{id}` has a node from another source"),
         Reason::CheckNotPass { id, outcome } => format!("check `{id}` is {outcome:?}"),
         Reason::Finding {
             rule, path, line, ..
