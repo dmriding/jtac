@@ -641,6 +641,32 @@ fn every_command_that_judges_names_the_one_policy_object_its_answer_turns_on() {
         assert!(ran.stderr.contains(&fetch), "{command}: {}", ran.stderr);
         assert!(!ran.stderr.contains(&unasked), "{command}: {}", ran.stderr);
     }
+
+    // The waiver walk reads every root on a commit of the range, whoever signed it: an
+    // unknown key's is asked about too, or this clone would pass where a full one blocks.
+    let stranger = make_key(&h.repo, "stranger", "stranger@example.com");
+    let unknown = Root {
+        signer: Signer {
+            principal: "stranger@example.com".into(),
+            fingerprint: fingerprint(&stranger),
+        },
+        ..h.dev_root(&p1, &p0)
+    };
+    put(&h.repo, &stranger, &p1, &unknown);
+    let refs = "+refs/jtac/*:refs/jtac/*";
+    clone.git(&["fetch", "-q", "--filter=blob:limit=1g", "origin", refs]);
+    for (command, args) in [
+        ("ci", vec!["ci", "--base", &h.r2]),
+        (
+            "check --from",
+            vec!["check", "--from", &p2, "--base", &h.r2],
+        ),
+    ] {
+        let ran = jtac(&clone, &args);
+        assert_eq!(ran.code, 2, "{command}: {}{}", ran.stdout, ran.stderr);
+        let fetch = format!("Run `git fetch origin {lacked}`, then `jtac {command}` again");
+        assert!(ran.stderr.contains(&fetch), "{command}: {}", ran.stderr);
+    }
 }
 
 /// Issue 168: in a `--filter=tree:1` clone a commit's tree is here and the directory that
