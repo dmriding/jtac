@@ -79,6 +79,16 @@ impl Root {
         }
     }
 
+    /// A failure record as `refs/jtac/failed/` may hold one: a root's shape and the state
+    /// `failed` alone, so a root placed there passes for no record.
+    pub fn validate_record(&self) -> Result<(), RootError> {
+        self.shape()?;
+        match self.state {
+            State::Failed => Ok(()),
+            _ => Err(RootError::NotARecord),
+        }
+    }
+
     /// Shape rules a reader checks before trusting any field, a root's and a failure
     /// record's alike. Signature, Merkle root, and counts are checked by their own code;
     /// this is only what the type cannot express.
@@ -483,6 +493,11 @@ pub enum RootError {
     /// The state `failed` under `refs/jtac/roots/`.
     #[error("the state `failed` is a failure record's, under refs/jtac/failed/, never a root's")]
     FailedRoot,
+    /// Any other state under `refs/jtac/failed/`.
+    #[error(
+        "a failure record holds the state `failed`; this is a root, which refs/jtac/roots/ holds"
+    )]
+    NotARecord,
     /// `failed` on anything but a version 3 document with `from`.
     #[error("the state `failed` is a version 3 failure record's, which names `from`")]
     FailedShape,
@@ -1517,6 +1532,25 @@ pub(crate) mod tests {
             ),
         ]);
         assert_eq!(failed().shape(), Ok(()), "a failure record's own shape");
+        assert_eq!(
+            failed().validate_record(),
+            Ok(()),
+            "a failure record's own ref"
+        );
+        assert_eq!(v3_merge().validate_record(), Err(RootError::NotARecord));
+        let waived = Root {
+            unread: vec![],
+            ..v3_local()
+        };
+        assert_eq!(
+            Root {
+                state: State::Failed,
+                ..waived
+            }
+            .validate_record(),
+            Err(RootError::FailedShape),
+            "a record's shape is checked before its state"
+        );
         assert_eq!(
             Root {
                 observed: vec![],

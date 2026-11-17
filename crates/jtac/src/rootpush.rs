@@ -11,7 +11,7 @@ use std::path::Path;
 
 use jtac_checks::git::{git, quoted};
 use jtac_core::GitOid;
-use jtac_store::{PushOutcome, Pushed, Store, ref_name};
+use jtac_store::{PushOutcome, Pushed, Space, Store, StoreError, ref_name};
 
 use crate::repo::oid;
 
@@ -35,7 +35,7 @@ pub fn push(repo: &Path, store: &Store, remote: &str, format: &str, ranges: &[Ra
     }
     let (commits, mut out) = match commits(repo, store, remote, format, ranges) {
         Ok(found) => found,
-        Err(why) => return warning(remote, &[], &why),
+        Err(why) => return warning(remote, &[], &[], &why),
     };
     out.push_str(&send(store, remote, &commits).text);
     out
@@ -51,15 +51,28 @@ pub struct Sent {
     pub rejected: Vec<String>,
 }
 
-/// Push the root refs of `commits` to `remote` under the hook's guard; the merge job's own
-/// route (DESIGN.md section 15).
+/// Push the root refs of `commits` to `remote` under the hook's guard.
 pub fn send(store: &Store, remote: &str, commits: &[GitOid]) -> Sent {
+    let names: Vec<String> = commits.iter().map(ref_name).collect();
+    report(remote, &names, store.push(remote, commits, &[(GUARD, "1")]))
+}
+
+/// Push `names` as `send` pushes roots; the merge job's route, whose tip's document may be
+/// a failure record (DESIGN.md sections 15 and 15.2).
+pub fn send_refs(store: &Store, remote: &str, names: &[String]) -> Sent {
+    report(
+        remote,
+        names,
+        store.push_refs(remote, names, &[(GUARD, "1")]),
+    )
+}
+
+fn report(remote: &str, names: &[String], pushed: Result<Vec<Pushed>, StoreError>) -> Sent {
     let mut text = String::new();
-    let pushed = match store.push(remote, commits, &[(GUARD, "1")]) {
+    let pushed = match pushed {
         Ok(pushed) => pushed,
         Err(e) => {
-            let names: Vec<String> = commits.iter().map(ref_name).collect();
-            text.push_str(&warning(remote, &names, &e.to_string()));
+            text.push_str(&warning(remote, names, names, &e.to_string()));
             return Sent {
                 text,
                 held: Vec::new(),
@@ -80,19 +93,28 @@ pub fn send(store: &Store, remote: &str, commits: &[GitOid]) -> Sent {
                 PushOutcome::Sent | PushOutcome::UpToDate => None,
             })
             .collect();
-        text.push_str(&warning(remote, &lines, "the remote refused them"));
+        text.push_str(&warning(remote, names, &lines, "the remote refused them"));
         return Sent {
             text,
             held,
             rejected,
         };
     }
-    let sent = kept
-        .iter()
-        .filter(|p| p.outcome == PushOutcome::Sent)
-        .count();
-    if sent > 0 {
-        let _ = writeln!(text, "jtac: sent {sent} root(s) to {remote}");
+    let sent = |record: bool| {
+        (kept.iter())
+            .filter(|p| p.outcome == PushOutcome::Sent)
+            .filter(|p| p.name.starts_with(Space::Failed.prefix()) == record)
+            .count()
+    };
+    if sent(false) > 0 {
+        let _ = writeln!(text, "jtac: sent {} root(s) to {remote}", sent(false));
+    }
+    if sent(true) > 0 {
+        let _ = writeln!(
+            text,
+            "jtac: sent {} failure record(s) to {remote}",
+            sent(true)
+        );
     }
     Sent {
         text,
@@ -160,22 +182,25 @@ fn commits(
     Ok((out, notes.into_iter().collect()))
 }
 
-/// Loud, in three parts, and never a refusal.
-fn warning(remote: &str, refs: &[String], why: &str) -> String {
+/// Loud, in three parts, and never a refusal. `names` are the refs the push carried and
+/// `lines` what to print of them; the next step names each ref when one is no root's,
+/// since the roots' pattern would leave a failure record behind.
+fn warning(remote: &str, names: &[String], lines: &[String], why: &str) -> String {
     let mut s = format!("jtac: WARNING: the roots did not reach {remote}: {why}.\n");
-    for r in refs {
+    for r in lines {
         let _ = writeln!(s, "jtac:   {r}");
     }
+    let roots = Space::Roots.prefix();
+    let spec = match names.iter().all(|n| n.starts_with(roots)) {
+        true => format!("'{roots}*:{roots}*'"),
+        false => names.join(" "),
+    };
     let _ = writeln!(
         s,
         "The code push proceeds: a root push never blocks it. Until the roots arrive, every \
          reader sees these commits as absent; a rejected root most often means the remote \
          already holds another root for that commit, which stands."
     );
-    let _ = writeln!(
-        s,
-        "next: git push {} 'refs/jtac/roots/*:refs/jtac/roots/*'",
-        quoted(remote, "<remote>")
-    );
+    let _ = writeln!(s, "next: git push {} {spec}", quoted(remote, "<remote>"));
     s
 }

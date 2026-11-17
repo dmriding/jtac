@@ -4,7 +4,7 @@
 
 use jtac_core::{
     Body, CanonicalError, FromHead, GateRef, GitOid, MerkleError, Node, PolicyRef, PolicySource,
-    Root, RootVersion, Sha256Digest, Signer, counts, merkle_root,
+    Root, RootVersion, Sha256Digest, Signer, State, counts, merkle_root,
 };
 
 use crate::chain::Chain;
@@ -28,7 +28,8 @@ pub enum BuildError {
 /// A base at HEAD is a parentless tip judged against itself (DESIGN.md section 10.3), so the
 /// root names none. `from` is the merge job's head (section 15), `None` for a local root.
 /// Version 3 only where the gate left a check unread or read one from CI, so every other
-/// root stays the bytes a 0.2 reader reads (section 15.2).
+/// root stays the bytes a 0.2 reader reads (section 15.2). A verdict that failed builds the
+/// failure record: the same document with the state `failed`, version 3 whatever it holds.
 pub fn build(
     j: &Judged,
     chain: Chain,
@@ -44,8 +45,9 @@ pub fn build(
         .transpose()?;
     let read_from_ci = |n: &&Node| matches!(n.body, Body::Observed(_));
     let observed: Vec<Node> = j.nodes.iter().filter(read_from_ci).cloned().collect();
+    let failed = !j.verdict.pass;
     let root = Root {
-        v: match j.unread.is_empty() && observed.is_empty() {
+        v: match j.unread.is_empty() && observed.is_empty() && !failed {
             true => RootVersion::V2,
             false => RootVersion::V3,
         },
@@ -62,7 +64,10 @@ pub fn build(
             source: PolicySource::Repo,
         },
         gate,
-        state: j.verdict.state,
+        state: match failed {
+            true => State::Failed,
+            false => j.verdict.state,
+        },
         evidence,
         levers: j.levers.clone(),
         observed,

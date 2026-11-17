@@ -89,6 +89,14 @@ impl<'a> CiIndex<'a> {
         self.failed.get(commit).is_some_and(|v| v.iter().any(own))
     }
 
+    /// The trusted failure record that reaches `commit`, the lowest commit's of several:
+    /// `read` answers `failed` by it where nothing outranks it, and a row names it either
+    /// way, as the note that a verdict failed (section 15.2).
+    pub(crate) fn record(&self, commit: &GitOid) -> Option<usize> {
+        let lowest = |v: &Vec<usize>| v.iter().min_by_key(|i| self.records[**i].commit).copied();
+        self.failed.get(commit).and_then(lowest)
+    }
+
     /// Decision 62's order. A waiver a person signed on the commit stays its reading; the
     /// CI root that reaches it is then the note.
     pub(crate) fn read(&self, commit: &GitOid) -> Ci {
@@ -123,8 +131,7 @@ impl<'a> CiIndex<'a> {
                 _ => Ci::DeclaredOff { root, note: None },
             };
         }
-        let record = |v: &Vec<usize>| v.iter().min_by_key(|i| self.records[**i].commit).copied();
-        match self.failed.get(commit).and_then(record) {
+        match self.record(commit) {
             Some(record) => Ci::Failed { record },
             None => Ci::Absent,
         }

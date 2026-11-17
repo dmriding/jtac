@@ -138,6 +138,9 @@ pub struct Row {
     pub invalid: Option<String>,
     /// What the CI gate reads, from its own documents.
     pub ci: Ci,
+    /// Index into the records of the failure record that reaches the commit, whatever
+    /// outranks it: the note that a verdict failed there (section 15.2).
+    pub record: Option<usize>,
     /// For a `NotHeld` row: each tree whose policy its reading turned on, a root's or the
     /// commit's own. What a refusal names to fetch, and no other tree.
     pub lacking: Vec<GitOid>,
@@ -265,6 +268,7 @@ pub fn rows(commits: &[CommitFact], roots: &[RootFact], records: &[RecordFact]) 
                 root: found.map(|(i, ..)| i),
                 invalid,
                 ci: ci.read(&c.commit),
+                record: ci.record(&c.commit),
                 lacking,
             }
         })
@@ -424,6 +428,7 @@ pub(crate) mod tests {
                     root,
                     invalid: invalid.map(str::to_owned),
                     ci: Ci::Absent,
+                    record: None,
                     lacking: Vec::new(),
                 },
                 "commit {c}"
@@ -684,7 +689,8 @@ pub(crate) mod tests {
     }
 
     /// Section 9.5, tree fallback: the failed verdict judged the tip's tree and no earlier
-    /// one, so an earlier commit of the failed rebase keeps its tree match.
+    /// one, so an earlier commit of the failed rebase keeps its tree match. Section 15.2:
+    /// the record stays the row's note once a later attempt's root outranks it.
     #[test]
     fn a_commits_own_failure_record_withholds_a_tree_match_and_a_reaching_one_does_not() {
         let roots = [dev(1, 20, &[1]), dev(4, 30, &[4])];
@@ -707,15 +713,26 @@ pub(crate) mod tests {
             (got[1].state, got[1].ci.clone()),
             (None, Ci::Failed { record: 0 })
         );
+        assert_eq!((got[0].record, got[1].record), (Some(0), Some(0)));
+        let passed = [merge(6, 20, &[5, 6], &[5, 6])];
+        let got = rows(&commits, &passed, std::slice::from_ref(&record));
+        for row in &got {
+            assert_eq!(
+                (row.state, row.ci.clone(), row.record),
+                (Some(Reading::Covered), Ci::Covered { root: 0 }, Some(0)),
+                "{}",
+                row.commit
+            );
+        }
         let unknown = RecordFact {
             trusted: false,
             ..record
         };
         let got = rows(&commits, &roots, &[unknown]);
         assert_eq!(
-            (got[1].state, got[1].ci.clone()),
-            (Some(Reading::Covered), Ci::Absent),
-            "an unknown key's record withholds nothing"
+            (got[1].state, got[1].ci.clone(), got[1].record),
+            (Some(Reading::Covered), Ci::Absent, None),
+            "an unknown key's record withholds nothing and is no note"
         );
     }
 }

@@ -222,7 +222,8 @@ fn side(s: Option<&super::head::Side>) -> String {
     }
 }
 
-fn counts(c: &Counts) -> String {
+/// A root's counts on one line.
+pub fn counts(c: &Counts) -> String {
     format!(
         "checks {}/{} pass, findings {} blocker {} major {} minor, waivers {}",
         c.pass, c.checks, c.findings.blocker, c.findings.major, c.findings.minor, c.waivers

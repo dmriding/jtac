@@ -3,10 +3,10 @@
 
 use jtac_checks::{Cache, CacheKey, lookup, store};
 use jtac_core::{
-    Body, Capture, CheckBody, Counts, Covers, From, GateRef, GitOid, Node, Outcome, PolicyRef,
-    PolicySource, Release, Root, RootVersion, Sha256Digest, Signer, State, Ts, V1,
+    Body, Capture, CheckBody, Counts, Covers, From, FromHead, GateRef, GitOid, Node, Outcome,
+    PolicyRef, PolicySource, Release, Root, RootVersion, Sha256Digest, Signer, State, Ts, V1,
 };
-use jtac_store::{PushOutcome, Store, StoreError, ref_name, release_ref};
+use jtac_store::{PushOutcome, Space, Store, StoreError, ref_name, release_ref};
 use jtac_testkit::Repo;
 
 const EMPTY: &str = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -301,6 +301,103 @@ fn a_ref_whose_content_is_not_the_root_for_its_commit_is_refused() {
         repo.git(&["update-ref", &ref_name(&other), not_a_commit]);
         assert!(refused(&s.root(&other).unwrap_err()), "{not_a_commit}");
     }
+}
+
+/// A failure record for HEAD, whose base is its parent.
+fn record(repo: &Repo) -> Root {
+    Root {
+        v: RootVersion::V3,
+        state: State::Failed,
+        base: Some(oid(repo, "HEAD~1")),
+        from: Some(FromHead {
+            head: oid(repo, "HEAD~1"),
+            root: None,
+            compared: None,
+        }),
+        ..root(repo, TS)
+    }
+}
+
+/// DESIGN.md section 15.2: a failure record is stored as a root is, under its own
+/// namespace, created once; `refs/jtac/roots/` refuses the state `failed` and
+/// `refs/jtac/failed/` every other, on the way in and on the way out, so neither document
+/// passes for the other, and a clone that fetches `refs/jtac/*` reads both.
+#[test]
+fn a_namespace_holds_its_own_document_and_refuses_the_other_s() {
+    let repo = with_commit(&[]);
+    repo.write("second.md", b"example\n");
+    repo.commit("second");
+    let s = Store::open(repo.path()).unwrap();
+    let (root, record) = (root(&repo, TS), record(&repo));
+    let tip = root.commit;
+    let failed = Space::Failed.ref_name(&tip);
+    assert_eq!(failed, ref_name(&tip).replace("/roots/", "/failed/"));
+    for (what, wrong) in [
+        ("a record as a root", s.put_root(&record, SIG, &[])),
+        ("a root as a record", s.put_record(&root, SIG, &[])),
+    ] {
+        let err = wrong.expect_err(what);
+        assert!(matches!(err, StoreError::Invalid { .. }), "{what}: {err}");
+    }
+    assert_eq!(repo.git(&["for-each-ref", "refs/jtac"]), "");
+    let id = s.put_record(&record, SIG, &[]).unwrap();
+    assert_eq!(id, record.id().unwrap());
+    assert_eq!(s.record(&tip).unwrap().unwrap().root, record);
+    assert_eq!(s.root(&tip).unwrap(), None, "a record is no root");
+    let first = repo.git(&["rev-parse", &failed]);
+    let err = s.put_record(&record, SIG, &[]).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Exists { name } if *name == failed),
+        "{err}"
+    );
+    assert_eq!(repo.git(&["rev-parse", &failed]), first);
+    s.put_root(&root, SIG, &[]).unwrap();
+    assert_eq!(s.root(&tip).unwrap().unwrap().root, root);
+
+    let listed = s.records().unwrap();
+    assert_eq!((listed.space, listed.listed.len()), (Space::Failed, 1));
+    let reads = s.read_all(&listed).unwrap();
+    assert_eq!(reads[0].stored.as_ref().unwrap().root, record);
+    assert_eq!(s.roots().unwrap().listed.len(), 1);
+
+    let other = Repo::clone_of(&repo);
+    other.git(&["fetch", "-q", "origin", REFSPEC]);
+    let there = Store::open(other.path()).unwrap();
+    assert_eq!(there.record(&tip).unwrap().unwrap().root, record);
+    let held = there
+        .remote(Space::Failed, "origin", &tip)
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.root, record);
+    let pushed = there
+        .push_refs("origin", std::slice::from_ref(&failed), &[])
+        .unwrap();
+    assert_eq!(pushed[0].outcome, PushOutcome::UpToDate);
+
+    let swap = |from: &str, to: &str| {
+        let at = repo.git(&["rev-parse", from]);
+        repo.git(&["update-ref", to, &at]);
+    };
+    let roots = ref_name(&tip);
+    swap(&roots, "refs/jtac/kept");
+    swap(&failed, &roots);
+    swap("refs/jtac/kept", &failed);
+    let why = s.root(&tip).unwrap_err().to_string();
+    assert!(why.contains("never a root's"), "{why}");
+    let why = s.record(&tip).unwrap_err().to_string();
+    assert!(why.contains("this is a root"), "{why}");
+    let read = |listed| s.read_all(&listed).unwrap()[0].stored.clone();
+    assert!(read(s.roots().unwrap()).is_err());
+    assert!(read(s.records().unwrap()).is_err());
+    plant(&repo, "refs/jtac/failed/zz", b"nope");
+    let listed = s.records().unwrap();
+    let notes: Vec<String> = listed.notes().collect();
+    assert_eq!((listed.listed.len(), notes.len()), (1, 1));
+    assert!(
+        notes[0]
+            .starts_with("skipped refs/jtac/failed/zz: not <xx>/<commit> under refs/jtac/failed/;"),
+        "{notes:?}"
+    );
 }
 
 /// The ref is pointed at a commit whose tree holds `bytes` as `root.json`.

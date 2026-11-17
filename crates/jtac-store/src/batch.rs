@@ -5,7 +5,7 @@ use std::path::Path;
 
 use jtac_core::{Root, from_canonical};
 
-use crate::refs::Listed;
+use crate::refs::{Listed, Roots, Space};
 use crate::roots::StoredRoot;
 use crate::{Store, StoreError};
 
@@ -19,9 +19,10 @@ pub struct Read {
 }
 
 impl Store {
-    /// Read every listed ref. A ref whose content is not a root is an `Err` in its slot,
-    /// never a refusal of the rest.
-    pub fn read_all(&self, listed: &[Listed]) -> Result<Vec<Read>, StoreError> {
+    /// Read every listed ref. A ref whose content is not its namespace's document is an
+    /// `Err` in its slot, never a refusal of the rest.
+    pub fn read_all(&self, roots: &Roots) -> Result<Vec<Read>, StoreError> {
+        let (space, listed) = (roots.space, &roots.listed);
         let mut stdin = String::new();
         for l in listed {
             let oid = l.root_commit.hex();
@@ -51,7 +52,7 @@ impl Store {
             .zip(records.chunks(3))
             .map(|(l, chunk)| Read {
                 listed: l.clone(),
-                stored: stored(l, chunk),
+                stored: stored(space, l, chunk),
             })
             .collect())
     }
@@ -95,7 +96,7 @@ pub fn git_objects(repo: &Path, specs: &[String]) -> Result<Vec<Option<Object>>,
 }
 
 /// A root from its three records: the ref's object, `root.json`, `root.sig`.
-fn stored(l: &Listed, chunk: &[Record]) -> Result<StoredRoot, String> {
+fn stored(space: Space, l: &Listed, chunk: &[Record]) -> Result<StoredRoot, String> {
     match &chunk[0] {
         Record::Object { kind, .. } if kind == "commit" => {}
         Record::Object { kind, .. } => {
@@ -110,7 +111,7 @@ fn stored(l: &Listed, chunk: &[Record]) -> Result<StoredRoot, String> {
     };
     let json = blob(&chunk[1], "root.json")?;
     let root: Root = from_canonical(&json).map_err(|e| e.to_string())?;
-    root.validate().map_err(|e| e.to_string())?;
+    space.admits(&root).map_err(|e| e.to_string())?;
     if root.commit != l.commit {
         return Err(format!("the root is for {}", root.commit));
     }

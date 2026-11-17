@@ -66,7 +66,7 @@ pub fn show(a: &ShowArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let listed = store.roots().map_err(Refusal::store)?;
     let mut notes: Vec<String> = listed.notes().collect();
-    let reads = store.read_all(&listed.listed).map_err(Refusal::store)?;
+    let reads = store.read_all(&listed).map_err(Refusal::store)?;
     let shown = |commit: GitOid, note: Option<String>| -> Result<Option<Shown>, Refusal> {
         let Some(read) = reads.iter().find(|r| r.listed.commit == commit) else {
             return Ok(None);

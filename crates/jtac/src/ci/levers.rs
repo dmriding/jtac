@@ -71,7 +71,15 @@ pub fn gather(
         false => format!("{base}..{}", head.commit.hex()),
     };
     let listed = range::commits(repo, format, "ci", &[span])?;
-    let ledger = ledger::gather(repo, store, tool, signers, "ci", format, &listed)?;
+    let site = ledger::Site {
+        repo,
+        store,
+        tool,
+        signers,
+        command: "ci",
+        format,
+    };
+    let ledger = ledger::gather(&site, &listed)?;
     let commits: Vec<GitOid> = listed.iter().map(|l| l.commit).collect();
     let in_range: BTreeSet<GitOid> = commits.iter().copied().collect();
     let read = reads(&listed, &ledger.roots);
