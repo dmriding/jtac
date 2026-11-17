@@ -642,8 +642,8 @@ fn every_command_that_judges_names_the_one_policy_object_its_answer_turns_on() {
         assert!(!ran.stderr.contains(&unasked), "{command}: {}", ran.stderr);
     }
 
-    // The waiver walk reads every root on a commit of the range, whoever signed it: an
-    // unknown key's is asked about too, or this clone would pass where a full one blocks.
+    // Every root on a commit of the range is read, whoever signed it, so an unknown key's
+    // is asked about as a trusted one is.
     let stranger = make_key(&h.repo, "stranger", "stranger@example.com");
     let unknown = Root {
         signer: Signer {
