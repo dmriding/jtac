@@ -579,7 +579,8 @@ fn replay_counts_no_ci_result_in_a_root_without_from_and_holds_it_to_its_trees_p
 /// Decision 60 for every command that judges, and issue 168: `p1`'s root names a tree whose
 /// policy file a blobless clone lacks, and `p0`'s own differs too but no reading turns on
 /// it, since the root that covers `p0` is partial whatever `p0` holds. `verify`, `replay`,
-/// `jtac ci` and `check --from` each answer 2 and name `p1`'s file alone.
+/// `jtac ci` and `check --from` each answer 2 and name `p1`'s file alone. The two gates ask
+/// the same of an unknown key's root there: every root on a commit of the range is read.
 #[test]
 fn every_command_that_judges_names_the_one_policy_object_its_answer_turns_on() {
     let h = history();
@@ -642,8 +643,6 @@ fn every_command_that_judges_names_the_one_policy_object_its_answer_turns_on() {
         assert!(!ran.stderr.contains(&unasked), "{command}: {}", ran.stderr);
     }
 
-    // Every root on a commit of the range is read, whoever signed it, so an unknown key's
-    // is asked about as a trusted one is.
     let stranger = make_key(&h.repo, "stranger", "stranger@example.com");
     let unknown = Root {
         signer: Signer {
