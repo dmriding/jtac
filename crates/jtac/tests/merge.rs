@@ -1409,6 +1409,10 @@ fn an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it() 
         f.main
     );
     let again = "delete the ref with `git update-ref -d ";
+    let fetch = format!(
+        "run `jtac ci --base {} --require-local-root` again{keep}",
+        f.main
+    );
     for (root, key, trust, starts, holds, lacks) in [
         (
             &old,
@@ -1423,7 +1427,7 @@ fn an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it() 
             &f.ci_key,
             "trusted",
             "Fetch the history",
-            &keep,
+            &fetch,
             again,
         ),
         (
