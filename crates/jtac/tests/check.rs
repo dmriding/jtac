@@ -869,8 +869,10 @@ fn a_fresh_repository_adopts_the_gate_and_ci_in_one_commit_and_a_signers_file_al
     major(jtac(&repo, &["check", "--preview"]));
 }
 
+/// Section 15.2: the local gate runs the `run` checks and the rules, counts no `ci` check,
+/// required or not, and names each one as CI's.
 #[test]
-fn a_version_2_policy_is_judged_until_it_reads_a_check_from_ci() {
+fn a_check_read_from_ci_is_left_out_of_the_verdict_and_named_unread() {
     let repo = Repo::init(&[]);
     let two = policy("").replace("version = 1", "version = 2");
     repo.write(".jtac/policy.toml", two.as_bytes());
@@ -879,25 +881,33 @@ fn a_version_2_policy_is_judged_until_it_reads_a_check_from_ci() {
     repo.commit("version 2, every check run");
     let (code, v) = json(&repo, &["check", "--preview", "--json"]);
     assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unread"], serde_json::json!([]), "{v}");
     let read = format!(
-        "{two}[checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\nrequired = false\n"
+        "{two}[checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\nrequired = false\n\
+         [checks.acc]\nci = {{ workflow = \".github/workflows/ci.yml\", job = \"acc\" }}\n"
     );
     repo.write(".jtac/policy.toml", read.as_bytes());
-    repo.commit("one optional check read from ci");
+    repo.commit("two checks read from ci");
+    repo.write("src/lib.rs", b"fn a() {}\nfn b() {}\n");
+    repo.commit("a change under that policy");
+    let (code, v) = json(&repo, &["check", "--preview", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["unread"], serde_json::json!(["acc", "e2e"]), "{v}");
+    let ids: Vec<&str> = (v["checks"].as_array().unwrap().iter())
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["integrity", "ok"], "{v}");
     let ran = jtac(&repo, &["check", "--preview"]);
-    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
     assert!(
-        ran.stderr.starts_with(
-            "jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"
+        ran.stdout.starts_with(
+            "CLEARED HOT (preview, nothing written): 2 of 2 checks pass, nothing blocks, 2 left \
+             to CI\n"
         ),
         "{}",
-        ran.stderr
+        ran.stdout
     );
-    let next = "negotiation: Install a jtac that reads CI results, or give `[checks.e2e]` a `run`";
-    assert!(ran.stderr.contains(next), "{}", ran.stderr);
-    assert!(
-        ran.stderr.contains("the same jtac command again"),
-        "{}",
-        ran.stderr
-    );
+    for id in ["acc", "e2e"] {
+        let line = format!("     {id} unread  CI's: the merge job reads it, this gate did not\n");
+        assert!(ran.stdout.contains(&line), "{}", ran.stdout);
+    }
 }

@@ -54,6 +54,20 @@ gates itself from its own tree before a release carries the change. The `root` j
 up to a hundred runs per branch (`queue: max`); a run dropped beyond that is re-run from
 the Actions tab with its own event, which restores the root.
 
+## Checks read from CI: not ready to adopt
+
+Policy version 2 lets a check name the workflow and job that already run it,
+`ci = { workflow = ".github/workflows/ci.yml", job = "test" }`, in place of `run`
+(`DESIGN.md` section 15.2). What this release does with one:
+
+- `jtac check` and `jtac ci` run the `run` checks and the rules and name each `ci` check
+  as unread. The developer's root lists them and reads `covered, ci unread` in `jtac audit`.
+- The root job, `jtac check --from`, reads no CI result yet. Under such a policy it exits 2
+  and writes no merge root.
+- So no commit reads covered, `verify --require-coverage` fails and `jtac release` refuses.
+
+Keep every check `run` until a release notes that the root job reads CI results.
+
 ## The release job
 
 `release.yml` runs `jtac release <tag> --sums SHA256SUMS --require-ci --push origin` under

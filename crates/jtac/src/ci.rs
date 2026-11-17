@@ -13,6 +13,7 @@ use std::path::Path;
 use jtac_checks::Cache;
 use jtac_checks::diff::Adoption;
 use jtac_core::Ts;
+use jtac_policy::Checks;
 use jtac_store::Store;
 
 use crate::cli::CiArgs;
@@ -56,12 +57,14 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let tool = coverage::verifier(&repo)?;
     let chain = levers::gather(&repo, &store, &tool, &signers, &format, &head, &base.commit)?;
+    chain.held(&repo, "ci")?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {
         waivers: chain.trusted.clone(),
         waivable: chain.commits.clone(),
         adoption,
+        checks: Checks::Run,
     };
     let j = judge::judge(
         &repo,

@@ -27,6 +27,29 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.29) The local gate and `jtac ci` judge under a policy that reads a check from CI
+  (`DESIGN.md` section 15.2, M20; issues 161 and 168). They run the `run` checks and the
+  rules, count no `ci` check, and name each one: `unread` in `--json`, a line under
+  `checks`, and `N left to CI` in the banner. `jtac check` writes root version 3 with those
+  ids in `unread`; under a policy with no `ci` check the root stays version 2, byte for
+  byte. Such a root is partial: `audit` prints `covered, ci unread`, and the hook, `status`
+  and a commit waiver's carry take it as any developer root. **Not ready to adopt:**
+  `check --from` reads no CI result yet, so under such a policy it answers 2 and writes no
+  merge root, and no commit reads covered until it does.
+  - `jtac replay` builds its facts by the root's shape, the `run` checks for a root
+    without `from`, and holds that root to the policy in the tree it names: a CI result
+    planted among its nodes fails the replay, and an `unread` that is not the tree's `ci`
+    checks is a mismatch.
+  - `replay`, `jtac ci` and `check --from` now answer 2 with the fetch named when a root's
+    policy file is not in a partial clone, as `verify` and `release` do. The refusal names
+    only the objects the answer turns on.
+  - A policy file is read from a blob and nothing else, by the gate and by every reader:
+    a tree entry that names a tag of a blob loaded a policy at the gate and read
+    unreadable elsewhere, and is now refused as not a regular file.
+  - `GIT_ICASE_PATHSPECS` and `GIT_GLOB_PATHSPECS` in the environment reach no git call.
+    They made `audit`, `verify` and `release` name a fetch for a policy the clone held.
+  - A policy is called not held only where git reports the object missing; a tree git
+    cannot walk is unreadable.
 - (0.2.28) `jtac release` reads a pull request merged around CI through the waiver on its
   merge (`DESIGN.md` section 16.3, decision 64, issue 169). A partial commit, one whose
   policy reads a check from CI and that holds the local gate's root alone, now passes and

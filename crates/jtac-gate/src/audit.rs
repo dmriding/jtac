@@ -138,6 +138,9 @@ pub struct Row {
     pub invalid: Option<String>,
     /// What the CI gate reads, from its own documents.
     pub ci: Ci,
+    /// For a `NotHeld` row: each tree whose policy its reading turned on, a root's or the
+    /// commit's own. What a refusal names to fetch, and no other tree.
+    pub lacking: Vec<GitOid>,
 }
 
 /// How a root bears on a commit, best first.
@@ -235,6 +238,13 @@ pub fn rows(commits: &[CommitFact], roots: &[RootFact], records: &[RecordFact]) 
                 true => None,
                 false => read.iter().min_by_key(|r| key(r)).copied(),
             };
+            let lacking = (read.iter())
+                .filter(|r| r.2 == Reading::NotHeld)
+                .filter_map(|&(i, ..)| match roots[i].policy {
+                    PolicyKind::NotHeld => roots[i].tree,
+                    _ => Some(c.tree),
+                })
+                .collect();
             let via = |(i, route, _): (usize, Route, Reading)| match route {
                 Route::Own => Via::Own,
                 Route::Covers => Via::Covers {
@@ -255,6 +265,7 @@ pub fn rows(commits: &[CommitFact], roots: &[RootFact], records: &[RecordFact]) 
                 root: found.map(|(i, ..)| i),
                 invalid,
                 ci: ci.read(&c.commit),
+                lacking,
             }
         })
         .collect()
@@ -413,6 +424,7 @@ pub(crate) mod tests {
                     root,
                     invalid: invalid.map(str::to_owned),
                     ci: Ci::Absent,
+                    lacking: Vec::new(),
                 },
                 "commit {c}"
             );
@@ -635,6 +647,40 @@ pub(crate) mod tests {
                 Some(9),
             ),
         ]);
+    }
+
+    /// Issue 168: a refusal names the object to fetch for the rows it refuses on, so a
+    /// row carries the trees it turned on, and a not-held tree that bears on no row of the
+    /// range is in none.
+    #[test]
+    fn a_not_held_row_names_each_tree_its_reading_turned_on_and_no_other() {
+        let lacks = |r: RootFact| RootFact {
+            policy: PolicyKind::NotHeld,
+            ..r
+        };
+        let roots = [
+            lacks(dev(3, 30, &[2, 3])),
+            dev(5, 50, &[4, 5]),
+            lacks(dev(9, 90, &[9])),
+        ];
+        let commits = [
+            commit(2, 20),
+            CommitFact {
+                policy: PolicyKind::NotHeld,
+                ..commit(4, 40)
+            },
+            commit(5, 50),
+        ];
+        let got = rows(&commits, &roots, &[]);
+        let read: Vec<_> = (got.iter().map(|r| (r.state, r.lacking.clone()))).collect();
+        assert_eq!(
+            read,
+            [
+                (Some(Reading::NotHeld), vec![oid(30)]),
+                (Some(Reading::NotHeld), vec![oid(40)]),
+                (Some(Reading::Covered), vec![]),
+            ]
+        );
     }
 
     /// Section 9.5, tree fallback: the failed verdict judged the tip's tree and no earlier

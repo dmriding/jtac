@@ -37,6 +37,21 @@ pub struct Ledger {
     pub policies: BTreeMap<GitOid, TreePolicy>,
 }
 
+impl Ledger {
+    /// `treepolicy::held` over the policies of `trees`, the ones a reading turned on: a
+    /// tree nothing turned on is not asked, so the fetch names no object the answer does
+    /// not need.
+    pub fn held<'a>(
+        &self,
+        repo: &Path,
+        command: &str,
+        trees: impl IntoIterator<Item = &'a GitOid>,
+    ) -> Result<(), Refusal> {
+        let policies = trees.into_iter().filter_map(|t| self.policies.get(t));
+        treepolicy::held(repo, command, policies)
+    }
+}
+
 /// Read the namespace and judge the roots that bear on `commits`.
 pub fn gather(
     repo: &Path,
@@ -209,22 +224,12 @@ impl Judge<'_> {
         })
     }
 
-    /// Why a root without `from` is invalid by its tree's policy (decision 57): its
-    /// `unread` is not that file's `ci` checks. Where nothing shows which checks it left
-    /// out, it is partial whatever it lists, or not held.
+    /// A root without `from` held to its tree's policy (`TreePolicy::refuses`), and what
+    /// coverage makes of that policy.
     fn unread(&self, root: &jtac_core::Root, fact: &mut RootFact) -> Option<String> {
         let policy = self.policies.get(&root.tree)?;
         fact.policy = policy.kind();
-        let ci = policy.ci_checks().filter(|ci| *ci != root.unread)?;
-        let list = |ids: &[String]| match ids {
-            [] => "no check".to_owned(),
-            ids => format!("`{}`", ids.join("`, `")),
-        };
-        Some(format!(
-            "it lists {} unread, and the policy in the tree it names leaves {} to CI",
-            list(&root.unread),
-            list(ci)
-        ))
+        policy.refuses(&root.unread)
     }
 
     /// What the CI gate reads a root with `from` for (DESIGN.md section 9.5): its commit and

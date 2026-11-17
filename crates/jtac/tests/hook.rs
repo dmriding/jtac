@@ -733,6 +733,43 @@ fn a_real_push_is_refused_before_check_and_carries_its_root_after() {
     );
 }
 
+/// Section 15.2: the hook and `status` ask what the local gate judged, which a partial
+/// root says in full, so a root that lists a `ci` check unread carries the push as any
+/// developer root does, and the remote holds it as written.
+#[test]
+fn a_partial_root_carries_the_push_and_status_passes_on_it() {
+    let origin = Repo::bare(&[]);
+    let repo = Repo::clone_of(&origin);
+    let policy = format!(
+        "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
+         [checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\n",
+        me()
+    );
+    repo.write(".jtac/policy.toml", policy.as_bytes());
+    repo.write(".gitignore", b"*.profraw\n");
+    repo.commit("base");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    keyed(&repo);
+    install_hook(&repo);
+    repo.write("a.txt", b"a\n");
+    let tip = repo.commit("tip");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let (ran, v) = status(&repo);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert_eq!(v["pass"], true, "{v}");
+    let pushed = Ran::of(repo.command("git", &["push", "origin", "main"]));
+    assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+    assert!(
+        pushed.stderr.contains("has a root, covered"),
+        "{}",
+        pushed.stderr
+    );
+    assert_eq!(origin.git(&["rev-parse", "main"]), tip);
+    let held = origin.git(&["cat-file", "blob", &format!("{}:root.json", root_ref(&tip))]);
+    assert!(held.contains("\"unread\":[\"e2e\"]"), "{held}");
+    assert!(held.contains("\"v\":3"), "{held}");
+}
+
 #[test]
 fn a_root_the_remote_refuses_warns_and_the_code_push_still_lands() {
     let Checked {

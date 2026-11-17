@@ -1016,7 +1016,8 @@ fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
 }
 
 /// The merge that brings the `ci` check is judged under the old tip's policy, as any policy
-/// change is; the one after it is judged under the new policy, which no gate reads before M20.
+/// change is; the one after it is judged under the new policy, whose `ci` check the merge
+/// job cannot read without a results file, so it answers 2 and the merge stays partial.
 #[test]
 fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
     let f = forge();
@@ -1028,16 +1029,9 @@ fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
     );
     f.dev.write(".jtac/policy.toml", read.as_bytes());
     let a = f.dev.commit("read e2e from ci");
-    let refused = |ran: Ran| {
-        assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
-        assert!(
-            ran.stderr
-                .starts_with("jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"),
-            "{}",
-            ran.stderr
-        );
-    };
-    refused(jtac(&f.dev, &["check"]));
+    let ran = jtac(&f.dev, &["check"]);
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("JT-PROT-001"), "{}", ran.stdout);
     f.push("origin", "a", false);
     f.fetch("origin");
     let first = f.merge("origin/a");
@@ -1051,18 +1045,46 @@ fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
     f.dev.git(&["switch", "-q", "-c", "b", "origin/main"]);
     f.dev.write("b.txt", b"b\n");
     let b = f.dev.commit("b");
-    refused(jtac(&f.dev, &["check"]));
-    f.push("origin", "b", false);
+    let ran = jtac(&f.dev, &["check", "--base", "origin/main"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    assert!(ran.stdout.contains("     e2e unread  "), "{}", ran.stdout);
+    f.push("origin", "b", true);
     f.fetch("origin");
     let second = f.merge("origin/b");
     f.ci.git(&["push", "-q", "origin", "main"]);
-    refused(jtac(
+    let ran = jtac(
         &f.ci,
         &["check", "--from", &b, "--base", &first, "--push", "origin"],
-    ));
+    );
+    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+    let what = "jtac: Check `e2e` in the `.jtac/policy.toml` the merge job judges under is read \
+                from CI, and this build's `check --from` reads no CI result.";
+    assert!(ran.stderr.starts_with(what), "{}", ran.stderr);
+    assert!(
+        ran.stderr
+            .contains("negotiation: Install a jtac whose `check --from` takes `--results`"),
+        "{}",
+        ran.stderr
+    );
     let roots = f.second().git(&["for-each-ref", "refs/jtac/roots"]);
-    assert!(roots.contains(&root_ref(&f.main)), "{roots}");
-    for commit in [&a, &b, &first, &second] {
+    for commit in [&f.main, &b] {
+        assert!(roots.contains(&root_ref(commit)), "{commit} not in {roots}");
+    }
+    for commit in [&a, &first, &second] {
         assert!(!roots.contains(&root_ref(commit)), "{commit} in {roots}");
     }
+    let (code, v, err) = json(&f.second(), &["audit", "main", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    let state = |commit: &str| {
+        let rows = v["rows"].as_array().unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r["commit"] == format!("sha1:{commit}"));
+        row.unwrap()["state"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(
+        (state(&b), state(&second)),
+        ("partial".into(), "absent".into()),
+        "{v}"
+    );
 }

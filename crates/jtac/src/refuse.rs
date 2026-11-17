@@ -74,6 +74,10 @@ impl Refusal {
                  history, that judges nothing."
                     .to_owned()
             }
+            RepoError::Missing { id, .. } => format!(
+                "Run `git fetch origin {id}`, or name the remote this partial clone was made \
+                 from, then the same jtac command again; jtac fetches no object itself."
+            ),
             _ => "Run `git status` here; once git answers, run `jtac check` again.".to_owned(),
         };
         Self::new(err.to_string(), FAIL_CLOSED, how)
@@ -252,20 +256,24 @@ impl Refusal {
         )
     }
 
-    /// The judging policy reads a check from CI, which no gate does before M20 (DESIGN.md 15.2).
+    /// The merge job's policy reads a check from CI, and this build takes no results file
+    /// (DESIGN.md section 15.2).
     pub fn ci_unread(id: &str) -> Self {
         Self::new(
             format!(
-                "Check `{id}` in the `{POLICY_PATH}` this gate judges under is read from CI, and \
-                 this build reads no CI result."
+                "Check `{id}` in the `{POLICY_PATH}` the merge job judges under is read from \
+                 CI, and this build's `check --from` reads no CI result."
             ),
-            "A check nobody ran or read must never look like one that passed, so no gate \
-             judges under a policy it can only read in part. `jtac check` judges under HEAD's \
-             policy; `jtac ci` and `check --from` judge under the base branch's, so an edit on \
-             the pull request's own branch changes nothing there.",
             format!(
-                "Install a jtac that reads CI results, or give `[checks.{id}]` a `run` in that \
-                 `{POLICY_PATH}`, commit it, and run the same jtac command again."
+                "A merge root says every check was read for its commit, and a check nobody ran \
+                 or read must never look like one that passed, so the job writes no root it \
+                 can only judge in part. `jtac check` and `jtac ci` judge the `run` checks and \
+                 name `{id}` as unread; the merge job judges under the base branch's policy."
+            ),
+            format!(
+                "Install a jtac whose `check --from` takes `--results`, or give \
+                 `[checks.{id}]` a `run` in that `{POLICY_PATH}`, commit it, and run the same \
+                 jtac command again. Until then the merge has no merge root and reads partial."
             ),
         )
     }
@@ -903,6 +911,9 @@ mod tests {
         assert!(Refusal::repository(&link).how.contains("`x`"));
         let shallow = RepoError::Shallow { what: "x".into() };
         assert!(Refusal::repository(&shallow).how.contains("--unshallow"));
+        let (path, id) = ("x".to_owned(), "abc123".to_owned());
+        let missing = Refusal::repository(&RepoError::Missing { path, id });
+        assert!(missing.what.contains("`x`") && missing.how.contains("git fetch origin abc123"));
         assert!(Refusal::policy(&parse).how.contains("commit it"));
         assert!(Refusal::arguments(&args).what.contains("--nope"));
     }

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use jtac_checks::git::{GitError, git};
 use jtac_core::{CanonicalError, ReadError};
 
-pub use batch::{Read, git_objects};
+pub use batch::{Object, Read, git_objects};
 pub use cache::FileCache;
 pub use refs::{Listed, PushOutcome, Pushed, Roots, ref_name};
 pub use releases::{StoredRelease, release_ref};

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use jtac_checks::git::git;
 use jtac_core::{Body, GitOid, Scope, SignedLever};
-use jtac_gate::{RootFact, Trust};
+use jtac_gate::{PolicyKind, RootFact, Trust};
 use jtac_sign::Tool;
 use jtac_store::Store;
 
@@ -33,6 +33,16 @@ pub struct Chain {
     pub withheld: Vec<Withheld>,
     /// Roots in the range that offer nothing, and why.
     pub notes: Vec<String>,
+    /// The trees whose policy this gate's answer turns on (`unjudged`).
+    unjudged: Vec<GitOid>,
+}
+
+impl Chain {
+    /// Decision 60 for a gate that reads no row: answer 2, the fetch named, while a root
+    /// its answer reads is unjudged.
+    pub fn held(&self, repo: &Path, command: &str) -> Result<(), Refusal> {
+        self.ledger.held(repo, command, &self.unjudged)
+    }
 }
 
 /// A lever on the chain that is named and offered nowhere.
@@ -64,12 +74,10 @@ pub fn gather(
     let ledger = ledger::gather(repo, store, tool, signers, "ci", format, &listed)?;
     let commits: Vec<GitOid> = listed.iter().map(|l| l.commit).collect();
     let in_range: BTreeSet<GitOid> = commits.iter().copied().collect();
-    let by_commit: BTreeMap<GitOid, usize> = ledger
-        .roots
-        .iter()
-        .enumerate()
+    let read = reads(&listed, &ledger.roots);
+    let by_commit: BTreeMap<GitOid, usize> = (read.iter())
         .filter(|(_, r)| in_range.contains(&r.commit))
-        .map(|(i, r)| (r.commit, i))
+        .map(|(i, r)| (r.commit, *i))
         .collect();
     let notes: Vec<String> = by_commit
         .values()
@@ -90,7 +98,8 @@ pub fn gather(
         .into_iter()
         .copied()
         .collect();
-    let judged = judged(&listed, &ledger.roots);
+    let judged = judged(&listed, &read);
+    let unjudged = unjudged(&read);
     let mut seen = BTreeSet::new();
     let mut trusted = Vec::new();
     let mut withheld = Vec::new();
@@ -131,21 +140,47 @@ pub fn gather(
         trusted,
         withheld,
         notes,
+        unjudged,
     })
 }
 
-/// The commits a valid root base trusts judged, by its own commit, its `covers`, or its
-/// tree. It asks what the local gate judged, which a partial root says in full, and reads
-/// no order (decision 62): section 9.5's readings are not consulted here.
-fn judged(listed: &[range::Listed], roots: &[RootFact]) -> BTreeSet<GitOid> {
-    let trusted = || (roots.iter()).filter(|r| r.invalid.is_none() && r.trust == Trust::Trusted);
-    let commits: BTreeSet<GitOid> = trusted()
-        .flat_map(|r| r.covers.iter().copied().chain([r.commit]))
-        .collect();
-    let trees: BTreeSet<GitOid> = trusted().filter_map(|r| r.tree).collect();
+/// Whether valid root `r` judged `l`: by its own commit, its `covers`, or its tree.
+fn bears(r: &RootFact, l: &range::Listed) -> bool {
+    r.commit == l.commit || r.covers.contains(&l.commit) || r.tree == Some(l.tree)
+}
+
+/// The roots this gate's answer reads, by ledger index, and the only ones it may consult:
+/// every root on a commit of the range, which the walk, its notes and the head comparison
+/// read whoever signed it, and each root base trusts that bears on one, which the carry
+/// counts. The walk, the carry and the not-held refusal all draw from this list, so the
+/// refusal asks about every root that is read and about no other
+/// (`the_gate_asks_a_fetch_for_each_root_it_reads_and_for_no_other`).
+fn reads<'a>(listed: &[range::Listed], roots: &'a [RootFact]) -> Vec<(usize, &'a RootFact)> {
+    let on = |r: &RootFact| listed.iter().any(|l| l.commit == r.commit);
+    let carried = |r: &RootFact| r.trust == Trust::Trusted && listed.iter().any(|l| bears(r, l));
+    (roots.iter().enumerate())
+        .filter(|(_, r)| on(r) || carried(r))
+        .collect()
+}
+
+/// The commits a valid root base trusts judged. It asks what the local gate judged, which
+/// a partial root says in full, and reads no order (decision 62): section 9.5's readings
+/// are not consulted here.
+fn judged(listed: &[range::Listed], read: &[(usize, &RootFact)]) -> BTreeSet<GitOid> {
+    let trusted = |(_, r): &&(usize, &RootFact)| r.invalid.is_none() && r.trust == Trust::Trusted;
     (listed.iter())
-        .filter(|l| commits.contains(&l.commit) || trees.contains(&l.tree))
+        .filter(|l| read.iter().filter(trusted).any(|(_, r)| bears(r, l)))
         .map(|l| l.commit)
+        .collect()
+}
+
+/// The tree of each root read that is not yet held to its tree's policy, that file not
+/// being in this clone (decisions 57 and 60): valid as far as this clone can tell, where
+/// a full clone might call it invalid, so the answer waits for the fetch.
+fn unjudged(read: &[(usize, &RootFact)]) -> Vec<GitOid> {
+    (read.iter())
+        .filter(|(_, r)| !r.from && r.invalid.is_none() && r.policy == PolicyKind::NotHeld)
+        .filter_map(|(_, r)| r.tree)
         .collect()
 }
 
@@ -202,4 +237,134 @@ fn first_parent(
         .lines()
         .map(|hex| repo::oid(format, hex).map_err(Refusal::internal))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jtac_core::State;
+
+    fn oid(n: u8) -> GitOid {
+        format!("sha1:{n:040x}").parse().unwrap()
+    }
+
+    /// A trusted, valid root without `from` on `commit`, its tree's policy not held.
+    fn lacks(commit: u8, tree: u8, covers: &[u8]) -> RootFact {
+        RootFact {
+            commit: oid(commit),
+            tree: Some(oid(tree)),
+            id: None,
+            state: State::Covered,
+            covers: covers.iter().map(|c| oid(*c)).collect(),
+            from: false,
+            reach: Vec::new(),
+            policy: PolicyKind::NotHeld,
+            ci_waiver: false,
+            signer: None,
+            trust: Trust::Trusted,
+            waiver_trust: Vec::new(),
+            policy_version: 2,
+            gate_version: String::new(),
+            invalid: None,
+        }
+    }
+
+    /// Decision 60 names the fetch for each root the answer reads and for no other. Any
+    /// ref under `refs/jtac/roots/` can name a tree this clone lacks, so one the gate does
+    /// not read must not stop it; and the walk reads every root on a commit of the range,
+    /// whoever signed it, so one of those left unjudged would let a partial clone pass
+    /// where a full clone blocks.
+    #[test]
+    fn the_gate_asks_a_fetch_for_each_root_it_reads_and_for_no_other() {
+        let listed = [1, 2, 3].map(|n| range::Listed {
+            commit: oid(n),
+            tree: oid(n + 10),
+        });
+        let unknown = |r: RootFact| RootFact {
+            trust: Trust::Unknown { why: "x".into() },
+            ..r
+        };
+        let rows: [(&str, RootFact, bool); 11] = [
+            ("its own commit is in the range", lacks(1, 21, &[]), true),
+            ("it covers one", lacks(9, 22, &[2, 9]), true),
+            ("it judged one's tree", lacks(9, 12, &[]), true),
+            ("it bears on none", lacks(9, 23, &[8, 9]), false),
+            ("an unknown key's on one", unknown(lacks(1, 24, &[])), true),
+            (
+                "an unknown key's at the head",
+                unknown(lacks(3, 25, &[])),
+                true,
+            ),
+            (
+                "an unknown key's that covers one",
+                unknown(lacks(9, 29, &[2, 9])),
+                false,
+            ),
+            (
+                "an unknown key's over one's tree",
+                unknown(lacks(9, 12, &[])),
+                false,
+            ),
+            (
+                "an invalid one",
+                RootFact {
+                    invalid: Some("x".into()),
+                    ..lacks(3, 26, &[3])
+                },
+                false,
+            ),
+            (
+                "one with `from`",
+                RootFact {
+                    from: true,
+                    ..lacks(3, 27, &[3])
+                },
+                false,
+            ),
+            (
+                "one whose policy is here",
+                RootFact {
+                    policy: PolicyKind::Ci,
+                    ..lacks(3, 28, &[3])
+                },
+                false,
+            ),
+        ];
+        for (name, root, asked) in rows {
+            let tree = root.tree.unwrap();
+            let roots = [root];
+            let got = unjudged(&reads(&listed, &roots));
+            assert_eq!(got, if asked { vec![tree] } else { vec![] }, "{name}");
+        }
+    }
+
+    /// The carry counts a commit judged by a trusted root's own commit, its `covers` or
+    /// its tree, each alone, and by no unknown key's or invalid root.
+    #[test]
+    fn the_carry_counts_a_commit_by_a_trusted_roots_commit_covers_or_tree() {
+        let listed = [1, 2, 3, 4].map(|n| range::Listed {
+            commit: oid(n),
+            tree: oid(n + 10),
+        });
+        let here = |r: RootFact| RootFact {
+            policy: PolicyKind::Run,
+            ..r
+        };
+        let roots = [
+            here(lacks(1, 21, &[])),
+            here(lacks(9, 22, &[2, 9])),
+            here(lacks(8, 13, &[])),
+            RootFact {
+                trust: Trust::Unknown { why: "x".into() },
+                ..here(lacks(4, 14, &[4]))
+            },
+        ];
+        let got = judged(&listed, &reads(&listed, &roots));
+        assert_eq!(got, [oid(1), oid(2), oid(3)].into_iter().collect());
+        let invalid = [RootFact {
+            invalid: Some("x".into()),
+            ..here(lacks(1, 11, &[1]))
+        }];
+        assert!(judged(&listed, &reads(&listed, &invalid)).is_empty());
+    }
 }

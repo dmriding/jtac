@@ -4,7 +4,7 @@
 
 use std::fmt::Write;
 
-use crate::output::Output;
+use crate::output::{Output, plain};
 use crate::reason::{finding_line, shown};
 use crate::refuse::Refusal;
 
@@ -80,6 +80,13 @@ pub fn text(o: &Output) -> String {
             c.id, c.outcome, c.duration_ms
         );
     }
+    for id in &o.unread {
+        let _ = writeln!(
+            s,
+            "     {} unread  CI's: the merge job reads it, this gate did not",
+            plain(id)
+        );
+    }
     match (o.added_lines, &o.tiers) {
         (Some(n), Some(tiers)) if tiers.is_empty() => {
             let _ = writeln!(s, "  added   {n} lines; tiers none");
@@ -102,9 +109,11 @@ pub fn summary(o: &Output) -> String {
         .iter()
         .filter(|c| c.outcome == jtac_core::Outcome::Pass)
         .count();
-    let advisory = match o.advisory.len() {
-        0 => String::new(),
-        n => format!(", {n} advisory"),
+    let advisory = match (o.advisory.len(), o.unread.len()) {
+        (0, 0) => String::new(),
+        (n, 0) => format!(", {n} advisory"),
+        (0, left) => format!(", {left} left to CI"),
+        (n, left) => format!(", {left} left to CI, {n} advisory"),
     };
     if o.state == jtac_core::State::DeclaredOff {
         format!(

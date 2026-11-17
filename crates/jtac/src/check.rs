@@ -1,10 +1,12 @@
 //! `jtac check` (DESIGN.md section 11.1): preflight, gather, judge, then write what the
 //! verdict allows. `--preview` stops after the verdict and touches nothing.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_checks::Cache;
-use jtac_core::{FromHead, GateRef, Sha256Digest, Ts};
+use jtac_core::{FromHead, GateRef, Root, Sha256Digest, Ts};
+use jtac_policy::Checks;
 use jtac_sign::Identity;
 use jtac_store::{Store, StoredRoot};
 
@@ -15,7 +17,7 @@ use crate::refuse::Refusal;
 use crate::survey::state_name;
 use crate::{
     Printed, chain, identity, judge, lever, merge, output, render, repo, root, rootpush, state,
-    write,
+    treepolicy, write,
 };
 
 /// The rendered verdict. A root, once written, is reported even when `state.json` is not.
@@ -64,6 +66,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         waivers: lever::offered(&repo, &store, &mut notes)?,
         waivable: Vec::new(),
         adoption: judge::adoption(&repo, &head)?,
+        checks: Checks::Run,
     };
     let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref(), &offered)?;
     if let Some(why) = dirty {
@@ -91,6 +94,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let policy = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &policy, &j, cache)?;
     let site = Site {
+        repo: &repo,
         store: &store,
         identity: &identity,
         gate,
@@ -120,6 +124,8 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
 
 /// What a root is written with, for `check` and the merge job alike.
 pub struct Site<'a> {
+    /// The repository.
+    pub repo: &'a Path,
     /// The store.
     pub store: &'a Store,
     /// Who signs.
@@ -174,6 +180,7 @@ impl Site<'_> {
                     self.from.clone(),
                 )
                 .map_err(Refusal::internal)?;
+                self.own_reader(&root)?;
                 match write::root(self.store, self.identity, &root, &leaves)? {
                     Some(id) => found(id, true),
                     None => {
@@ -192,6 +199,24 @@ impl Site<'_> {
                 }
             }
             (_, false) => Ok(None),
+        }
+    }
+
+    /// The writer signs no root its own reader refuses (decision 57): a root without
+    /// `from` lists as `unread` the `ci` checks of the policy in the tree it names, as
+    /// that reader reads the tree. A drift between the gate's load and the reader's is a
+    /// refusal here, never an invalid root on the remote.
+    fn own_reader(&self, root: &Root) -> Result<(), Refusal> {
+        if root.from.is_some() {
+            return Ok(());
+        }
+        let read = treepolicy::read(self.repo, &BTreeSet::from([root.tree]))?;
+        match read[&root.tree].refuses(&root.unread) {
+            None if read[&root.tree].ci_checks().is_some() => Ok(()),
+            why => Err(Refusal::internal(format!(
+                "this gate built a root its own reader would not count: {}",
+                why.unwrap_or_else(|| "the policy in HEAD's tree does not read back".into())
+            ))),
         }
     }
 }

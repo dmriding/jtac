@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use jtac_checks::diff::git::{GitError, git, merge_base};
 use jtac_core::GitOid;
+use jtac_store::{StoreError, git_objects};
 use serde::{Deserialize, Serialize};
 
 /// HEAD as the verdict names it.
@@ -51,6 +52,20 @@ pub enum RepoError {
     #[error("the history is shallow: {what}")]
     Shallow {
         /// What could not be read.
+        what: String,
+    },
+    /// The path names a file this clone does not hold.
+    #[error("`{path}` at HEAD is object {id}, which this clone does not hold")]
+    Missing {
+        /// Repository-relative path.
+        path: String,
+        /// The object, as hex.
+        id: String,
+    },
+    /// git answered in a shape this build does not read.
+    #[error("git's answer does not read: {what}")]
+    Answer {
+        /// What was wrong with it.
         what: String,
     },
 }
@@ -252,21 +267,56 @@ pub fn entry_at(repo: &Path, treeish: &str, path: &str) -> Result<Entry, RepoErr
     })
 }
 
+/// What a file entry's id names in this clone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// A blob: its bytes.
+    Blob(Vec<u8>),
+    /// Another kind of object, whatever the entry's mode says.
+    NotBlob,
+    /// Nothing this clone holds.
+    Missing,
+}
+
+/// What each id names. The one read of a file's bytes, for the gate that loads a policy and
+/// every reader that asks what a tree's is: git names the kind and peels nothing, so a tag
+/// of a blob is a file to neither
+/// (`a_file_entry_that_names_no_blob_is_a_file_to_neither_the_gate_nor_the_reader`).
+pub fn held(repo: &Path, ids: &[String]) -> Result<Vec<Held>, RepoError> {
+    let read = git_objects(repo, ids).map_err(|e| match e {
+        StoreError::Git(e) => RepoError::Git(e),
+        other => RepoError::Answer {
+            what: other.to_string(),
+        },
+    })?;
+    Ok(read
+        .into_iter()
+        .map(|object| match object {
+            Some(o) if o.kind == "blob" => Held::Blob(o.bytes),
+            Some(_) => Held::NotBlob,
+            None => Held::Missing,
+        })
+        .collect())
+}
+
 /// The blob at `path` in `head`'s tree as `(sha, bytes)`; `None` when there is no entry.
 pub fn blob_at(
     repo: &Path,
     head: &Head,
     path: &str,
 ) -> Result<Option<(String, Vec<u8>)>, RepoError> {
-    match entry_at(repo, &head.commit.hex(), path)? {
+    let path = || path.to_owned();
+    match entry_at(repo, &head.commit.hex(), &path())? {
         Entry::None => Ok(None),
-        Entry::File(sha) => {
-            let bytes = git(repo, &["cat-file", "blob", &sha])?;
-            Ok(Some((sha, bytes)))
-        }
-        Entry::Other => Err(RepoError::NotAFile {
-            path: path.to_owned(),
-        }),
+        Entry::File(sha) => match held(repo, std::slice::from_ref(&sha))?.pop() {
+            Some(Held::Blob(bytes)) => Ok(Some((sha, bytes))),
+            Some(Held::NotBlob) => Err(RepoError::NotAFile { path: path() }),
+            Some(Held::Missing) | None => Err(RepoError::Missing {
+                path: path(),
+                id: sha,
+            }),
+        },
+        Entry::Other => Err(RepoError::NotAFile { path: path() }),
     }
 }
 

@@ -2,15 +2,19 @@
 //! from the local store, the Merkle root, the counts and the verdict recomputed with the
 //! root's `ts` as `now`, each against what the root recorded. Any mismatch invalidates it.
 //! Where the nodes are not local, the root's signature is the answer and the detail is not;
-//! a signature that does not hold ends it: nothing is recomputed for an invalid root.
+//! a signature that does not hold ends it: nothing is recomputed for an invalid root. The
+//! facts are the root's shape's (section 15.2): the `run` checks for a root without `from`,
+//! which is held to the policy in the tree it names as every reader holds it.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
 
 use jtac_core::{
     Counts, GitOid, Reason, Sha256Digest, Signer, State, counts, from_canonical, gate, merkle_root,
 };
-use jtac_policy::{Policy, facts};
+use jtac_gate::PolicyKind;
+use jtac_policy::{Checks, Policy, facts};
 use jtac_sign::{Namespace, Verified};
 use jtac_store::Store;
 use serde::Serialize;
@@ -20,7 +24,7 @@ use crate::cli::ReplayArgs;
 use crate::refuse::Refusal;
 use crate::repo::{self, Head};
 use crate::trust::Signers;
-use crate::{coverage, policy};
+use crate::{coverage, policy, treepolicy};
 
 /// What `jtac replay` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -117,6 +121,20 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if signature == "invalid" {
         return printed(a, unverified(&root, id, mismatches, notes));
     }
+    if root.from.is_none() && root.tree == target.tree {
+        let read = treepolicy::read(&repo, &BTreeSet::from([root.tree]))?;
+        let named = &read[&root.tree];
+        treepolicy::held(&repo, "replay", [named])?;
+        match named.refuses(&root.unread) {
+            Some(why) => mismatches.push(format!("the root is invalid: {why}")),
+            None if named.kind() == PolicyKind::Ci => notes.push(
+                "the policy in the tree it names leaves a check to CI: this root is the local \
+                 gate's evidence, partial, and covers no commit alone"
+                    .to_owned(),
+            ),
+            None => {}
+        }
+    }
     let mut leaves = store
         .manifest(&id)
         .map_err(Refusal::store)?
@@ -139,7 +157,8 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }
     }
     let (policy_from, policy) = policy_for(&repo, &store, &root.policy.hash, &target)?;
-    let facts = facts(&policy, root.commit, root.tree).map_err(Refusal::internal)?;
+    let checks = Checks::of(root.from.is_some());
+    let facts = facts(&policy, root.commit, root.tree, checks).map_err(Refusal::internal)?;
     if facts.policy != root.policy.hash {
         return Err(Refusal::policy_differs(
             &commit,
@@ -257,7 +276,9 @@ fn brief(r: &Reason) -> String {
         Reason::MissingCheck { id } => format!("check `{id}` has no node"),
         Reason::DuplicateCheck { id } => format!("check `{id}` has two nodes"),
         Reason::UnknownCheck { id } => format!("check `{id}` is not in the policy"),
-        Reason::UncountedCheck { id } => format!("check `{id}` has a node from another source"),
+        Reason::UncountedCheck { id } => {
+            format!("check `{id}` has a node from another source, pin or commit than its own")
+        }
         Reason::CheckNotPass { id, outcome } => format!("check `{id}` is {outcome:?}"),
         Reason::Finding {
             rule, path, line, ..
@@ -315,10 +336,24 @@ mod tests {
 
     #[test]
     fn a_reason_is_one_short_line_naming_its_check_or_rule() {
-        assert_eq!(
-            brief(&Reason::MissingCheck { id: "fmt".into() }),
-            "check `fmt` has no node"
-        );
+        let id = || "fmt".to_owned();
+        let rows = [
+            (Reason::MissingCheck { id: id() }, "has no node"),
+            (Reason::DuplicateCheck { id: id() }, "has two nodes"),
+            (Reason::UnknownCheck { id: id() }, "is not in the policy"),
+            (
+                Reason::UncountedCheck { id: id() },
+                "has a node from another source, pin or commit than its own",
+            ),
+        ];
+        for (reason, says) in rows {
+            assert_eq!(brief(&reason), format!("check `fmt` {says}"));
+        }
+        let not_pass = Reason::CheckNotPass {
+            id: id(),
+            outcome: jtac_core::Outcome::Skipped,
+        };
+        assert_eq!(brief(&not_pass), "check `fmt` is Skipped");
         assert_eq!(
             brief(&Reason::Finding {
                 rule: "JT-TEST-001".into(),

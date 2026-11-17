@@ -27,6 +27,8 @@ pub enum BuildError {
 /// The root and its leaves, the node ids in `nodes` order, the applied waivers as `levers`.
 /// A base at HEAD is a parentless tip judged against itself (DESIGN.md section 10.3), so the
 /// root names none. `from` is the merge job's head (section 15), `None` for a local root.
+/// Version 3 only where the gate left a check unread, so every other root stays the bytes a
+/// 0.2 reader reads (section 15.2).
 pub fn build(
     j: &Judged,
     chain: Chain,
@@ -41,7 +43,10 @@ pub fn build(
         .then(|| oid_like(&j.head.commit, &j.base.commit))
         .transpose()?;
     let root = Root {
-        v: RootVersion::V2,
+        v: match j.unread.is_empty() {
+            true => RootVersion::V2,
+            false => RootVersion::V3,
+        },
         commit: j.head.commit,
         tree: j.head.tree,
         ts: j.now,
@@ -59,7 +64,7 @@ pub fn build(
         evidence,
         levers: j.levers.clone(),
         observed: Vec::new(),
-        unread: Vec::new(),
+        unread: j.unread.clone(),
         counts: counts(&j.nodes),
         signer,
     };
