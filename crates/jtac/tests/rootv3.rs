@@ -665,9 +665,33 @@ fn a_clone_that_lacks_the_policy_directory_is_told_to_fetch_that_tree_and_no_oth
     assert_eq!((code, &v["partial"]), (0, &Value::from(1)), "{v}");
 }
 
+/// A root may name any id as its tree, and every root is read before one is judged. One
+/// that names a blob is invalid by its tree, whoever signed it, and stops no reader.
+#[test]
+fn a_root_that_names_a_blob_as_its_tree_is_invalid_and_stops_no_reader() {
+    let h = history();
+    let blob = h.repo.git(&["rev-parse", &format!("{}:.gitignore", h.one)]);
+    let forged = Root {
+        tree: g(&blob),
+        ..h.dev_root(&h.one, &h.zero)
+    };
+    let stranger = make_key(&h.repo, "stranger", "stranger@example.com");
+    put(&h.repo, &stranger, &h.one, &forged);
+    let (code, v) = json(&h.repo, &["audit", &h.one, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(row(&v, &h.one).0, "absent", "{v}");
+    let (code, v) = json(&h.repo, &["verify", &h.one, "--json"]);
+    assert_eq!(code, 1, "{v}");
+    let why = v["invalid"][0]["why"].as_str().unwrap();
+    assert!(
+        why.starts_with(&format!("it names tree sha1:{blob}, not")),
+        "{why}"
+    );
+}
+
 /// Issue 168: git takes pathspec magic from the environment, where `icase` matches another
-/// file and `ls-tree` refuses it and `glob`. No git child inherits one, so the gate loads
-/// the policy and the reader reads the tree's as without them.
+/// file and `ls-tree` refuses it and `glob`. No git child inherits either, so the gate
+/// loads the policy and the reader reads the tree's as without them.
 #[test]
 fn a_pathspec_variable_in_the_environment_changes_no_reading() {
     let h = history();
@@ -676,12 +700,7 @@ fn a_pathspec_variable_in_the_environment_changes_no_reading() {
     let check = ["check", "--preview", "--base", &h.merge];
     let plain = jtac(&h.repo, &audit);
     assert_eq!(plain.code, 0, "{}", plain.stderr);
-    for var in [
-        "GIT_ICASE_PATHSPECS",
-        "GIT_GLOB_PATHSPECS",
-        "GIT_NOGLOB_PATHSPECS",
-        "GIT_LITERAL_PATHSPECS",
-    ] {
+    for var in ["GIT_ICASE_PATHSPECS", "GIT_GLOB_PATHSPECS"] {
         let ran = jtac_with(&h.repo, &audit, &[(var, "1")]);
         assert_eq!(
             (ran.code, &ran.stdout),

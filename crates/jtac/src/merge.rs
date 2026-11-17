@@ -147,7 +147,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &job.from,
         &job.merge_base,
     )?;
-    chain.ledger.roots_held(repo, "check --from")?;
+    chain.held(repo, "check --from")?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {

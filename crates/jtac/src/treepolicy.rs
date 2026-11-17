@@ -4,7 +4,9 @@
 //! calls the gate loads a policy by, so git resolves the path and names the object for both
 //! and a reader never reads "no `ci` check" off a tree the gate would load one from.
 //! Nothing is fetched: an object the clone lacks is `NotHeld`, by the id a fetch must name,
-//! and only where git says that object is missing.
+//! and only where git says that object is missing. The read is total: a root is judged
+//! after it, so no tree a root names may stop the command, and one git cannot walk is
+//! `Unreadable`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -78,7 +80,7 @@ pub fn read(
     for tree in trees {
         entries.push(match repo::entry_at(repo, &tree.hex(), POLICY_PATH) {
             Ok(entry) => Ok(entry),
-            Err(e @ RepoError::Git(GitError::Failed { .. })) => Err(lacking(repo, tree, &e)?),
+            Err(RepoError::Git(GitError::Failed { .. })) => Err(lacking(repo, tree)?),
             Err(e) => return Err(Refusal::repository(&e)),
         });
     }
@@ -101,18 +103,19 @@ pub fn read(
                     Held::NotBlob => TreePolicy::Unreadable,
                     Held::Missing => TreePolicy::NotHeld(blob.clone()),
                 },
-                Err(lacking) => TreePolicy::NotHeld(lacking.clone()),
+                Err(Some(lacking)) => TreePolicy::NotHeld(lacking.clone()),
+                Err(None) => TreePolicy::Unreadable,
             };
             (*tree, policy)
         })
         .collect())
 }
 
-/// The object git could not read on the way to the entry: the directory that holds the
-/// policy when the tree itself is here, else the tree. `failed` is the refusal when git
-/// holds that object after all: `ls-tree` failed for another reason, and a clone is never
-/// told to fetch what it has (`a_pathspec_variable_in_the_environment_changes_no_reading`).
-fn lacking(repo: &Path, tree: &GitOid, failed: &RepoError) -> Result<String, Refusal> {
+/// The object this clone lacks on the way to the entry: the directory that holds the
+/// policy when the tree itself is here, else the tree. `None` when git holds that object
+/// after all: the tree cannot be walked, a root may name any id, and a clone is never told
+/// to fetch what it has (`a_tree_git_cannot_walk_is_unreadable_and_stops_no_reader`).
+fn lacking(repo: &Path, tree: &GitOid) -> Result<Option<String>, Refusal> {
     let dir = POLICY_PATH.split('/').next().unwrap_or(POLICY_PATH);
     let listed = git(repo, &["ls-tree", &tree.hex(), "--", dir]).unwrap_or_default();
     let listed = String::from_utf8_lossy(&listed);
@@ -120,10 +123,8 @@ fn lacking(repo: &Path, tree: &GitOid, failed: &RepoError) -> Result<String, Ref
         [_, "tree", id, _] => id.to_owned(),
         _ => tree.hex(),
     };
-    match repo::held(repo, std::slice::from_ref(&id)).map_err(|e| Refusal::repository(&e))?[..] {
-        [Held::Missing] => Ok(id),
-        _ => Err(Refusal::repository(failed)),
-    }
+    let held = repo::held(repo, std::slice::from_ref(&id)).map_err(|e| Refusal::repository(&e))?;
+    Ok((held == [Held::Missing]).then_some(id))
 }
 
 /// The one not-held answer (decision 60): refuse, naming the fetch, when any of `policies`
@@ -402,16 +403,22 @@ mod tests {
     }
 
     /// Issue 168: not held is said of an object git reports missing, and of nothing else.
-    /// Here `ls-tree` fails on a directory entry that names a blob the clone holds.
+    /// A root may name any id as its tree and is judged after this read, so a tree git
+    /// cannot walk, a directory entry that names a blob or a blob named as the tree, is
+    /// unreadable, never a fetch and never the command's error.
     #[test]
-    fn a_tree_git_cannot_walk_with_every_object_here_is_an_error_not_a_fetch() {
+    fn a_tree_git_cannot_walk_is_unreadable_and_stops_no_reader() {
         let repo = jtac_testkit::Repo::init(&[]);
         repo.write("p", b"version = 1\n");
         let blob = repo.git(&["hash-object", "-w", "p"]);
-        let tree = literal(&repo, "40000", ".jtac", &blob);
-        let refusal = read(repo.path(), &BTreeSet::from([tree])).unwrap_err();
-        assert!(refusal.what.contains("ls-tree"), "{refusal:?}");
-        assert!(!refusal.how.contains("git fetch"), "{refusal:?}");
+        let trees = [
+            literal(&repo, "40000", ".jtac", &blob),
+            format!("sha1:{blob}").parse().unwrap(),
+        ];
+        let got = read(repo.path(), &trees.into_iter().collect()).unwrap();
+        for tree in trees {
+            assert_eq!(got[&tree], TreePolicy::Unreadable, "{tree}");
+        }
     }
 
     /// git reads a mode by its type bits, not its spelling. A reader that compared the

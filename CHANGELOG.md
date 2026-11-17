@@ -46,11 +46,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   - A policy file is read from a blob and nothing else, by the gate and by every reader:
     a tree entry that names a tag of a blob loaded a policy at the gate and read
     unreadable elsewhere, and is now refused as not a regular file.
-  - `GIT_ICASE_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
-    `GIT_LITERAL_PATHSPECS` in the environment reach no git call. The first two made
-    `audit`, `verify` and `release` name a fetch for a policy the clone held.
-  - A policy the clone cannot read is called not held only where git reports the object
-    missing; any other failure is git's error.
+  - `GIT_ICASE_PATHSPECS` and `GIT_GLOB_PATHSPECS` in the environment reach no git call.
+    They made `audit`, `verify` and `release` name a fetch for a policy the clone held.
+  - A policy is called not held only where git reports the object missing; a tree git
+    cannot walk is unreadable.
 - (0.2.28) `jtac release` reads a pull request merged around CI through the waiver on its
   merge (`DESIGN.md` section 16.3, decision 64, issue 169). A partial commit, one whose
   policy reads a check from CI and that holds the local gate's root alone, now passes and

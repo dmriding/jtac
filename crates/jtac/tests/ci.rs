@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use jtac_core::{Covers, FromHead, GitOid, Root, RootVersion, State};
+use jtac_core::{Covers, FromHead, GitOid, Root, RootVersion, Signer, State};
 use jtac_testkit::Repo;
 use serde_json::Value;
 
@@ -1243,4 +1243,42 @@ fn a_commit_waiver_carries_past_a_commit_whose_only_root_is_partial() {
     assert_eq!(v["withheld_waivers"], serde_json::json!([]));
     assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
     assert_eq!(v["verdict"]["unread"], serde_json::json!(["e2e"]), "{v}");
+}
+
+/// Decision 60 asks a fetch only for a root the answer reads. A ref anyone can push, for a
+/// commit and a tree this clone lacks, signed by a key base does not name, lists a pull
+/// request commit in `covers`: it bears on nothing and stops no gate.
+#[test]
+fn a_root_for_a_commit_and_tree_the_clone_lacks_under_an_unknown_key_stops_no_gate() {
+    let p = pr(Trusts::Dev);
+    let head = p.add("a.txt", "a\n");
+    ok(&p.repo, &["check"]);
+    let absent = "1".repeat(40);
+    let forged = Root {
+        commit: g(&absent),
+        tree: g(&"2".repeat(40)),
+        covers: Covers::List(vec![g(&head), g(&absent)]),
+        parents: vec![],
+        signer: Signer {
+            principal: "other@example.com".into(),
+            fingerprint: fingerprint(&p.other),
+        },
+        ..read_root(&p.repo, &head)
+    };
+    put(&p.repo, &p.other, &absent, &forged);
+    let (_, v) = json(&p.repo, &["verify", "--json"]);
+    assert_eq!(
+        v["invalid"],
+        serde_json::json!([]),
+        "the forged root is valid: {v}"
+    );
+    assert!(
+        v["notes"]
+            .to_string()
+            .contains("counts for a tree match only"),
+        "{v}"
+    );
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
 }

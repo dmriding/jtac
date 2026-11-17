@@ -142,9 +142,10 @@ pub fn git_with(
 /// edited graph file would show a history the root does not name, and a reader of evidence
 /// must not touch the network (`a_replace_graft_does_not_hide_the_change`). `GIT_CONFIG` is
 /// dropped: it steers `git config` alone, and a config read must see what `git push` sees
-/// (`a_mirror_push_is_refused_because_git_hides_its_deletions`). The pathspec variables are
-/// dropped: a path is read as written, where `icase` matches another file and makes
-/// `ls-tree` fail (`a_pathspec_variable_in_the_environment_changes_no_reading`).
+/// (`a_mirror_push_is_refused_because_git_hides_its_deletions`). `GIT_ICASE_PATHSPECS`
+/// and `GIT_GLOB_PATHSPECS` are dropped: a path is read as written, where `icase` matches
+/// another file and `ls-tree` refuses both
+/// (`a_pathspec_variable_in_the_environment_changes_no_reading`).
 pub fn git_output(
     repo: &Path,
     args: &[&str],
@@ -160,8 +161,6 @@ pub fn git_output(
         .env_remove("GIT_CONFIG")
         .env_remove("GIT_ICASE_PATHSPECS")
         .env_remove("GIT_GLOB_PATHSPECS")
-        .env_remove("GIT_NOGLOB_PATHSPECS")
-        .env_remove("GIT_LITERAL_PATHSPECS")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_NO_LAZY_FETCH", "1")
         .envs(env.iter().copied())

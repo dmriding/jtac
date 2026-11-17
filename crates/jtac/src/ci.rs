@@ -57,7 +57,7 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let store = Store::open(&repo).map_err(Refusal::store)?;
     let tool = coverage::verifier(&repo)?;
     let chain = levers::gather(&repo, &store, &tool, &signers, &format, &head, &base.commit)?;
-    chain.ledger.roots_held(&repo, "ci")?;
+    chain.held(&repo, "ci")?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {

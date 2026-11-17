@@ -50,20 +50,6 @@ impl Ledger {
         let policies = trees.into_iter().filter_map(|t| self.policies.get(t));
         treepolicy::held(repo, command, policies)
     }
-
-    /// [`Ledger::held`] for a gate that reads no row (`jtac ci`, `check --from`): each
-    /// valid root without `from` counts as its local gate's word, which is unjudged while
-    /// the policy in the tree it names is not here.
-    pub fn roots_held(&self, repo: &Path, command: &str) -> Result<(), Refusal> {
-        let unjudged =
-            |r: &&RootFact| !r.from && r.invalid.is_none() && r.policy == PolicyKind::NotHeld;
-        let trees = self
-            .roots
-            .iter()
-            .filter(unjudged)
-            .filter_map(|r| r.tree.as_ref());
-        self.held(repo, command, trees)
-    }
 }
 
 /// Read the namespace and judge the roots that bear on `commits`.
