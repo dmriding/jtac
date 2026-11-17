@@ -65,6 +65,7 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         waivable: chain.commits.clone(),
         adoption,
         checks: Checks::Run,
+        observed: Vec::new(),
     };
     let j = judge::judge(
         &repo,

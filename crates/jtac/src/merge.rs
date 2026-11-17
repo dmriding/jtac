@@ -3,15 +3,18 @@
 //! head is `--from`; the rules diff from the branch's old tip under its trust, the head's
 //! chain offers its trusted waivers, the head's root is compared as the pull request job
 //! compared it, with the head's checks run again on its own tree, and the root, signed in the
-//! CI namespace, records what the head had in `from`. Only CI's own verdict fails the job;
+//! CI namespace, records what the head had in `from`. A check the policy reads from CI
+//! takes its result from `--results` (section 15.2). Only CI's own verdict fails the job;
 //! what the head had never stops the merge root. A root on the tip, at the job's fetch or on
 //! the remote when its push is refused, stands only as CI's own for this head.
 
+mod observe;
 mod out;
 mod tree;
 
 use std::path::{Path, PathBuf};
 
+use jtac_checks::Cache;
 use jtac_checks::diff::Adoption;
 use jtac_checks::diff::git::{git, quoted};
 use jtac_core::{Compared, FromHead, GitOid, Signer, Ts};
@@ -115,6 +118,41 @@ fn first_parent_line(repo: &Path, head: &Head) -> Vec<String> {
     .unwrap_or_default()
 }
 
+impl Job<'_> {
+    /// The head's root compared as the pull request job compared it, with the head's checks
+    /// on its own tree: a detached worktree when the ledger holds a root for the head.
+    fn compare(
+        &self,
+        chain: &levers::Chain,
+        head_policy: Option<&policy::Loaded>,
+        ci: &judge::Judged,
+        cache: &dyn Cache,
+    ) -> Result<Option<head::HeadRoot>, Refusal> {
+        let repo = &self.repo;
+        let rooted = chain
+            .ledger
+            .roots
+            .iter()
+            .any(|r| r.commit == self.from.commit);
+        let checkout = match rooted {
+            true => tree::HeadTree::checkout(repo, &self.head, &self.from)
+                .map_err(|e| Refusal::worktree(&e, self.from_rev, self.base_rev))?,
+            false => tree::HeadTree::here(repo),
+        };
+        let site = head::Site {
+            repo,
+            cwd: checkout.path(),
+            format: &self.format,
+            head: self.from,
+            head_policy,
+            ci,
+            cache,
+            keyed: true,
+        };
+        head::compare_head(&site, &chain.ledger)
+    }
+}
+
 /// The rendered verdict; exit 1 on CI's own block alone.
 pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let job = Job::resolve(a, cwd)?;
@@ -148,6 +186,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &job.merge_base,
     )?;
     chain.held(repo, "check --from")?;
+    let observed = observe::observe(repo, &job.format, a, &loaded.policy, &job.head, &mut notes)?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {
@@ -155,6 +194,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         waivable: chain.commits.clone(),
         adoption,
         checks: Checks::All,
+        observed,
     };
     let base = Base {
         commit: job.old.commit.hex(),
@@ -170,29 +210,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let bytes = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &bytes, &j, &mut cache)?;
     let head_root = match j.verdict.pass {
-        true => {
-            let rooted = chain
-                .ledger
-                .roots
-                .iter()
-                .any(|r| r.commit == job.from.commit);
-            let checkout = match rooted {
-                true => tree::HeadTree::checkout(repo, &job.head, &job.from)
-                    .map_err(|e| Refusal::worktree(&e, job.from_rev, job.base_rev))?,
-                false => tree::HeadTree::here(repo),
-            };
-            let site = head::Site {
-                repo,
-                cwd: checkout.path(),
-                format: &job.format,
-                head: job.from,
-                head_policy: head_policy.as_ref(),
-                ci: &j,
-                cache: &cache,
-                keyed: true,
-            };
-            head::compare_head(&site, &chain.ledger)?
-        }
+        true => job.compare(&chain, head_policy.as_ref(), &j, &cache)?,
         false => {
             notes.push(
                 "CI's own verdict blocks, so no root records the head and its root was not \

@@ -1015,19 +1015,30 @@ fn a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
     }
 }
 
-/// The merge that brings the `ci` check is judged under the old tip's policy, as any policy
-/// change is; the one after it is judged under the new policy, whose `ci` check the merge
-/// job cannot read without a results file, so it answers 2 and the merge stays partial.
-#[test]
-fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
+/// A repository whose `main` reads `e2e` from CI: `first` is the merge that brought the
+/// policy and the definition file, judged under the old tip's policy as any policy change
+/// is; `second` merges `b`, which holds the developer's partial root, and is pushed with no
+/// job run on it yet.
+struct Reading {
+    f: Forge,
+    a: String,
+    first: String,
+    b: String,
+    second: String,
+}
+
+const WORKFLOW: &str = ".github/workflows/ci.yml";
+
+fn reading() -> Reading {
     let f = forge();
     f.dev.git(&["switch", "-q", "-c", "a", "main"]);
     let read = format!(
         "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
-         [checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\" }}\n",
+         [checks.e2e]\nci = {{ workflow = \"{WORKFLOW}\" }}\n",
         me()
     );
     f.dev.write(".jtac/policy.toml", read.as_bytes());
+    f.dev.write(WORKFLOW, b"on: push\n");
     let a = f.dev.commit("read e2e from ci");
     let ran = jtac(&f.dev, &["check"]);
     assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
@@ -1035,12 +1046,31 @@ fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
     f.push("origin", "a", false);
     f.fetch("origin");
     let first = f.merge("origin/a");
-    let (code, v, err) = f.job(&a, &f.main);
+    f.ci.git(&["push", "-q", "origin", "main"]);
+    let (code, v, err) = json(
+        &f.ci,
+        &[
+            "check",
+            "--from",
+            &a,
+            "--base",
+            &f.main,
+            "--push",
+            "origin",
+            "--json",
+            "--results",
+            "no-such-file.json",
+            "--branch",
+            "main",
+        ],
+    );
     assert_eq!(
         (code, &v["policy_from"]),
         (1, &Value::from("base")),
         "{v}{err}"
     );
+    let notes = v["verdict"]["notes"].to_string();
+    assert!(notes.contains("`--results` was not read"), "{notes}");
     f.dev.git(&["fetch", "-q", "origin"]);
     f.dev.git(&["switch", "-q", "-c", "b", "origin/main"]);
     f.dev.write("b.txt", b"b\n");
@@ -1052,39 +1082,419 @@ fn the_merge_job_writes_no_root_under_a_policy_that_reads_a_check_from_ci() {
     f.fetch("origin");
     let second = f.merge("origin/b");
     f.ci.git(&["push", "-q", "origin", "main"]);
-    let ran = jtac(
-        &f.ci,
-        &["check", "--from", &b, "--base", &first, "--push", "origin"],
+    Reading {
+        f,
+        a,
+        first,
+        b,
+        second,
+    }
+}
+
+/// The results file as a forge adapter writes it, kept outside the work tree: one push run
+/// of the definition file for `commit` on `branch`, by the run's own conclusion. Named
+/// relative to the clone, so a refusal prints it the same on every platform: a temp dir's
+/// `~` or `:` would print quoted.
+fn results(repo: &Repo, commit: &str, branch: &str, concluded: Option<&str>) -> String {
+    let end = match concluded {
+        Some(word) => format!(r#""status":"completed","conclusion":"{word}""#),
+        None => r#""status":"in_progress""#.to_owned(),
+    };
+    let text = format!(
+        r#"{{"v":1,"forge":"github","runs":[{{"workflow":"{WORKFLOW}","commit":"sha1:{commit}","event":"push","ref":"{branch}","id":1234,"attempt":2,{end},"jobs":[]}}]}}"#
     );
+    let word = concluded.unwrap_or("going");
+    let name = format!(".git/runs-{}-{branch}-{word}.json", &commit[..7]);
+    repo.write(&name, text.as_bytes());
+    name
+}
+
+impl Reading {
+    /// The merge job on `second` with `more` flags, as text.
+    fn job(&self, more: &[&str]) -> Ran {
+        let base = [
+            "check",
+            "--from",
+            &self.b,
+            "--base",
+            &self.first,
+            "--push",
+            "origin",
+        ];
+        jtac(&self.f.ci, &[&base[..], more].concat())
+    }
+
+    fn state(&self, commit: &str) -> (String, String) {
+        let v = self.f.audit();
+        let word = |key: &str| row(&v, commit)[key].as_str().unwrap_or("none").to_owned();
+        (word("state"), word("ci"))
+    }
+}
+
+/// DESIGN.md section 15.2, invariant of the merge job: every `ci` check is read before
+/// anything is written, so with no file, a file that does not read, a run still going, a
+/// run for another commit or another branch, the job answers 2 with its own command and
+/// the merge has neither a root nor a failure record.
+#[test]
+fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let ran = r.job(&[]);
     assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
     let what = "jtac: Check `e2e` in the `.jtac/policy.toml` the merge job judges under is read \
-                from CI, and this build's `check --from` reads no CI result.";
+                from CI, and this run was given no results file.";
     assert!(ran.stderr.starts_with(what), "{}", ran.stderr);
-    assert!(
-        ran.stderr
-            .contains("negotiation: Install a jtac whose `check --from` takes `--results`"),
-        "{}",
-        ran.stderr
+    let how = format!(
+        "negotiation: Run `jtac check --from {} --base {} --results <file> --branch <branch> \
+         --push origin`",
+        r.b, r.first
     );
-    let roots = f.second().git(&["for-each-ref", "refs/jtac/roots"]);
-    for commit in [&f.main, &b] {
-        assert!(roots.contains(&root_ref(commit)), "{commit} not in {roots}");
+    assert!(ran.stderr.contains(&how), "{}", ran.stderr);
+    ci.write(".git/garbage.json", b"{\"v\":2}");
+    let garbage = ".git/garbage.json".to_owned();
+    let rows = [
+        (
+            results(ci, &r.second, "main", None),
+            "main",
+            "`e2e` is pending (.github/workflows/ci.yml)",
+        ),
+        (
+            results(ci, &r.first, "main", Some("success")),
+            "main",
+            "`e2e` is missing",
+        ),
+        (
+            results(ci, &r.second, "main", Some("success")),
+            "release",
+            "`e2e` is missing",
+        ),
+        (
+            results(ci, &r.second, "main", Some("success")),
+            "",
+            "`--branch` is empty.",
+        ),
+        (
+            garbage,
+            "main",
+            "garbage.json was not read: not a version 1 results file",
+        ),
+        (
+            "no-such-file.json".to_owned(),
+            "main",
+            "no-such-file.json was not read: ",
+        ),
+    ];
+    for (file, branch, want) in &rows {
+        let ran = r.job(&["--results", file, "--branch", branch]);
+        assert_eq!(
+            (ran.code, ran.stdout.as_str()),
+            (2, ""),
+            "{want}: {}",
+            ran.stderr
+        );
+        assert!(ran.stderr.contains(want), "{want}: {}", ran.stderr);
+        assert_eq!(ran.stderr.lines().count(), 3, "{want}: {}", ran.stderr);
+        let again = format!("--results {file} --branch");
+        assert!(ran.stderr.contains(&again), "{want}: {}", ran.stderr);
     }
-    for commit in [&a, &first, &second] {
-        assert!(!roots.contains(&root_ref(commit)), "{commit} in {roots}");
-    }
-    let (code, v, err) = json(&f.second(), &["audit", "main", "--json"]);
-    assert_eq!(code, 0, "{v}{err}");
-    let state = |commit: &str| {
-        let rows = v["rows"].as_array().unwrap();
-        let row = rows
-            .iter()
-            .find(|r| r["commit"] == format!("sha1:{commit}"));
-        row.unwrap()["state"].as_str().unwrap().to_owned()
-    };
+    let refs = r.f.second().git(&["for-each-ref", "refs/jtac"]);
+    assert!(
+        !refs.contains(&r.second) && !refs.contains("refs/jtac/failed"),
+        "{refs}"
+    );
+    assert_eq!(r.state(&r.second), ("absent".into(), "none".into()));
+    assert_eq!(r.state(&r.b).0, "partial");
+
+    r.f.dev.git(&["fetch", "-q", "origin"]);
+    r.f.dev.git(&["switch", "-q", "-c", "d", "origin/main"]);
+    r.f.dev.git(&["rm", "-q", WORKFLOW]);
+    let d = r.f.dev.commit("drop the definition file");
+    r.f.push("origin", "d", false);
+    r.f.fetch("origin");
+    let third = r.f.merge("origin/d");
+    ci.git(&["push", "-q", "origin", "main"]);
+    let file = results(ci, &third, "main", Some("success"));
+    let flags = ["--from", &d, "--base", &r.second, "--results", &file];
+    let ran = jtac(
+        ci,
+        &[&["check"], &flags[..], &["--branch", "main"]].concat(),
+    );
+    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+    let what = format!(
+        "jtac: Check `e2e` is read from {WORKFLOW}, and commit {}'s tree holds no regular \
+         file there.",
+        &third[..12]
+    );
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+}
+
+/// DESIGN.md section 15.2, M20's done-when: the merge job takes `e2e` from the results
+/// file and writes a version 3 root that holds its node, a second clone reads the merge
+/// and the pull request's commit covered through it beside the developer's partial root,
+/// and `replay` holds the root on the job's store. The head's root, which left `e2e`
+/// unread, still compares agreed: CI's reading is no node of its run (issue 161 note 3).
+/// A run that concluded `failure` fails the verdict, named by the forge's word.
+#[test]
+fn the_merge_job_reads_each_ci_check_from_the_results_file_and_the_merge_reads_covered() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let file = results(ci, &r.second, "main", Some("success"));
+    let read = ["--results", file.as_str(), "--branch", "main"];
+    let ran = r.job(&[&read[..], &["--json"]].concat());
+    let v: Value =
+        serde_json::from_str(&ran.stdout).unwrap_or_else(|e| panic!("{e}: {}", ran.stderr));
+    assert_eq!(ran.code, 0, "{v}{}", ran.stderr);
+    assert_eq!(v["from"]["compared"], "agreed", "{v}");
+    let blob = ci.git(&["rev-parse", &format!("{}:{WORKFLOW}", r.second)]);
+    let want = serde_json::json!([{
+        "id": "e2e",
+        "outcome": "pass",
+        "observed": {
+            "forge": "github", "workflow": WORKFLOW, "blob": sha(&blob),
+            "commit": sha(&r.second), "run": 1234, "attempt": 2, "conclusion": "success",
+        },
+    }]);
+    assert_eq!(v["verdict"]["observed"], want, "{v}");
+    assert_eq!(v["verdict"]["unread"], serde_json::json!([]), "{v}");
+    let root = read_root(ci, &r.second);
+    assert_eq!(serde_json::to_value(root.v).unwrap(), 3);
+    assert_eq!((root.observed.len(), root.unread.len()), (1, 0));
+    assert_eq!((root.counts.checks, root.counts.pass), (3, 3));
+    let text = r.job(&read).stdout;
+    assert!(text.contains("3 of 3 checks pass"), "{text}");
+    let line = format!("     e2e pass  CI concluded `success`: {WORKFLOW}, run 1234 attempt 2\n");
+    assert!(text.contains(&line), "{text}");
+    let replayed = jtac(ci, &["replay", &r.second]);
+    assert_eq!(replayed.code, 0, "{}{}", replayed.stdout, replayed.stderr);
+    assert_eq!(r.state(&r.second), ("covered".into(), "covered".into()));
+    let v = r.f.audit();
+    let pr = row(&v, &r.b);
     assert_eq!(
-        (state(&b), state(&second)),
-        ("partial".into(), "absent".into()),
+        (&pr["state"], &pr["via"], &pr["by"]),
+        (&"covered".into(), &"covers".into(), &sha(&r.second).into()),
         "{v}"
     );
+    assert_eq!(row(&v, &r.a)["state"], "absent", "{v}");
+
+    r.f.dev.git(&["fetch", "-q", "origin"]);
+    r.f.dev.git(&["switch", "-q", "-c", "c", "origin/main"]);
+    r.f.dev.write("c.txt", b"c\n");
+    let c = r.f.dev.commit("c");
+    ok(&r.f.dev, &["check", "--base", "origin/main"]);
+    r.f.push("origin", "c", true);
+    r.f.fetch("origin");
+    let third = r.f.merge("origin/c");
+    ci.git(&["push", "-q", "origin", "main"]);
+    let file = results(ci, &third, "main", Some("failure"));
+    let ran = jtac(
+        ci,
+        &[
+            "check",
+            "--from",
+            &c,
+            "--base",
+            &r.second,
+            "--push",
+            "origin",
+            "--results",
+            &file,
+            "--branch",
+            "main",
+        ],
+    );
+    assert_eq!(ran.code, 1, "{}{}", ran.stdout, ran.stderr);
+    let what = format!("check `e2e` fail: CI concluded `failure` ({WORKFLOW}, run 1234 attempt 2)");
+    assert!(ran.stdout.contains(&what), "{}", ran.stdout);
+    let waive = format!("`jtac waive {third} --ci --reason <why>`");
+    assert!(ran.stdout.contains(&waive), "{}", ran.stdout);
+    assert_eq!(r.state(&third), ("absent".into(), "none".into()));
+}
+
+/// Decision 65: a head that is itself a forge's merge holds a CI root with results read
+/// for its own commit, which no later job can read again, so neither gate says it agreed
+/// and neither fails on it: the pull request job passes, and the merge root of the branch
+/// it lands on records `unverifiable`. Under `--require-local-root` it fails as a missing
+/// root does, and the next step never deletes the merge job's root.
+#[test]
+fn a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gates() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let file = results(ci, &r.second, "main", Some("success"));
+    let ran = r.job(&["--results", &file, "--branch", "main"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    ci.git(&["checkout", "-q", "--detach", &r.second]);
+    let (code, v, err) = json(ci, &["ci", "--base", &r.first, "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    let head = &v["head_root"];
+    assert_eq!(
+        (&head["compared"], &head["trust"]),
+        (&"unverifiable".into(), &"trusted".into()),
+        "{v}"
+    );
+    assert!(
+        head["why"]
+            .as_str()
+            .unwrap()
+            .contains("results read from CI for its own commit"),
+        "{v}"
+    );
+    let flagged = ["ci", "--base", &r.first, "--require-local-root", "--json"];
+    let (code, v, err) = json(ci, &flagged);
+    assert_eq!(code, 1, "{v}{err}");
+    let fix = v["reasons"][0]["how"].as_str().unwrap();
+    let run = format!(
+        "Run `jtac ci --base {}` without `--require-local-root`",
+        r.first
+    );
+    assert!(fix.starts_with(&run), "{fix}");
+    assert!(
+        fix.contains(". Do not delete refs/jtac/roots/") && !fix.contains("update-ref"),
+        "{fix}"
+    );
+    ci.git(&["checkout", "-q", "-B", "release", &r.first]);
+    ci.git(&["merge", "-q", "--no-ff", "-m", "promote", &r.second]);
+    let landed = ci.git(&["rev-parse", "HEAD"]);
+    ci.git(&["push", "-q", "origin", "release"]);
+    let file = results(ci, &landed, "release", Some("success"));
+    let (code, v, err) = json(
+        ci,
+        &[
+            "check",
+            "--from",
+            &r.second,
+            "--base",
+            &r.first,
+            "--push",
+            "origin",
+            "--json",
+            "--results",
+            &file,
+            "--branch",
+            "release",
+        ],
+    );
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["from"]["compared"], "unverifiable", "{v}");
+    let root = read_root(ci, &landed);
+    assert_eq!(
+        (root.observed.len(), root.from.map(|f| f.head)),
+        (1, Some(g(&r.second)))
+    );
+}
+
+/// Decision 65: under `--require-local-root` an unverifiable root is told to leave its ref
+/// alone only when a trusted CI key signed it. One the developer's key signed with a `from`
+/// is nobody's merge root, and is told to write its root again, as before.
+#[test]
+fn an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it() {
+    let f = forge();
+    let tip = f.feature("feat", 1).pop().unwrap();
+    f.push("origin", "feat", true);
+    f.fetch("origin");
+    let merge = f.merge(&tip);
+    let (code, v, err) = f.job(&tip, &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    let written = read_root(&f.ci, &merge);
+    let mut old = written.clone();
+    old.gate.version = "0.0.1".into();
+    let mut far = written.clone();
+    far.from.as_mut().unwrap().head = g("abababababababababababababababababababab");
+    let by_dev = |root: &Root| {
+        let mut root = root.clone();
+        root.signer = read_root(&f.dev, &tip).signer;
+        root
+    };
+    let (old_dev, far_dev) = (by_dev(&old), by_dev(&far));
+    let keep = format!(". Do not delete {} or run `jtac check`", root_ref(&merge));
+    let drop = format!(
+        "Run `jtac ci --base {}` without `--require-local-root`",
+        f.main
+    );
+    let again = "delete the ref with `git update-ref -d ";
+    let fetch = format!(
+        "run `jtac ci --base {} --require-local-root` again{keep}",
+        f.main
+    );
+    for (root, key, trust, starts, holds, lacks) in [
+        (
+            &old,
+            &f.ci_key,
+            "trusted",
+            drop.as_str(),
+            keep.as_str(),
+            again,
+        ),
+        (
+            &far,
+            &f.ci_key,
+            "trusted",
+            "Fetch the history",
+            &fetch,
+            again,
+        ),
+        (
+            &old_dev,
+            &f.dev_key,
+            "unknown",
+            "With jtac ",
+            again,
+            "Do not",
+        ),
+        (
+            &far_dev,
+            &f.dev_key,
+            "unknown",
+            "With jtac ",
+            again,
+            "Do not",
+        ),
+    ] {
+        put(&f.ci, key, &merge, root);
+        let flagged = ["ci", "--base", &f.main, "--require-local-root", "--json"];
+        let (code, v, err) = json(&f.ci, &flagged);
+        assert_eq!(code, 1, "{v}{err}");
+        let head = &v["head_root"];
+        assert_eq!(
+            (&head["compared"], &head["trust"]),
+            (&"unverifiable".into(), &trust.into()),
+            "{v}"
+        );
+        let how = v["reasons"][0]["how"].as_str().unwrap();
+        assert!(how.starts_with(starts), "{trust}: {how}");
+        assert!(
+            how.contains(holds) && !how.contains(lacks),
+            "{trust}: {how}"
+        );
+    }
+}
+
+/// DESIGN.md section 15.2: a root's `observed` is the checks read from CI among its nodes,
+/// so a merge root signed without them does not replay, though its evidence, counts and
+/// state all recompute.
+#[test]
+fn replay_holds_a_merge_root_s_observed_to_the_checks_read_from_ci_among_its_nodes() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let file = results(ci, &r.second, "main", Some("success"));
+    let ran = r.job(&["--results", &file, "--branch", "main"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let real = read_root(ci, &r.second);
+    let hex = |root: &Root| root.id().unwrap().to_string().replace("sha256:", "");
+    let store = ci.path().join(".git/jtac/roots");
+    let nodes = std::fs::read(store.join(hex(&real)).join("nodes.json")).unwrap();
+    let silent = Root {
+        v: serde_json::from_value(2.into()).unwrap(),
+        observed: Vec::new(),
+        ..real
+    };
+    put(ci, &r.f.ci_key, &r.second, &silent);
+    std::fs::create_dir_all(store.join(hex(&silent))).unwrap();
+    std::fs::write(store.join(hex(&silent)).join("nodes.json"), nodes).unwrap();
+    let (code, v, err) = json(ci, &["replay", &r.second, "--json"]);
+    assert_eq!(code, 1, "{v}{err}");
+    for part in ["evidence", "counts", "state"] {
+        assert_eq!(v[part]["recorded"], v[part]["recomputed"], "{part}: {v}");
+    }
+    let want = "the root's `observed` is not the checks read from CI among its nodes";
+    assert_eq!(v["mismatches"], serde_json::json!([want]), "{v}");
 }

@@ -9,22 +9,25 @@ use crate::observed::Forge;
 use crate::oid::GitOid;
 use crate::schema::V1;
 
-/// The file, version 1. `from_json` is the one way in: the type has no `Deserialize` of its
-/// own, so no caller reads a file past the reader's refusals.
+/// The file, version 1: one entry for each run the forge lists for the commit, each at its
+/// newest attempt. `from_json` is the one way in: the type has no `Deserialize` of its
+/// own and no field another crate can set, so no caller reads or builds a file past the
+/// reader's refusals.
+///
+/// ```compile_fail
+/// fn runs(file: &mut jtac_core::Results) { file.runs.clear() }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Results {
-    /// The file's version.
-    pub v: V1,
-    /// The forge every run in the file was listed by.
-    pub forge: Forge,
-    /// One entry for each run the forge lists for the commit, each at its newest attempt.
-    pub runs: Vec<ForgeRun>,
+    pub(crate) v: V1,
+    pub(crate) forge: Forge,
+    pub(crate) runs: Vec<ForgeRun>,
 }
 
 /// One run of one definition file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ForgeRun {
+pub(crate) struct ForgeRun {
     /// The definition file's path, as the forge reports it.
     pub workflow: String,
     /// The commit the run was for.
@@ -54,7 +57,7 @@ pub struct ForgeRun {
 /// One job of a run, named in full as the forge reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ForgeJob {
+pub(crate) struct ForgeJob {
     /// The job's name: a matrix leg and a called workflow's job carry theirs whole.
     pub name: String,
     /// The forge's word for how the job ended; absent until it has.

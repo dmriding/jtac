@@ -62,11 +62,19 @@ Policy version 2 lets a check name the workflow and job that already run it,
 
 - `jtac check` and `jtac ci` run the `run` checks and the rules and name each `ci` check
   as unread. The developer's root lists them and reads `covered, ci unread` in `jtac audit`.
-- The root job, `jtac check --from`, reads no CI result yet. Under such a policy it exits 2
-  and writes no merge root.
-- So no commit reads covered, `verify --require-coverage` fails and `jtac release` refuses.
+- The root job reads each `ci` check from a results file:
+  `jtac check --from <head> --base <old tip> --results <file> --branch <name>`. With every
+  result in, the merge root holds them and the merge and the pull request's commits read
+  covered. A result that is missing or pending exits 2 and writes nothing.
+- The action passes no `--results` yet: the adapter that writes the file from the forge's
+  runs is not shipped. Under such a policy the action's root job exits 2 and writes no
+  merge root.
+- So on the action no commit reads covered, `verify --require-coverage` fails and
+  `jtac release` refuses.
 
-Keep every check `run` until a release notes that the root job reads CI results.
+Keep every check `run` until a release notes that the action reads CI results. The file's
+format is `DESIGN.md` section 15.2; a team that writes it from its own forge can pass it
+to the root job today.
 
 ## The release job
 

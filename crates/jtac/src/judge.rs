@@ -1,6 +1,7 @@
 //! Gather the evidence for one verdict and hand it to `gate` (DESIGN.md section 11.1 steps 3
 //! to 5): the `integrity` check node first, its findings, then every policy check this gate
-//! runs, in order. A check read from CI is left out and named (section 15.2).
+//! runs, in order. A check read from CI is left out and named, or for the merge job taken
+//! as the body it read from the results file (section 15.2).
 //! With a cache, a check's node may be a hit; without one (`--preview`) every check runs and
 //! nothing is kept, because a pass computed on a dirty tree would be cached under HEAD's
 //! tree id.
@@ -12,8 +13,8 @@ use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, Report, report};
 use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
-    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, Sha256Digest, SignedLever,
-    Ts, Verdict, gate,
+    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, ReadCheck, Sha256Digest,
+    SignedLever, Ts, Verdict, gate,
 };
 use jtac_policy::{Checks, INTEGRITY_CHECK_ID, POLICY_PATH, facts};
 
@@ -64,6 +65,9 @@ pub struct Offered {
     pub adoption: Adoption,
     /// Which checks this gate holds (section 15.2): every one for the merge job alone.
     pub checks: Checks,
+    /// The merge job's reading of each `ci` check, in policy order; empty for every other
+    /// gate.
+    pub observed: Vec<ReadCheck>,
 }
 
 /// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
@@ -111,8 +115,8 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
 
 /// Run the rules and the checks on `head` and decide. Every offered waiver is given to the
 /// verdict; it keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
-/// A gate that holds every check has no CI result to read yet, and refuses a policy with a
-/// `ci` check before it runs anything.
+/// A gate that holds every check is offered the body of each `ci` check; one it was not
+/// offered is a refusal, never a failed verdict, which would record a result nobody read.
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -123,8 +127,12 @@ pub fn judge(
     offered: &Offered,
 ) -> Result<Judged, Refusal> {
     let checks = offered.checks;
-    if let (Checks::All, Some((id, _))) = (checks, loaded.policy.ci_checks().next()) {
-        return Err(Refusal::ci_unread(id));
+    let offered_for = |id: &str| offered.observed.iter().any(|c| c.body().id == id);
+    let unread = loaded.policy.ci_checks().find(|(id, _)| !offered_for(id));
+    if let (Checks::All, Some((id, _))) = (checks, unread) {
+        return Err(Refusal::internal(format!(
+            "the merge job judged with no result offered for check `{id}`"
+        )));
     }
     let mut facts =
         facts(&loaded.policy, head.commit, head.tree, checks).map_err(Refusal::internal)?;
@@ -186,6 +194,12 @@ pub fn judge(
             }
         }
     }
+    nodes.extend(
+        offered
+            .observed
+            .iter()
+            .map(|c| node(Body::Observed(c.body().clone()))),
+    );
     let evidence = nodes.len();
     nodes.extend(offered.waivers.iter().map(|w| w.node.clone()));
     let verdict = gate(&facts, &nodes, now);
@@ -258,5 +272,49 @@ mod tests {
         );
         assert_eq!(err.stderr.bytes, 7);
         assert_eq!(err.stderr.sha, Sha256Digest::of(b"no base"));
+    }
+
+    /// The second fence behind the merge job's read: a `ci` check with no body offered is
+    /// a refusal for the gate that holds every check, and no other gate is stopped by it.
+    #[test]
+    fn a_gate_that_holds_every_check_refuses_a_ci_check_it_was_offered_no_result_for() {
+        let text = "version = 2\n[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\" }\n";
+        let policy = jtac_policy::parse(text).unwrap();
+        let loaded = Loaded {
+            matchers: policy.matchers().unwrap(),
+            policy,
+            differs_on_disk: false,
+        };
+        let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let what = |checks| {
+            let head = Head {
+                commit: oid,
+                tree: oid,
+            };
+            let base = Base {
+                commit: oid.hex(),
+                from: String::new(),
+            };
+            let offered = Offered {
+                waivers: Vec::new(),
+                waivable: Vec::new(),
+                adoption: Adoption::None,
+                checks,
+                observed: Vec::new(),
+            };
+            let now = "2026-10-10T18:30:00Z".parse().unwrap();
+            let repo = Path::new("no-such-repository");
+            match judge(repo, &loaded, head, base, now, None, &offered) {
+                Ok(_) => "judged".to_owned(),
+                Err(r) => r.what,
+            }
+        };
+        assert_eq!(
+            what(Checks::All),
+            "jtac could not finish: the merge job judged with no result offered for check `e2e`"
+        );
+        assert!(!what(Checks::Run).contains("no result offered"));
     }
 }

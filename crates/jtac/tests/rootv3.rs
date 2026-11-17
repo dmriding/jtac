@@ -554,7 +554,10 @@ fn replay_counts_no_ci_result_in_a_root_without_from_and_holds_it_to_its_trees_p
     }
     assert_eq!(
         v["mismatches"],
-        serde_json::json!(["the verdict is ABORT: check `test` is not in the policy"]),
+        serde_json::json!([
+            "the root's `observed` is not the checks read from CI among its nodes",
+            "the verdict is ABORT: check `test` is not in the policy"
+        ]),
         "{v}"
     );
 

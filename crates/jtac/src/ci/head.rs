@@ -69,6 +69,34 @@ pub struct HeadRoot {
     pub recorded: Option<Side>,
     /// What this gate's run from the root's base reached, when one was owed.
     pub run: Option<Side>,
+    /// For an unverifiable root, what would make it comparable.
+    #[serde(skip)]
+    pub cure: Cure,
+}
+
+/// What makes an unverifiable root comparable. `--require-local-root`'s refusal takes its
+/// next step from it. A merge job's root is never told to delete its ref, since a
+/// developer's root must not replace it, and a root is a merge job's on a trusted
+/// signature alone, never on the word of its `from`
+/// (`an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cure {
+    /// The root written again by this gate version: any root that is not a merge job's.
+    Recheck,
+    /// History the clone lacks, for a merge job's root.
+    Fetch,
+    /// No run of this job, for a merge job's root.
+    Nothing,
+}
+
+impl Cure {
+    fn of(merge_job: bool, lacks_history: bool) -> Self {
+        match (merge_job, lacks_history) {
+            (false, _) => Self::Recheck,
+            (true, true) => Self::Fetch,
+            (true, false) => Self::Nothing,
+        }
+    }
 }
 
 /// One side of the comparison.
@@ -103,11 +131,14 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         why: fact.invalid.clone(),
         recorded: None,
         run: None,
+        cure: Cure::Recheck,
     };
     let Some(stored) = ledger.stored[i].as_ref().filter(|_| fact.invalid.is_none()) else {
         return Ok(Some(out));
     };
     let root = &stored.root;
+    let merge_job = root.from.is_some() && matches!(fact.trust, Trust::Trusted);
+    out.cure = Cure::of(merge_job, false);
     out.recorded = Some(Side {
         state: root.state,
         counts: root.counts.clone(),
@@ -162,6 +193,15 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         ));
         return Ok(Some(out));
     }
+    if root.from.is_some() && policy.policy.ci_checks().next().is_some() {
+        out.compared = Compared::Unverifiable;
+        out.why = Some(
+            "it holds results read from CI for its own commit, which no gate reads again for \
+             another commit, so this run cannot say it agreed"
+                .into(),
+        );
+        return Ok(Some(out));
+    }
     if site.keyed
         && owed.is_some()
         && own != Some(facts.policy)
@@ -186,6 +226,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
                      root's base is not held",
                     from.head.hex()
                 ));
+                out.cure = Cure::of(merge_job, true);
                 return Ok(Some(out));
             };
             facts.waivable = scope;
@@ -207,7 +248,10 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
 }
 
 /// This gate's run of the root's diff from `base`: the rules on it, the checks on the head's
-/// tree, the root's levers as it applied them, its `ts` as `now`.
+/// tree, the root's levers as it applied them, its `ts` as `now`. Of CI's nodes only a run's
+/// is reused: a result CI read is for CI's commit, and a root whose facts hold a `ci` check
+/// was `unverifiable` before this
+/// (`the_merge_job_reads_each_ci_check_from_the_results_file_and_the_merge_reads_covered`).
 fn side_of(
     site: &Site,
     root: &Root,

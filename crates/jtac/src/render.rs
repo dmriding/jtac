@@ -5,7 +5,7 @@
 use std::fmt::Write;
 
 use crate::output::{Output, plain};
-use crate::reason::{finding_line, shown};
+use crate::reason::{finding_line, shown, source};
 use crate::refuse::Refusal;
 
 /// `o` as JSON with `--json`, else as text.
@@ -80,6 +80,16 @@ pub fn text(o: &Output) -> String {
             c.id, c.outcome, c.duration_ms
         );
     }
+    for c in &o.observed {
+        let _ = writeln!(
+            s,
+            "     {} {}  CI concluded `{}`: {}",
+            plain(&c.id),
+            c.outcome,
+            plain(&c.observed.conclusion),
+            source(&c.observed)
+        );
+    }
     for id in &o.unread {
         let _ = writeln!(
             s,
@@ -103,12 +113,9 @@ pub fn text(o: &Output) -> String {
 
 /// The banner's clause: checks passed, what blocks or was overridden, advisory count.
 pub fn summary(o: &Output) -> String {
-    let total = o.checks.len();
-    let passed = o
-        .checks
-        .iter()
-        .filter(|c| c.outcome == jtac_core::Outcome::Pass)
-        .count();
+    let outcomes = (o.checks.iter().map(|c| c.outcome)).chain(o.observed.iter().map(|c| c.outcome));
+    let total = outcomes.clone().count();
+    let passed = outcomes.filter(|o| *o == jtac_core::Outcome::Pass).count();
     let advisory = match (o.advisory.len(), o.unread.len()) {
         (0, 0) => String::new(),
         (n, 0) => format!(", {n} advisory"),
