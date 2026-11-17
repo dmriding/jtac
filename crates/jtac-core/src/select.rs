@@ -191,7 +191,7 @@ mod tests {
         }
     }
 
-    // What selection read, without the pin and commit the caller gave it.
+    /// What selection read, without the pin and commit the caller gave it.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Seen {
         Missing,
