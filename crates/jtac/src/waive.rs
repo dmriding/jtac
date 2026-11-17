@@ -8,7 +8,7 @@ use std::path::Path;
 use jtac_core::{
     Action, Body, Gate, GitOid, LeverBody, Node, Scope, Sha256Digest, Signer, Ts, clean_prefix,
 };
-use jtac_policy::facts;
+use jtac_policy::policy_hash;
 use jtac_sign::{Namespace, sign};
 use jtac_store::Store;
 use serde::Serialize;
@@ -99,9 +99,7 @@ pub fn waive(a: &WaiveArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let marker = agent::here();
     let node = Node {
         tree,
-        policy: facts(&loaded.policy, head.commit, head.tree)
-            .map_err(Refusal::internal)?
-            .policy,
+        policy: policy_hash(&loaded.policy).map_err(Refusal::internal)?,
         ts: now,
         body: Body::Lever(LeverBody {
             action: Action::Waive,

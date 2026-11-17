@@ -1,5 +1,6 @@
 //! Gather the evidence for one verdict and hand it to `gate` (DESIGN.md section 11.1 steps 3
-//! to 5): the `integrity` check node first, its findings, then every policy check in order.
+//! to 5): the `integrity` check node first, its findings, then every policy check this gate
+//! runs, in order. A check read from CI is left out and named (section 15.2).
 //! With a cache, a check's node may be a hit; without one (`--preview`) every check runs and
 //! nothing is kept, because a pass computed on a dirty tree would be cached under HEAD's
 //! tree id.
@@ -14,7 +15,7 @@ use jtac_core::{
     Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, Sha256Digest, SignedLever,
     Ts, Verdict, gate,
 };
-use jtac_policy::{INTEGRITY_CHECK_ID, POLICY_PATH, facts};
+use jtac_policy::{Checks, INTEGRITY_CHECK_ID, POLICY_PATH, facts};
 
 use crate::policy::Loaded;
 use crate::refuse::Refusal;
@@ -29,6 +30,8 @@ pub struct Judged {
     pub base: Base,
     /// What the verdict judged.
     pub facts: Facts,
+    /// The policy's `ci` checks this gate did not read, in policy order: the root's `unread`.
+    pub unread: Vec<String>,
     /// The instant every node carries and `gate` was given.
     pub now: Ts,
     /// Check and finding nodes, `integrity` first, then the waivers the verdict applied: the
@@ -59,6 +62,8 @@ pub struct Offered {
     pub waivable: Vec<GitOid>,
     /// The adoption fact for `JT-PROT-001`.
     pub adoption: Adoption,
+    /// Which checks this gate holds (section 15.2): every one for the merge job alone.
+    pub checks: Checks,
 }
 
 /// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
@@ -106,6 +111,8 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
 
 /// Run the rules and the checks on `head` and decide. Every offered waiver is given to the
 /// verdict; it keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
+/// A gate that holds every check has no CI result to read yet, and refuses a policy with a
+/// `ci` check before it runs anything.
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -115,10 +122,12 @@ pub fn judge(
     cache: Option<&dyn Cache>,
     offered: &Offered,
 ) -> Result<Judged, Refusal> {
-    if let Some((id, _)) = loaded.policy.ci_checks().next() {
+    let checks = offered.checks;
+    if let (Checks::All, Some((id, _))) = (checks, loaded.policy.ci_checks().next()) {
         return Err(Refusal::ci_unread(id));
     }
-    let mut facts = facts(&loaded.policy, head.commit, head.tree).map_err(Refusal::internal)?;
+    let mut facts =
+        facts(&loaded.policy, head.commit, head.tree, checks).map_err(Refusal::internal)?;
     facts.waivable = offered.waivable.clone();
     let node = |body: Body| Node {
         tree: head.tree,
@@ -192,6 +201,7 @@ pub fn judge(
         head,
         base,
         facts,
+        unread: checks.unread(&loaded.policy),
         now,
         nodes,
         levers,

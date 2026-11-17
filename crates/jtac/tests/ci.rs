@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use jtac_core::{Covers, FromHead, GitOid, Root, State};
+use jtac_core::{Covers, FromHead, GitOid, Root, RootVersion, State};
 use jtac_testkit::Repo;
 use serde_json::Value;
 
@@ -1160,29 +1160,87 @@ fn ci_refuses_a_base_that_does_not_resolve_a_dirty_tree_and_a_missing_policy_wit
     );
 }
 
-#[test]
-fn a_check_read_from_ci_is_a_protected_change_until_base_holds_it_and_then_no_gate_judges() {
+const READS_E2E: &str =
+    "[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\", job = \"e2e\" }\n";
+
+/// `main` moved to a policy that reads `e2e` from CI, `feature` at it.
+fn pr_under_ci() -> Pr {
     let p = pr(Trusts::Dev);
     let read = format!(
-        "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
-         [checks.e2e]\nci = {{ workflow = \".github/workflows/ci.yml\", job = \"e2e\" }}\n",
+        "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n{READS_E2E}",
         me()
     );
     p.repo.write(".jtac/policy.toml", read.as_bytes());
     p.repo.commit("read e2e from ci");
+    p
+}
+
+/// Section 15.2: the pull request job runs the `run` checks, names each `ci` check as read
+/// at the merge, and compares the head's root, which holds the same checks.
+#[test]
+fn a_check_read_from_ci_is_a_protected_change_until_base_holds_it_and_then_ci_names_it_unread() {
+    let p = pr_under_ci();
     let (code, v) = ci(&p.repo);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["policy_from"], "base");
     assert_eq!(rules(&v), ["JT-PROT-001"]);
-    p.repo.git(&["branch", "-f", "main", "HEAD"]);
-    p.add("a.txt", "a\n");
-    let ran = jtac(&p.repo, &["ci", "--base", "main"]);
-    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
-    assert!(
-        ran.stderr.starts_with(
-            "jtac: Check `e2e` in the `.jtac/policy.toml` this gate judges under is read from CI"
-        ),
-        "{}",
-        ran.stderr
+    assert_eq!(
+        v["verdict"]["unread"],
+        serde_json::json!([]),
+        "the base's policy"
     );
+    p.repo.git(&["branch", "-f", "main", "HEAD"]);
+    let head = p.add("a.txt", "a\n");
+    ok(&p.repo, &["check", "--base", "main"]);
+    let root = read_root(&p.repo, &head);
+    assert_eq!(
+        (root.v, &root.unread[..]),
+        (RootVersion::V3, &["e2e".to_owned()][..])
+    );
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["policy_from"], "head");
+    assert_eq!(v["verdict"]["unread"], serde_json::json!(["e2e"]), "{v}");
+    let ids: Vec<&str> = (v["verdict"]["checks"].as_array().unwrap().iter())
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["integrity", "ok"], "{v}");
+    assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
+    let ran = jtac(&p.repo, &["ci", "--base", "main"]);
+    let line = "     e2e unread  CI's: the merge job reads it, this gate did not\n";
+    assert!(ran.stdout.contains(line), "{}", ran.stdout);
+}
+
+/// Section 15.2 and decision 62: a partial root says in full what the local gate judged, so
+/// a commit waiver carries past a later commit whose only evidence is one, each root the
+/// real gate's.
+#[test]
+fn a_commit_waiver_carries_past_a_commit_whose_only_root_is_partial() {
+    let p = pr_under_ci();
+    p.repo.git(&["branch", "-f", "main", "HEAD"]);
+    let one = p.remove_test();
+    ok(
+        &p.repo,
+        &["waive", "HEAD", "--reason", "the test was obsolete"],
+    );
+    ok(&p.repo, &["check", "--base", "main"]);
+    let two = p.add("b.txt", "b\n");
+    ok(&p.repo, &["check"]);
+    for commit in [&one, &two] {
+        let root = read_root(&p.repo, commit);
+        assert_eq!(
+            (root.v, &root.unread[..]),
+            (RootVersion::V3, &["e2e".to_owned()][..])
+        );
+    }
+    let (code, v) = ci(&p.repo);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["verdict"]["state"], "declared_off");
+    assert_eq!(
+        v["verdict"]["waivers"][0]["scope"]["commit"],
+        format!("sha1:{one}")
+    );
+    assert_eq!(v["withheld_waivers"], serde_json::json!([]));
+    assert_eq!(v["head_root"]["compared"], "agreed", "{v}");
+    assert_eq!(v["verdict"]["unread"], serde_json::json!(["e2e"]), "{v}");
 }

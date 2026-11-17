@@ -2,7 +2,6 @@
 //! the range's commits, the roots that bear on them, and the state of each commit as
 //! `jtac_gate::rows` assigns it. Both read it; neither decides.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_core::{GitOid, Sha256Digest, Signer, State};
@@ -257,25 +256,11 @@ impl Survey {
         }
     }
 
-    /// Refuse when a reading turns on a policy this clone does not hold (decision 60): a
+    /// Refuse when a row turns on a policy this clone does not hold (decision 60): a
     /// command that judges answers 2 with the fetch named, where a report prints the row.
     pub fn held(&self, command: &str) -> Result<(), Refusal> {
-        if !self.rows.iter().any(|r| r.state == Some(Reading::NotHeld)) {
-            return Ok(());
-        }
-        let objects: BTreeSet<&str> = (self.ledger.policies.values())
-            .filter_map(|p| match p {
-                crate::treepolicy::TreePolicy::NotHeld(id) => Some(id.as_str()),
-                _ => None,
-            })
-            .collect();
-        let objects: Vec<&str> = objects.into_iter().collect();
-        let remote = crate::treepolicy::promisor(&self.repo)?;
-        Err(Refusal::policy_not_held(
-            command,
-            &objects,
-            remote.as_deref(),
-        ))
+        let trees = self.rows.iter().flat_map(|r| &r.lacking);
+        self.ledger.held(&self.repo, command, trees)
     }
 
     /// Every waiver a valid root applies, in root order.

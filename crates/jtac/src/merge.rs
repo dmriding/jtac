@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use jtac_checks::diff::Adoption;
 use jtac_checks::diff::git::{git, quoted};
 use jtac_core::{Compared, FromHead, GitOid, Signer, Ts};
+use jtac_policy::Checks;
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot, ref_name};
 
@@ -146,12 +147,14 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &job.from,
         &job.merge_base,
     )?;
+    chain.ledger.roots_held(repo, "check --from")?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {
         waivers: chain.trusted.clone(),
         waivable: chain.commits.clone(),
         adoption,
+        checks: Checks::All,
     };
     let base = Base {
         commit: job.old.commit.hex(),
@@ -214,6 +217,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         ));
     }
     let site = Site {
+        repo,
         store: &store,
         identity: &identity,
         gate,

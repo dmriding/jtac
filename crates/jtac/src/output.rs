@@ -48,6 +48,10 @@ pub struct Output {
     pub waived: Vec<FindingOut>,
     /// Every check node, `integrity` first.
     pub checks: Vec<CheckOut>,
+    /// The policy's `ci` checks, which this gate did not read: the merge job reads them
+    /// (DESIGN.md section 15.2). Absent in an older `state.json`.
+    #[serde(default)]
+    pub unread: Vec<String>,
     /// The waivers the verdict applied; absent in a `state.json` an earlier version wrote.
     #[serde(default)]
     pub waivers: Vec<WaiverOut>,
@@ -229,6 +233,7 @@ pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256
         advisory,
         waived,
         checks,
+        unread: p.unread.clone(),
         waivers,
         added_lines: p.report.as_ref().map(|r| r.added_lines),
         tiers: p.report.as_ref().map(|r| r.tiers.iter().cloned().collect()),

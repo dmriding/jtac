@@ -15,7 +15,7 @@ use jtac_core::{
     Sha256Digest, Signer, State, compare, counts, gate,
 };
 use jtac_gate::Trust;
-use jtac_policy::{INTEGRITY_CHECK_ID, facts};
+use jtac_policy::{Checks, INTEGRITY_CHECK_ID, facts, policy_hash};
 use serde::Serialize;
 
 use crate::judge::{self, Judged};
@@ -147,14 +147,12 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         return Ok(Some(out));
     };
     let own = match site.head_policy {
-        Some(p) => Some(
-            facts(&p.policy, root.commit, root.tree)
-                .map_err(Refusal::internal)?
-                .policy,
-        ),
+        Some(p) => Some(policy_hash(&p.policy).map_err(Refusal::internal)?),
         None => None,
     };
-    let mut facts = facts(&policy.policy, root.commit, root.tree).map_err(Refusal::internal)?;
+    let checks = Checks::of(root.from.is_some());
+    let mut facts =
+        facts(&policy.policy, root.commit, root.tree, checks).map_err(Refusal::internal)?;
     if root.policy.hash != facts.policy {
         out.compared = Compared::Lied;
         out.why = Some(format!(

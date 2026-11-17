@@ -1,17 +1,18 @@
-//! The readers of root version 3 on a scripted history (DESIGN.md sections 9.5 and 15.2,
-//! M20b, decisions 57, 58, 60, 62 and 63). No gate writes a version 3 root yet, so each is
-//! built here and signed: a developer's root under a `ci` check reads partial and one that
-//! leaves the check out of `unread` is invalid; the merge root covers the pull request and
-//! the CI gate reads its first-parent line alone; a policy a blobless clone lacks is exit 2
-//! with the fetch named, and `policy not held` in `audit`; at `release` a CI waiver on a
-//! merge made around CI declares off the partial commits it brought in (decision 64).
+//! Root version 3 on a scripted history (DESIGN.md sections 9.5 and 15.2, M20b, decisions
+//! 57, 58, 60, 62 and 63). The local gate writes the developer's root; a merge root with a
+//! version 3 node has no writer yet, so each is built here and signed, as is any root a
+//! real gate would not write. A developer's root under a `ci` check reads partial and one
+//! that leaves the check out of `unread` is invalid; the merge root covers the pull request
+//! and the CI gate reads its first-parent line alone; a policy a partial clone lacks is
+//! exit 2 with the fetch named, and `policy not held` in `audit`; at `release` a CI waiver
+//! on a merge made around CI declares off the partial commits it brought in (decision 64).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jtac_core::{
     Body, Covers, Forge, FromHead, GitOid, Node, Observed, ObservedCheck, Outcome, Parent, Root,
-    RootVersion, SignedLever, Signer,
+    RootVersion, Sha256Digest, SignedLever, Signer, State, merkle_root,
 };
 use jtac_testkit::Repo;
 use serde_json::Value;
@@ -64,7 +65,11 @@ struct Ran {
 }
 
 fn jtac(repo: &Repo, args: &[&str]) -> Ran {
-    let out = repo.command(env!("CARGO_BIN_EXE_jtac"), args);
+    jtac_with(repo, args, &[])
+}
+
+fn jtac_with(repo: &Repo, args: &[&str], env: &[(&str, &str)]) -> Ran {
+    let out = repo.command_with(env!("CARGO_BIN_EXE_jtac"), args, env);
     Ran {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8(out.stdout).unwrap(),
@@ -76,6 +81,10 @@ fn json(repo: &Repo, args: &[&str]) -> (i32, Value) {
     let ran = jtac(repo, args);
     assert!(ran.stderr.is_empty(), "{}", ran.stderr);
     (ran.code, serde_json::from_str(&ran.stdout).unwrap())
+}
+
+fn hex(id: &Sha256Digest) -> String {
+    id.to_string().trim_start_matches("sha256:").to_owned()
 }
 
 fn g(hex: &str) -> GitOid {
@@ -185,10 +194,10 @@ impl History {
         r
     }
 
-    /// The merge job's root on `commit` for `head`, holding `test` as read from CI.
-    fn ci_root(&self, commit: &str, covers: &[&str], base: &str, head: &str) -> Root {
-        let r = self.template(commit, covers, base);
-        let observed = Node {
+    /// `test` as the merge job reads it from CI for `r`'s commit, a leaf of `r`.
+    fn observed(&self, r: &Root) -> Node {
+        let workflow = format!("{}:.github/workflows/ci.yml", r.commit.hex());
+        Node {
             tree: r.tree,
             policy: r.policy.hash,
             ts: r.ts,
@@ -198,17 +207,64 @@ impl History {
                 observed: Observed {
                     forge: Forge::Github,
                     workflow: ".github/workflows/ci.yml".into(),
-                    blob: g(&self
-                        .repo
-                        .git(&["rev-parse", &format!("{commit}:.github/workflows/ci.yml")])),
+                    blob: g(&self.repo.git(&["rev-parse", &workflow])),
                     job: Some("test".into()),
-                    commit: g(commit),
+                    commit: r.commit,
                     run: 1234,
                     attempt: 1,
                     conclusion: "success".into(),
                 },
             }),
-        };
+        }
+    }
+
+    /// The local gate's own root on `head`, a commit under the `ci` policy.
+    fn checked(&self) -> Root {
+        self.repo.git(&["switch", "-q", "--detach", &self.head]);
+        let (code, v) = json(&self.repo, &["check", "--base", &self.merge, "--json"]);
+        assert_eq!(code, 0, "{v}");
+        assert_eq!(v["unread"], serde_json::json!(["test"]), "{v}");
+        root_of(&self.repo, &self.head)
+    }
+
+    /// Replace `head`'s root with `r` and the local manifest `replay` reads its leaves by.
+    fn plant(&self, r: &Root, leaves: &[Sha256Digest]) {
+        put(&self.repo, &self.dev, &self.head, r);
+        let dir = self.store().join("roots").join(hex(&r.id().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = serde_json::json!({ "v": 1, "nodes": leaves });
+        let bytes = jtac_core::canonical_bytes(&manifest).unwrap();
+        std::fs::write(dir.join("nodes.json"), bytes).unwrap();
+    }
+
+    fn store(&self) -> PathBuf {
+        self.repo.path().join(".git").join("jtac")
+    }
+
+    /// A blobless clone of the repository with its roots fetched whole, and the trust file.
+    fn partial_clone(&self, filter: &str) -> (Repo, String) {
+        self.repo.git(&["config", "uploadpack.allowFilter", "true"]);
+        self.repo
+            .git(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        let url = format!(
+            "file://{}",
+            self.repo.path().to_string_lossy().replace('\\', "/")
+        );
+        let clone = Repo::empty();
+        clone.git(&["clone", "-q", filter, "--no-checkout", &url, "."]);
+        let refs = "+refs/jtac/*:refs/jtac/*";
+        clone.git(&["fetch", "-q", "--filter=blob:limit=1g", "origin", refs]);
+        let signers = clone.write(
+            ".git/trusted",
+            format!("dev@example.com {}\n", pubkey(&self.dev)).as_bytes(),
+        );
+        (clone, signers.to_str().unwrap().to_owned())
+    }
+
+    /// The merge job's root on `commit` for `head`, holding `test` as read from CI.
+    fn ci_root(&self, commit: &str, covers: &[&str], base: &str, head: &str) -> Root {
+        let r = self.template(commit, covers, base);
+        let observed = self.observed(&r);
         Root {
             v: RootVersion::V3,
             from: Some(FromHead {
@@ -389,30 +445,8 @@ fn the_merge_root_covers_the_pull_request_and_the_ci_gate_reads_its_first_parent
 fn a_policy_a_blobless_clone_lacks_is_exit_two_with_the_fetch_named_and_a_row_in_audit() {
     let h = history();
     put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
-    h.repo.git(&["config", "uploadpack.allowFilter", "true"]);
-    h.repo
-        .git(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
-    let url = format!(
-        "file://{}",
-        h.repo.path().to_string_lossy().replace('\\', "/")
-    );
-    let clone = Repo::empty();
-    let args = [
-        "clone",
-        "-q",
-        "--filter=blob:none",
-        "--no-checkout",
-        &url,
-        ".",
-    ];
-    clone.git(&args);
-    let refs = "+refs/jtac/*:refs/jtac/*";
-    clone.git(&["fetch", "-q", "--filter=blob:limit=1g", "origin", refs]);
-    let signers = clone.write(
-        ".git/trusted",
-        format!("dev@example.com {}\n", pubkey(&h.dev)).as_bytes(),
-    );
-    let signers = signers.to_str().unwrap();
+    let (clone, signers) = h.partial_clone("--filter=blob:none");
+    let signers = signers.as_str();
 
     let (code, v) = json(&clone, &["audit", &h.one, "--signers", signers, "--json"]);
     assert_eq!(code, 0, "{v}");
@@ -434,19 +468,230 @@ fn a_policy_a_blobless_clone_lacks_is_exit_two_with_the_fetch_named_and_a_row_in
 
     let ran = jtac(&clone, &["verify", &h.one, "--signers", signers]);
     assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
-    let blob = h
-        .repo
-        .git(&["rev-parse", &format!("{}:.jtac/policy.toml", h.one)]);
-    let named = ran.stderr.contains("git fetch origin ") && ran.stderr.contains(&blob);
-    assert!(named, "{}", ran.stderr);
+    let policy = |commit: &str| {
+        let file = format!("{commit}:.jtac/policy.toml");
+        h.repo.git(&["rev-parse", &file])
+    };
+    let (blob, zero) = (policy(&h.one), policy(&h.zero));
+    let mut ids = [blob.as_str(), zero.as_str()];
+    ids.sort_unstable();
+    let fetch = format!("Run `git fetch origin {}`", ids.join(" "));
+    assert!(ran.stderr.contains(&fetch), "{}", ran.stderr);
 
-    let zero = h
-        .repo
-        .git(&["rev-parse", &format!("{}:.jtac/policy.toml", h.zero)]);
     clone.git(&["fetch", "-q", "origin", &blob, &zero]);
     let (code, v) = json(&clone, &["verify", &h.one, "--signers", signers, "--json"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["partial"], 1, "{v}");
+}
+
+/// The writer (M20b): under a policy with a `ci` check the local gate's root is version 3
+/// and lists the check unread; it replays, and a second clone reads it `covered, ci
+/// unread`. A root under a policy with no `ci` check stays version 2.
+#[test]
+fn the_local_gate_writes_a_partial_root_that_replays_and_a_second_clone_reads_ci_unread() {
+    let h = history();
+    let written = h.checked();
+    assert_eq!(
+        (written.v, &written.unread[..], written.state),
+        (RootVersion::V3, &["test".to_owned()][..], State::Covered)
+    );
+    assert!(written.from.is_none() && written.observed.is_empty());
+    let plain = root_of(&h.repo, &h.zero);
+    assert_eq!((plain.v, plain.unread.len()), (RootVersion::V2, 0));
+
+    let (code, v) = json(&h.repo, &["replay", &h.head, "--json"]);
+    assert_eq!((code, &v["matches"]), (0, &Value::from(true)), "{v}");
+    assert!(v["notes"].to_string().contains("partial"), "{v}");
+
+    let second = Repo::clone_of(&h.repo);
+    second.git(&["fetch", "-q", "origin", "+refs/jtac/*:refs/jtac/*"]);
+    let (code, v) = json(&second, &["audit", &h.head, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        row(&v, &h.head),
+        ("partial".into(), "own".into(), "-".into())
+    );
+    let text = jtac(&second, &["audit", &h.head]).stdout;
+    assert!(text.contains("covered, ci unread own root"), "{text}");
+    let (code, v) = json(
+        &second,
+        &["verify", &h.head, "--require-coverage", "--json"],
+    );
+    assert_eq!(code, 1, "{v}");
+    let partial = v["partial_commits"].to_string();
+    assert!(partial.contains(&h.head), "{v}");
+}
+
+/// Issue 161 note 1: `replay` builds its facts by the root's shape and holds a root
+/// without `from` to its tree's policy. A CI result planted among the leaves of a
+/// developer's root is a node for no check, though the Merkle root and the counts were
+/// forged to match; and a root that lists nothing unread is invalid before it is replayed.
+#[test]
+fn replay_counts_no_ci_result_in_a_root_without_from_and_holds_it_to_its_trees_policy() {
+    let h = history();
+    let real = h.checked();
+    let manifest = h.store().join("roots").join(hex(&real.id().unwrap()));
+    let manifest = std::fs::read(manifest.join("nodes.json")).unwrap();
+    let manifest: Value = serde_json::from_slice(&manifest).unwrap();
+    let leaves: Vec<Sha256Digest> = serde_json::from_value(manifest["nodes"].clone()).unwrap();
+
+    let planted = h.observed(&real);
+    let id = planted.id().unwrap();
+    let object = h.store().join("objects").join(hex(&id));
+    std::fs::write(object, planted.canonical_bytes().unwrap()).unwrap();
+    let with: Vec<Sha256Digest> = leaves.iter().copied().chain([id]).collect();
+    let mut forged = Root {
+        evidence: merkle_root(&with).unwrap(),
+        ..real.clone()
+    };
+    forged.counts.checks += 1;
+    forged.counts.pass += 1;
+    h.plant(&forged, &with);
+    let (code, v) = json(&h.repo, &["replay", &h.head, "--json"]);
+    assert_eq!(code, 1, "{v}");
+    for part in ["evidence", "counts", "state"] {
+        assert_eq!(v[part]["recorded"], v[part]["recomputed"], "{part}: {v}");
+    }
+    assert_eq!(
+        v["mismatches"],
+        serde_json::json!(["the verdict is ABORT: check `test` is not in the policy"]),
+        "{v}"
+    );
+
+    let silent = Root {
+        v: RootVersion::V2,
+        unread: vec![],
+        ..real
+    };
+    h.plant(&silent, &leaves);
+    let (code, v) = json(&h.repo, &["replay", &h.head, "--json"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(
+        v["mismatches"],
+        serde_json::json!([
+            "the root is invalid: it lists no check unread, and the policy in the tree it \
+             names leaves `test` to CI"
+        ]),
+        "{v}"
+    );
+}
+
+/// Decision 60 for every command that judges, and issue 168: `p1`'s root names a tree whose
+/// policy file a blobless clone lacks, and `p0`'s own differs too but no reading turns on
+/// it, since the root that covers `p0` is partial whatever `p0` holds. `verify`, `replay`,
+/// `jtac ci` and `check --from` each answer 2 and name `p1`'s file alone.
+#[test]
+fn every_command_that_judges_names_the_one_policy_object_its_answer_turns_on() {
+    let h = history();
+    h.repo.git(&["switch", "-q", "-c", "pr3", "main"]);
+    let edit = |tag: &str| {
+        let own = format!("{CI_POLICY}# {tag}\n");
+        h.repo.write(".jtac/policy.toml", own.as_bytes());
+        h.repo.write(&format!("{tag}.txt"), b"x\n");
+        h.repo.commit(tag)
+    };
+    let (p0, p1) = (edit("p0"), edit("p1"));
+    h.repo.write(".jtac/policy.toml", CI_POLICY.as_bytes());
+    h.repo.write("p2.txt", b"x\n");
+    let p2 = h.repo.commit("p2");
+    put(&h.repo, &h.dev, &p1, &h.dev_root(&p1, &p0));
+    let wide = Root {
+        covers: Covers::List(vec![g(&p0), g(&p1), g(&p2)]),
+        ..h.dev_root(&p2, &h.r2)
+    };
+    put(&h.repo, &h.dev, &p2, &wide);
+    h.repo.git(&["switch", "-q", "main"]);
+    let merge_args = ["merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "merge pr3"];
+    h.repo.git(&[&merge_args[..], &["pr3"]].concat());
+    let policy = |commit: &str| {
+        let file = format!("{commit}:.jtac/policy.toml");
+        h.repo.git(&["rev-parse", &file])
+    };
+    let (lacked, unasked) = (policy(&p1), policy(&p0));
+
+    let (clone, signers) = h.partial_clone("--filter=blob:none");
+    clone.git(&["reset", "-q", "--hard"]);
+    let key = h.dev.to_string_lossy().replace('\\', "/");
+    clone.git(&["config", "jtac.signingkey", &key]);
+    clone.git(&["config", "user.email", "dev@example.com"]);
+    let range = format!("{}..{p2}", h.r2);
+    let (code, v) = json(&clone, &["audit", &range, "--signers", &signers, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    let states = [&p0, &p1, &p2].map(|c| row(&v, c).0);
+    assert_eq!(states, ["partial", "policy_not_held", "partial"], "{v}");
+
+    let commands: [(&str, Vec<&str>); 4] = [
+        ("verify", vec!["verify", &range, "--signers", &signers]),
+        ("replay", vec!["replay", &p1, "--signers", &signers]),
+        ("ci", vec!["ci", "--base", &h.r2]),
+        (
+            "check --from",
+            vec!["check", "--from", &p2, "--base", &h.r2],
+        ),
+    ];
+    for (command, args) in commands {
+        let ran = jtac(&clone, &args);
+        assert_eq!(
+            (ran.code, ran.stdout.as_str()),
+            (2, ""),
+            "{command}: {}",
+            ran.stderr
+        );
+        let fetch = format!("Run `git fetch origin {lacked}`, then `jtac {command}` again");
+        assert!(ran.stderr.contains(&fetch), "{command}: {}", ran.stderr);
+        assert!(!ran.stderr.contains(&unasked), "{command}: {}", ran.stderr);
+    }
+}
+
+/// Issue 168: in a `--filter=tree:1` clone a commit's tree is here and the directory that
+/// holds the policy is not. The fetch names that directory, the object git stopped at, and
+/// never the commit's tree, which the clone holds.
+#[test]
+fn a_clone_that_lacks_the_policy_directory_is_told_to_fetch_that_tree_and_no_other() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    let (clone, signers) = h.partial_clone("--filter=tree:1");
+    let range = format!("{}..{}", h.zero, h.one);
+    let args = ["verify", range.as_str(), "--signers", signers.as_str()];
+    let dir = h.repo.git(&["rev-parse", &format!("{}:.jtac", h.one)]);
+    let tree = h.repo.git(&["rev-parse", &format!("{}^{{tree}}", h.one)]);
+    let ran = jtac(&clone, &args);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    let fetch = format!("Run `git fetch origin {dir}`");
+    assert!(ran.stderr.contains(&fetch), "{}", ran.stderr);
+    assert!(!ran.stderr.contains(&tree), "{}", ran.stderr);
+    clone.git(&["fetch", "-q", "origin", &dir]);
+    let (code, v) = json(&clone, &[&args[..], &["--json"]].concat());
+    assert_eq!((code, &v["partial"]), (0, &Value::from(1)), "{v}");
+}
+
+/// Issue 168: git takes pathspec magic from the environment, where `icase` matches another
+/// file and `ls-tree` refuses it and `glob`. No git child inherits one, so the gate loads
+/// the policy and the reader reads the tree's as without them.
+#[test]
+fn a_pathspec_variable_in_the_environment_changes_no_reading() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    let audit = ["audit", &h.one, "--json"];
+    let check = ["check", "--preview", "--base", &h.merge];
+    let plain = jtac(&h.repo, &audit);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    for var in [
+        "GIT_ICASE_PATHSPECS",
+        "GIT_GLOB_PATHSPECS",
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_LITERAL_PATHSPECS",
+    ] {
+        let ran = jtac_with(&h.repo, &audit, &[(var, "1")]);
+        assert_eq!(
+            (ran.code, &ran.stdout),
+            (0, &plain.stdout),
+            "{var}: {}",
+            ran.stderr
+        );
+        let ran = jtac_with(&h.repo, &check, &[(var, "1")]);
+        assert_eq!(ran.code, 0, "{var}: {}{}", ran.stdout, ran.stderr);
+    }
 }
 
 /// Section 16.3: a commit read partial is not covered at a release, with and without

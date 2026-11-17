@@ -57,9 +57,18 @@ impl Store {
     }
 }
 
-/// Each of `specs` through one `cat-file --batch`: the object's bytes, or `None` where git
-/// names no such object or this clone does not hold it. Nothing is fetched.
-pub fn git_objects(repo: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>, StoreError> {
+/// One git object as `cat-file --batch` answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Object {
+    /// `blob`, `tree`, `commit` or `tag`, as git names it.
+    pub kind: String,
+    /// Its content.
+    pub bytes: Vec<u8>,
+}
+
+/// Each of `specs` through one `cat-file --batch`: the object, or `None` where git names
+/// no such object or this clone does not hold it. Nothing is fetched and nothing is peeled.
+pub fn git_objects(repo: &Path, specs: &[String]) -> Result<Vec<Option<Object>>, StoreError> {
     if specs.is_empty() {
         return Ok(Vec::new());
     }
@@ -79,7 +88,7 @@ pub fn git_objects(repo: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>
     Ok(records
         .into_iter()
         .map(|r| match r {
-            Record::Object { bytes, .. } => Some(bytes),
+            Record::Object { kind, bytes } => Some(Object { kind, bytes }),
             Record::Missing => None,
         })
         .collect())
