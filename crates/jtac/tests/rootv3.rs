@@ -3,14 +3,15 @@
 //! built here and signed: a developer's root under a `ci` check reads partial and one that
 //! leaves the check out of `unread` is invalid; the merge root covers the pull request and
 //! the CI gate reads its first-parent line alone; a policy a blobless clone lacks is exit 2
-//! with the fetch named, and `policy not held` in `audit`.
+//! with the fetch named, and `policy not held` in `audit`; at `release` a CI waiver on a
+//! merge made around CI declares off the partial commits it brought in (decision 64).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jtac_core::{
     Body, Covers, Forge, FromHead, GitOid, Node, Observed, ObservedCheck, Outcome, Parent, Root,
-    RootVersion, Signer,
+    RootVersion, SignedLever, Signer,
 };
 use jtac_testkit::Repo;
 use serde_json::Value;
@@ -155,6 +156,33 @@ impl History {
             unread: vec!["test".into()],
             ..self.template(commit, &[commit], base)
         }
+    }
+
+    /// The developer's root on a merge made around CI: partial, carrying the CI waiver
+    /// `jtac waive --ci` signs for it with that commit checked out.
+    fn waived_root(&self, commit: &str, covers: &[&str], base: &str) -> Root {
+        self.repo.git(&["switch", "-q", "--detach", commit]);
+        let args = ["waive", commit, "--ci", "--reason", "runners out", "--json"];
+        let (code, v) = json(&self.repo, &args);
+        assert_eq!(code, 0, "{v}");
+        self.repo.git(&["switch", "-q", "main"]);
+        let id = v["lever"].as_str().unwrap().trim_start_matches("sha256:");
+        let store = self.repo.path().join(".git").join("jtac");
+        let node = std::fs::read(store.join("objects").join(id)).unwrap();
+        let node: Node = serde_json::from_slice(&node).unwrap();
+        let sig = std::fs::read_to_string(store.join("levers").join(format!("{id}.sig")));
+        let mut r = Root {
+            v: RootVersion::V3,
+            unread: vec!["test".into()],
+            ts: node.ts,
+            levers: vec![SignedLever {
+                node,
+                sig: sig.unwrap(),
+            }],
+            ..self.template(commit, covers, base)
+        };
+        r.counts.waivers = 1;
+        r
     }
 
     /// The merge job's root on `commit` for `head`, holding `test` as read from CI.
@@ -449,4 +477,165 @@ fn release_refuses_a_partial_commit_by_name_until_a_merge_root_covers_it() {
     let (code, v) = json(&h.repo, &["release", "t1", "--from", &h.zero, "--json"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["partial"], serde_json::json!([]), "{v}");
+}
+
+/// Decision 64, issue 169: a two-parent merge made around CI. The waiver in the merge's own
+/// root declares off the partial commit the merge brought in, whether that commit holds a
+/// root of its own or is read through the merge's `covers`, as a fork's is; a tag on that
+/// commit, its merge outside the range, is refused as before.
+#[test]
+fn a_ci_waiver_on_a_merge_made_around_ci_recovers_the_pull_request_at_release() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    h.repo.git(&["tag", "-a", "-m", "t1", "t1", &h.one]);
+    h.repo.git(&["tag", "-a", "-m", "t2", "t2", &h.merge]);
+    let release = |tag: &str, flag: Option<&str>| {
+        let args = ["release", tag, "--from", &h.zero, "--json"];
+        let args: Vec<&str> = args.into_iter().chain(flag).collect();
+        json(&h.repo, &args)
+    };
+    let listed = |v: &Value| -> Vec<String> {
+        let mut hexes: Vec<String> = (v.as_array().unwrap().iter())
+            .map(|c| c.as_str().unwrap().trim_start_matches("sha1:").to_owned())
+            .collect();
+        hexes.sort();
+        hexes
+    };
+    let mut both = vec![h.one.clone(), h.merge.clone()];
+    both.sort();
+
+    let (code, v) = release("t2", None);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(listed(&v["partial"]), [h.one.as_str()], "{v}");
+    assert_eq!(listed(&v["absent"]), [h.merge.as_str()], "{v}");
+
+    let own = h.waived_root(&h.merge, &[&h.merge], &h.zero);
+    let fork = Root {
+        covers: Covers::List(vec![g(&h.one), g(&h.merge)]),
+        ..own.clone()
+    };
+    put(&h.repo, &h.dev, &h.merge, &own);
+    for flag in [None, Some("--require-ci")] {
+        let (code, v) = release("t2", flag);
+        assert_eq!(code, 0, "{flag:?}: {v}");
+        assert_eq!(listed(&v["waived"]), both, "{flag:?}: {v}");
+        let through = serde_json::json!([{
+            "commit": format!("sha1:{}", h.one),
+            "merge": format!("sha1:{}", h.merge),
+        }]);
+        assert_eq!(v["through"], through, "{flag:?}: {v}");
+        assert_eq!(v["roots"].as_array().unwrap().len(), 2, "{flag:?}: {v}");
+        let (code, v) = release("t1", flag);
+        assert_eq!(code, 1, "{flag:?}: {v}");
+        assert_eq!(listed(&v["partial"]), [h.one.as_str()], "{flag:?}: {v}");
+    }
+    let (_, v) = json(&h.repo, &["audit", &h.merge, "--json"]);
+    assert_eq!(
+        row(&v, &h.one),
+        ("partial".into(), "own".into(), "-".into()),
+        "the CI gate's reading of the pull request's commit does not move"
+    );
+    assert_eq!(row(&v, &h.merge).2, "declared_off", "{v}");
+
+    let one = format!("refs/jtac/roots/{}/{}", &h.one[..2], h.one);
+    h.repo.git(&["update-ref", "-d", &one]);
+    put(&h.repo, &h.dev, &h.merge, &fork);
+    let (code, v) = release("t2", None);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(listed(&v["waived"]), both, "{v}");
+    assert_eq!(v["roots"].as_array().unwrap().len(), 1, "{v}");
+
+    let text = jtac(&h.repo, &["release", "t2", "--from", &h.zero]).stdout;
+    let line = format!(
+        "  waived    {} through the CI waiver on {}\n",
+        &h.one[..12],
+        &h.merge[..12]
+    );
+    assert!(text.contains(&line), "{text}");
+    let text = jtac(&h.repo, &["release", "t1", "--from", &h.zero]).stdout;
+    assert!(
+        text.contains("jtac waive <merge> --ci --reason <why>")
+            && text.contains("do not waive those commits one by one"),
+        "{text}"
+    );
+}
+
+/// Decision 64's reach is what the waived merge brought in and no more: behind a later
+/// merge that carries the waiver, an earlier pull request whose own merge holds no root
+/// stays partial, since it is reachable from the waived merge's first parent.
+#[test]
+fn a_ci_waiver_on_a_merge_recovers_no_pull_request_an_earlier_merge_brought_in() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    put(&h.repo, &h.dev, &h.head, &h.dev_root(&h.head, &h.merge));
+    let merge_args = ["merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "later"];
+    h.repo.git(&[&merge_args[..], &["pr2"]].concat());
+    let later = h.repo.git(&["rev-parse", "HEAD"]);
+    put(
+        &h.repo,
+        &h.dev,
+        &later,
+        &h.waived_root(&later, &[&later], &h.r2),
+    );
+    h.repo.git(&["tag", "-a", "-m", "t3", "t3", &later]);
+
+    let (code, v) = json(&h.repo, &["release", "t3", "--from", &h.zero, "--json"]);
+    assert_eq!(code, 1, "{v}");
+    let listed = |key: &str| -> Vec<String> {
+        let mut hexes: Vec<String> = (v[key].as_array().unwrap().iter())
+            .map(|c| c.as_str().unwrap().trim_start_matches("sha1:").to_owned())
+            .collect();
+        hexes.sort();
+        hexes
+    };
+    let sorted = |hexes: &[&String]| {
+        let mut hexes: Vec<String> = hexes.iter().map(|h| (*h).clone()).collect();
+        hexes.sort();
+        hexes
+    };
+    assert_eq!(listed("waived"), sorted(&[&h.head, &later]), "{v}");
+    assert_eq!(listed("partial"), sorted(&[&h.one]), "{v}");
+    assert_eq!(listed("absent"), sorted(&[&h.merge, &h.r1, &h.r2]), "{v}");
+}
+
+/// Decision 64's stated limit: the first-parent line is all a reader has of where the
+/// branch was. `one` stands for the branch's earlier commit, its root standing; a merge
+/// made by hand on `side` with `side` as first parent reads `one` as what it brought in,
+/// and its waiver reaches it, with the merge named. A direct push or a forge that
+/// fast-forwards lands this shape; the fence is the forge making every commit on the
+/// branch (DESIGN.md section 16.3).
+#[test]
+fn a_merge_with_its_parents_reversed_reads_the_old_line_as_the_side_it_brought_in() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    h.repo.git(&["switch", "-q", "-c", "side", &h.zero]);
+    h.repo.write("x.txt", b"x\n");
+    let side = h.repo.commit("side");
+    let ran = jtac(&h.repo, &["check"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let merge_args = ["merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "reversed"];
+    h.repo.git(&[&merge_args[..], &["feature"]].concat());
+    let reversed = h.repo.git(&["rev-parse", "HEAD"]);
+    let parents = h.repo.git(&["rev-parse", "HEAD^1", "HEAD^2"]);
+    assert_eq!(parents, format!("{side}\n{}", h.one));
+    put(
+        &h.repo,
+        &h.dev,
+        &reversed,
+        &h.waived_root(&reversed, &[&reversed], &side),
+    );
+    h.repo.git(&["tag", "-a", "-m", "tr", "tr", &reversed]);
+
+    let (code, v) = json(&h.repo, &["release", "tr", "--from", &h.zero, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    let through = serde_json::json!([{
+        "commit": format!("sha1:{}", h.one),
+        "merge": format!("sha1:{reversed}"),
+    }]);
+    assert_eq!(v["through"], through, "{v}");
+    assert_eq!(
+        (&v["covered"], &v["declared_off"]),
+        (&1.into(), &2.into()),
+        "{v}"
+    );
 }

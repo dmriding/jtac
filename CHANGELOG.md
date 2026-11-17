@@ -27,6 +27,20 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.28) `jtac release` reads a pull request merged around CI through the waiver on its
+  merge (`DESIGN.md` section 16.3, decision 64, issue 169). A partial commit, one whose
+  policy reads a check from CI and that holds the local gate's root alone, now passes and
+  is listed as waived when it came in through a first-parent commit of the range whose own
+  root carries a trusted CI waiver. Until now only the merge commit passed, and no command
+  recovered the commits it brought in. A waiver on a merge off the first-parent line
+  recovers nothing, and a tag on a pull request's own commit is refused as before. No
+  repository holds a partial root yet, so no reading of an existing one moves. The output
+  names the merge each such commit was read through, `through` in `--json`, and the `fix`
+  line for a partial commit names the merge to waive. Stated limit: where the branch is
+  fast-forwarded to a merge whose first parent is not its old tip, as a direct push or a
+  forge that merges by fast-forward can land, the branch's own earlier partial commits
+  read as the side that merge brought in, and its waiver reaches them; the fence is the
+  forge making every commit on the branch.
 - (0.2.27) The readers of root version 3 (`DESIGN.md` sections 9.5 and 15.2, M20, decisions
   58, 62 and 63). No gate writes one yet: every gate still refuses a policy that holds a
   `ci` check. `audit`, `verify` and `release` read each commit through the first root in
