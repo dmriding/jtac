@@ -2,10 +2,22 @@
 //! 15.2, decision 59). Pure over the results file.
 
 use crate::node::Outcome;
-use crate::observed::Forge;
+use crate::observed::{Forge, Observed, ObservedCheck};
 use crate::oid::GitOid;
 use crate::pin::Pin;
 use crate::results::{ForgeRun, Results};
+
+/// The branch a merge job runs for, by the short name the forge reports. Never empty: a
+/// run listed with no ref would match an empty name (`a_branch_name_is_never_empty`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch(String);
+
+impl Branch {
+    /// `None` for the empty name.
+    pub fn new(name: &str) -> Option<Self> {
+        (!name.is_empty()).then(|| Self(name.to_owned()))
+    }
+}
 
 /// What the file holds for one `ci` check. Only `Read` is a result; the merge job writes
 /// nothing on the other two.
@@ -19,17 +31,39 @@ pub enum Selected {
     Read(Reading),
 }
 
-/// One concluded result and the run it came from.
+/// One concluded result and the run it came from. Only `select` makes one, and `check` is
+/// the one way a result becomes a node, so no node says more than selection read
+/// (`a_reading_becomes_the_node_selection_read_and_no_other`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reading {
-    /// What the forge's word maps to.
-    pub outcome: Outcome,
-    /// The run's id.
-    pub run: u64,
-    /// The attempt read.
-    pub attempt: u64,
-    /// The forge's word, kept for the node.
-    pub conclusion: String,
+    pub(crate) outcome: Outcome,
+    pub(crate) run: u64,
+    pub(crate) attempt: u64,
+    pub(crate) conclusion: String,
+    pub(crate) forge: Forge,
+    pub(crate) pin: Pin,
+    pub(crate) commit: GitOid,
+}
+
+impl Reading {
+    /// The version 3 body for policy check `id`, with `blob` the definition file's in the
+    /// commit's tree, read from git.
+    pub fn check(&self, id: &str, blob: GitOid) -> ObservedCheck {
+        ObservedCheck {
+            id: id.to_owned(),
+            outcome: self.outcome,
+            observed: Observed {
+                forge: self.forge,
+                workflow: self.pin.workflow.clone(),
+                blob,
+                job: self.pin.job.clone(),
+                commit: self.commit,
+                run: self.run,
+                attempt: self.attempt,
+                conclusion: self.conclusion.clone(),
+            },
+        }
+    }
 }
 
 /// Read `pin` for `commit` from the runs a push to `branch` started. Every matching run is
@@ -38,7 +72,7 @@ pub struct Reading {
 /// is never one of them
 /// (`only_this_commits_push_to_this_branch_of_this_file_is_selected`,
 /// `two_runs_for_one_push_take_the_worst`).
-pub fn select(results: &Results, pin: &Pin, commit: &GitOid, branch: &str) -> Selected {
+pub fn select(results: &Results, pin: &Pin, commit: &GitOid, branch: &Branch) -> Selected {
     let mut runs: Vec<&ForgeRun> = results
         .runs
         .iter()
@@ -46,14 +80,14 @@ pub fn select(results: &Results, pin: &Pin, commit: &GitOid, branch: &str) -> Se
             r.workflow == pin.workflow
                 && r.commit == *commit
                 && r.event == push(results.forge)
-                && r.ref_name == branch
+                && r.ref_name == branch.0
         })
         .collect();
     runs.sort_by_key(|r| r.id);
     let mut missing = runs.is_empty();
     let mut worst: Option<Reading> = None;
     for run in runs {
-        match read(results.forge, run, pin.job.as_deref()) {
+        match read(results.forge, run, pin, commit) {
             Selected::Pending => return Selected::Pending,
             Selected::Missing => missing = true,
             Selected::Read(r) => {
@@ -74,11 +108,11 @@ pub fn select(results: &Results, pin: &Pin, commit: &GitOid, branch: &str) -> Se
 
 // One run. A run not completed is pending whatever it lists; so is a completed one whose
 // word is not there yet. A job name held twice is `error` under the run's own word.
-fn read(forge: Forge, run: &ForgeRun, job: Option<&str>) -> Selected {
+fn read(forge: Forge, run: &ForgeRun, pin: &Pin, commit: &GitOid) -> Selected {
     if run.status != completed(forge) {
         return Selected::Pending;
     }
-    let (word, twice) = match job {
+    let (word, twice) = match pin.job.as_deref() {
         None => (run.conclusion.as_deref(), false),
         Some(name) => {
             let mut held = run.jobs.iter().filter(|j| j.name == name);
@@ -101,6 +135,9 @@ fn read(forge: Forge, run: &ForgeRun, job: Option<&str>) -> Selected {
         run: run.id,
         attempt: run.attempt,
         conclusion: word.into(),
+        forge,
+        pin: pin.clone(),
+        commit: *commit,
     })
 }
 
@@ -138,17 +175,104 @@ mod tests {
         }
     }
 
-    fn pick(runs: Vec<ForgeRun>, job: Option<&str>) -> Selected {
-        select(&file(runs), &pin(job), &COMMIT_ONE.parse().unwrap(), "main")
+    // What selection read, without the pin and commit the caller gave it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Seen {
+        Missing,
+        Pending,
+        Read(Outcome, u64, u64, String),
     }
 
-    fn got(outcome: Outcome, run: u64, conclusion: &str) -> Selected {
-        Selected::Read(Reading {
-            outcome,
-            run,
-            attempt: 1,
-            conclusion: conclusion.into(),
-        })
+    fn main() -> Branch {
+        Branch::new("main").unwrap()
+    }
+
+    fn pick(runs: Vec<ForgeRun>, job: Option<&str>) -> Seen {
+        match select(
+            &file(runs),
+            &pin(job),
+            &COMMIT_ONE.parse().unwrap(),
+            &main(),
+        ) {
+            Selected::Missing => Seen::Missing,
+            Selected::Pending => Seen::Pending,
+            Selected::Read(r) => Seen::Read(r.outcome, r.run, r.attempt, r.conclusion),
+        }
+    }
+
+    fn got(outcome: Outcome, run: u64, conclusion: &str) -> Seen {
+        Seen::Read(outcome, run, 1, conclusion.into())
+    }
+
+    /// Issue 161 note 6: the reader accepts a run with no ref, so the name it is matched
+    /// against can never be empty.
+    #[test]
+    fn a_branch_name_is_never_empty() {
+        assert_eq!(Branch::new(""), None);
+        let mut refless = run(1, "success");
+        refless.ref_name = String::new();
+        let commit = COMMIT_ONE.parse().unwrap();
+        let read = |b: &str| {
+            select(
+                &file(vec![refless.clone()]),
+                &pin(None),
+                &commit,
+                &Branch::new(b).unwrap(),
+            )
+        };
+        assert_eq!(read("main"), Selected::Missing);
+        assert_eq!(read(" "), Selected::Missing);
+    }
+
+    /// Issue 161 note 2: the node's outcome and source are selection's, for every word
+    /// and for a job name held twice, so it is coherent by construction.
+    #[test]
+    fn a_reading_becomes_the_node_selection_read_and_no_other() {
+        let commit: GitOid = COMMIT_ONE.parse().unwrap();
+        let blob: GitOid = "sha1:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+            .parse()
+            .unwrap();
+        let twice = |word: &str| {
+            let mut r = run(7, word);
+            r.attempt = 3;
+            r.jobs.push(job("test", Some("success")));
+            r
+        };
+        let words = [
+            "success",
+            "failure",
+            "timed_out",
+            "skipped",
+            "cancelled",
+            "",
+        ];
+        for word in words {
+            for (job, runs) in [
+                (Some("test"), vec![run(7, word)]),
+                (None, vec![run(7, word)]),
+                (Some("test"), vec![twice(word)]),
+            ] {
+                let held_twice = runs[0].jobs.len() == 2;
+                let pin = pin(job);
+                let Selected::Read(reading) = select(&file(runs), &pin, &commit, &main()) else {
+                    panic!("{word:?} {job:?}: no reading");
+                };
+                let node = reading.check("unit", blob);
+                assert!(node.coherent(), "{word:?} {job:?}");
+                assert!(node.observed.is_for(&pin, &commit), "{word:?} {job:?}");
+                let want = match held_twice {
+                    true => Outcome::Error,
+                    false => Forge::Github.outcome(word),
+                };
+                assert_eq!((node.id.as_str(), node.outcome), ("unit", want));
+                let o = &node.observed;
+                assert_eq!(
+                    (o.forge, o.blob, o.conclusion.as_str()),
+                    (Forge::Github, blob, word)
+                );
+                assert_eq!((o.run, o.attempt), (7, if held_twice { 3 } else { 1 }));
+            }
+        }
     }
 
     fn with(edit: impl FnOnce(&mut ForgeRun)) -> Vec<ForgeRun> {
@@ -176,7 +300,7 @@ mod tests {
                 None,
                 pass.clone(),
             ),
-            ("no run at all", vec![], test, Selected::Missing),
+            ("no run at all", vec![], test, Seen::Missing),
             (
                 "another commit",
                 with(|r| {
@@ -185,49 +309,49 @@ mod tests {
                         .unwrap()
                 }),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a pull request's run",
                 with(|r| r.event = "pull_request".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a manual run",
                 with(|r| r.event = "workflow_dispatch".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a scheduled run",
                 with(|r| r.event = "schedule".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "another ref",
                 with(|r| r.ref_name = "release".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "the full ref name",
                 with(|r| r.ref_name = "refs/heads/main".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "another definition file",
                 with(|r| r.workflow = ".github/workflows/other.yml".into()),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "the file under another spelling",
                 with(|r| r.workflow = format!("./{WORKFLOW}")),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
         ];
         for (name, runs, job, want) in rows {
@@ -245,13 +369,13 @@ mod tests {
                 "a run in progress",
                 with(|r| r.status = "in_progress".into()),
                 test,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a queued run",
                 with(|r| r.status = "queued".into()),
                 None,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a run in progress that lacks the job so far",
@@ -260,37 +384,37 @@ mod tests {
                     r.jobs.clear();
                 }),
                 test,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a completed run with no word yet",
                 with(|r| r.conclusion = None),
                 None,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a completed run whose job has no word yet",
                 with(|r| r.jobs = vec![job("test", None)]),
                 test,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a missing job",
                 with(|r| r.jobs = vec![job("lint", Some("success"))]),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a job name that differs by case",
                 with(|r| r.jobs = vec![job("Test", Some("success"))]),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a called workflow's job is named in full",
                 with(|r| r.jobs = vec![job("call / test", Some("success"))]),
                 test,
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a job name held twice",
@@ -314,7 +438,7 @@ mod tests {
                     r.conclusion = None;
                 }),
                 test,
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "the job's word, not the run's",
@@ -332,12 +456,7 @@ mod tests {
                 "the newest attempt is the one the file holds",
                 with(|r| r.attempt = 3),
                 test,
-                Selected::Read(Reading {
-                    outcome: Outcome::Pass,
-                    run: 1,
-                    attempt: 3,
-                    conclusion: "success".into(),
-                }),
+                Seen::Read(Outcome::Pass, 1, 3, "success".into()),
             ),
         ];
         for (name, runs, job, want) in rows {
@@ -412,27 +531,27 @@ mod tests {
             (
                 "pending beside a pass",
                 vec![run(1, "success"), pending(2)],
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "pending beside a failure",
                 vec![pending(1), run(2, "failure")],
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "pending beside a missing job",
                 vec![jobless(1), pending(2)],
-                Selected::Pending,
+                Seen::Pending,
             ),
             (
                 "a missing job beside a pass",
                 vec![run(1, "success"), jobless(2)],
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a missing job beside a failure",
                 vec![jobless(1), run(2, "failure")],
-                Selected::Missing,
+                Seen::Missing,
             ),
             (
                 "a failing run for another ref is not beside it",
