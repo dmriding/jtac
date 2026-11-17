@@ -1092,7 +1092,9 @@ fn reading() -> Reading {
 }
 
 /// The results file as a forge adapter writes it, kept outside the work tree: one push run
-/// of the definition file for `commit` on `branch`, by the run's own conclusion.
+/// of the definition file for `commit` on `branch`, by the run's own conclusion. Named
+/// relative to the clone, so a refusal prints it the same on every platform: a temp dir's
+/// `~` or `:` would print quoted.
 fn results(repo: &Repo, commit: &str, branch: &str, concluded: Option<&str>) -> String {
     let end = match concluded {
         Some(word) => format!(r#""status":"completed","conclusion":"{word}""#),
@@ -1103,8 +1105,8 @@ fn results(repo: &Repo, commit: &str, branch: &str, concluded: Option<&str>) -> 
     );
     let word = concluded.unwrap_or("going");
     let name = format!(".git/runs-{}-{branch}-{word}.json", &commit[..7]);
-    let path = repo.write(&name, text.as_bytes());
-    path.to_string_lossy().replace('\\', "/")
+    repo.write(&name, text.as_bytes());
+    name
 }
 
 impl Reading {
@@ -1132,8 +1134,7 @@ impl Reading {
 /// DESIGN.md section 15.2, invariant of the merge job: every `ci` check is read before
 /// anything is written, so with no file, a file that does not read, a run still going, a
 /// run for another commit or another branch, the job answers 2 with its own command and
-/// the merge has neither a root nor a failure record. The command names the file quoted
-/// where its path needs it, as a Windows temp dir's `~` and `:` do.
+/// the merge has neither a root nor a failure record.
 #[test]
 fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
     let r = reading();
@@ -1149,8 +1150,8 @@ fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
         r.b, r.first
     );
     assert!(ran.stderr.contains(&how), "{}", ran.stderr);
-    let garbage = ci.write(".git/garbage.json", b"{\"v\":2}");
-    let garbage = garbage.to_string_lossy().replace('\\', "/");
+    ci.write(".git/garbage.json", b"{\"v\":2}");
+    let garbage = ".git/garbage.json".to_owned();
     let rows = [
         (
             results(ci, &r.second, "main", None),
@@ -1193,12 +1194,8 @@ fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
         );
         assert!(ran.stderr.contains(want), "{want}: {}", ran.stderr);
         assert_eq!(ran.stderr.lines().count(), 3, "{want}: {}", ran.stderr);
-        let again = [
-            format!("--results {file} --branch"),
-            format!("--results '{file}' --branch"),
-        ];
-        let named = again.iter().any(|a| ran.stderr.contains(a));
-        assert!(named, "{want}: {}", ran.stderr);
+        let again = format!("--results {file} --branch");
+        assert!(ran.stderr.contains(&again), "{want}: {}", ran.stderr);
     }
     let refs = r.f.second().git(&["for-each-ref", "refs/jtac"]);
     assert!(
