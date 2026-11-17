@@ -2,7 +2,8 @@
 //! declared off by a root whose signer the tag's tree trusts, else refused naming each one.
 //! An unknown signer's root is absence here: a release vouches for what a trusted key
 //! judged. With `require_ci`, a first-parent commit counts only under the CI gate (section
-//! 9.5, two gates), so a tag on a pull request commit that CI never judged is named.
+//! 9.5, two gates), so a tag on a pull request commit that CI never judged is named. A CI
+//! waiver on a first-parent commit stands in for the merge root it lacks (decision 64).
 
 use jtac_core::{GitOid, Sha256Digest};
 
@@ -33,6 +34,10 @@ pub struct ReleaseFact {
     pub root: Option<Sha256Digest>,
     /// The root the CI gate read it through, when it read one.
     pub ci_root: Option<Sha256Digest>,
+    /// The commit of the range it came in through: reachable from that one and not from
+    /// its first parent. `None` on the first-parent line, and wherever the gatherer did
+    /// not ask, which can only refuse.
+    pub through: Option<GitOid>,
 }
 
 /// What the attestation may say, or why there is none.
@@ -61,18 +66,22 @@ pub struct ReleaseVerdict {
 /// before not CI, and `failed` in place of any of those but untrusted. Declared off by
 /// either gate counts (section 16.3), so a partial commit the CI gate reads declared off,
 /// a bypass merge under a `ci` check, passes and is listed; one it reads covered does not,
-/// since no CI root covers a commit and leaves its row partial.
+/// since no CI root covers a commit and leaves its row partial. A partial commit a waived
+/// first-parent merge brought in is declared off by that waiver (decision 64).
 pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
     let mut v = ReleaseVerdict::default();
+    let waived_merge =
+        |c: &GitOid| (facts.iter()).any(|m| m.commit == *c && m.first_parent && m.ci_waived);
     for f in facts {
         let held = require_ci && f.first_parent;
+        let ci_off = f.ci_off || f.through.as_ref().is_some_and(waived_merge);
         let refused = match f.state {
             None | Some(Reading::NotHeld) => Some(&mut v.absent),
             Some(_) if !f.trusted => {
                 v.untrusted.push(f.commit);
                 continue;
             }
-            Some(Reading::Partial) if !f.ci_off => Some(&mut v.partial),
+            Some(Reading::Partial) if !ci_off => Some(&mut v.partial),
             Some(_) if held && !f.ci => Some(&mut v.not_ci),
             Some(_) => None,
         };
@@ -85,7 +94,7 @@ pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
         }
         let partial = f.state == Some(Reading::Partial);
         let off = f.state == Some(Reading::DeclaredOff) || f.ci_waived;
-        if off || (f.ci_off && (held || partial)) {
+        if off || (ci_off && (held || partial)) {
             v.waived.push(f.commit);
         }
         let ci_root = f.ci_root.filter(|_| held);
@@ -131,6 +140,7 @@ mod tests {
             failed: false,
             root: state.map(|_| digest(n / 2)),
             ci_root: None,
+            through: None,
         }
     }
 
@@ -229,6 +239,106 @@ mod tests {
             assert_eq!(v.partial, vec![oid(6)], "CI covered is not declared off");
             assert!(!v.pass, "{v:?}");
         }
+    }
+
+    /// Decision 64, issue 169. Each case is a merge and one commit that names it in
+    /// `through`, read with and without `--require-ci`: only a partial commit under a
+    /// trusted root, behind a first-parent commit whose own root carries the waiver, is
+    /// recovered, and the waiver stands in for no local gate.
+    #[test]
+    fn a_ci_waiver_on_a_first_parent_merge_declares_off_the_partial_commits_it_brought_in() {
+        let waived = |first_parent: bool| {
+            let mut m = fact(2, first_parent, Some(Reading::Partial), true, true);
+            (m.ci_off, m.ci_waived) = (true, true);
+            m
+        };
+        let brought = |state: Option<Reading>, trusted: bool, through: u8| {
+            let mut c = fact(4, false, state, trusted, false);
+            c.through = Some(oid(through));
+            c
+        };
+        let partial = Some(Reading::Partial);
+        let covered_by_ci = fact(2, true, Some(Reading::Covered), true, true);
+        let mut declared_off_root = fact(2, true, Some(Reading::DeclaredOff), true, true);
+        declared_off_root.ci_off = true;
+        type Lists = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+        let table: Vec<(&str, ReleaseFact, ReleaseFact, Lists)> = vec![
+            (
+                "a waived merge recovers the partial commit it brought in",
+                waived(true),
+                brought(partial, true, 2),
+                (vec![2, 4], vec![], vec![], vec![]),
+            ),
+            (
+                "a merge off the first-parent line recovers nothing",
+                waived(false),
+                brought(partial, true, 2),
+                (vec![2], vec![4], vec![], vec![]),
+            ),
+            (
+                "another commit's waiver recovers nothing",
+                waived(true),
+                brought(partial, true, 6),
+                (vec![2], vec![4], vec![], vec![]),
+            ),
+            (
+                "a merge CI covered recovers nothing, its root would have covered the commit",
+                covered_by_ci,
+                brought(partial, true, 2),
+                (vec![], vec![4], vec![], vec![]),
+            ),
+            (
+                "a merge a CI root declares off is no waiver in its own root",
+                declared_off_root,
+                brought(partial, true, 2),
+                (vec![2], vec![4], vec![], vec![]),
+            ),
+            (
+                "an unknown key's partial root is not recovered",
+                waived(true),
+                brought(partial, false, 2),
+                (vec![2], vec![], vec![4], vec![]),
+            ),
+            (
+                "a commit with no root is not recovered",
+                waived(true),
+                brought(None, false, 2),
+                (vec![2], vec![], vec![], vec![4]),
+            ),
+            (
+                "a covered commit is not listed as waived",
+                waived(true),
+                brought(Some(Reading::Covered), true, 2),
+                (vec![2], vec![], vec![], vec![]),
+            ),
+        ];
+        let oids = |ns: &[u8]| ns.iter().map(|n| oid(*n)).collect::<Vec<_>>();
+        for (name, merge, commit, (waived, partial, untrusted, absent)) in table {
+            for require_ci in [false, true] {
+                for facts in [
+                    [merge.clone(), commit.clone()],
+                    [commit.clone(), merge.clone()],
+                ] {
+                    let v = release(&facts, require_ci);
+                    let mut listed = v.waived.clone();
+                    listed.sort();
+                    assert_eq!(listed, oids(&waived), "{name}: waived");
+                    assert_eq!(v.partial, oids(&partial), "{name}: partial");
+                    assert_eq!(v.untrusted, oids(&untrusted), "{name}: untrusted");
+                    assert_eq!(v.absent, oids(&absent), "{name}: absent");
+                    let refused = partial.len() + untrusted.len() + absent.len();
+                    assert_eq!(v.pass, refused == 0, "{name}: {v:?}");
+                }
+            }
+        }
+    }
+
+    /// A tag on the pull request's own commit: the merge is outside the range, the commit
+    /// is on the range's first-parent line and names no merge, and it stays refused.
+    #[test]
+    fn a_partial_commit_on_the_first_parent_line_is_refused_whatever_merged_it_later() {
+        let v = release(&[fact(4, true, Some(Reading::Partial), true, false)], false);
+        assert_eq!((v.pass, v.partial), (false, vec![oid(4)]));
     }
 
     /// Held to the CI gate, a commit is listed by what that gate read and through which

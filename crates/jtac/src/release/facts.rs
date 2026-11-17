@@ -188,9 +188,40 @@ pub fn facts(s: &Survey, first: &BTreeSet<GitOid>) -> Vec<ReleaseFact> {
                 failed: matches!(r.ci, Ci::Failed { .. }),
                 root: fact.and_then(|f| f.id),
                 ci_root: ci_root.and_then(|f| f.id),
+                through: None,
             }
         })
         .collect()
+}
+
+/// Decision 64's fact: for each first-parent commit the CI gate reads through a waiver in
+/// its own root, the commits reachable from it and not from its first parent name it in
+/// `through`. No other commit is asked, one git child per such merge being the cost, and a
+/// first parent this clone cannot name is skipped, which refuses.
+pub fn brought_in(repo: &Path, format: &str, facts: &mut [ReleaseFact]) -> Result<(), Refusal> {
+    let waived = |f: &&ReleaseFact| f.first_parent && f.ci_waived;
+    let merges: Vec<GitOid> = facts.iter().filter(waived).map(|f| f.commit).collect();
+    for merge in merges {
+        let parent = format!("{}^1^{{commit}}", merge.hex());
+        let args = [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &parent,
+        ];
+        let Some(hex) = repo::probe(repo, &args, 1).map_err(|e| Refusal::repository(&e))? else {
+            continue;
+        };
+        let parent = repo::oid(format, &hex).map_err(|e| Refusal::repository(&e))?;
+        let brought = range::reachable(repo, format, &merge, &[parent])?;
+        for f in facts.iter_mut().filter(|f| f.commit != merge) {
+            if brought.contains(&f.commit) {
+                f.through = Some(merge);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `sha256sum` output: `<hex>  <name>` or `<hex> *<name>` per line, each name once. An

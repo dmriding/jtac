@@ -130,7 +130,11 @@ fn fixes(o: &ReleaseOut, s: &mut String) {
             s,
             "  fix       partial: only a merge root covers a commit whose policy reads a check \
              from CI; `git fetch <remote> '+refs/jtac/*:refs/jtac/*'` brings one that was \
-             pushed, and a commit merged around CI takes {waive}"
+             pushed; a pull request merged around CI takes `jtac waive <merge> --ci --reason \
+             <why>` with the merge commit checked out and no root on it yet, then `jtac check \
+             --push <remote>` there: that waiver declares off the commits the merge brought \
+             in; do not waive those commits one by one, a commit that holds a root takes no \
+             CI waiver"
         );
     }
     if !o.failed.is_empty() {

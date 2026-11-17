@@ -76,7 +76,9 @@ pub fn release(a: &ReleaseArgs, cwd: &Path) -> Result<Printed, Refusal> {
     )?;
     s.held("release")?;
     let first = facts::first_parent(&repo, &format, &from.commit, &tag.head.commit)?;
-    let verdict = jtac_gate::release(&facts::facts(&s, &first), require_ci);
+    let mut gathered = facts::facts(&s, &first);
+    facts::brought_in(&repo, &format, &mut gathered)?;
+    let verdict = jtac_gate::release(&gathered, require_ci);
     let derived = Derived {
         tag: &tag,
         from: &from,
