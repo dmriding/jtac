@@ -1311,7 +1311,8 @@ fn the_merge_job_reads_each_ci_check_from_the_results_file_and_the_merge_reads_c
 /// Decision 65: a head that is itself a forge's merge holds a CI root with results read
 /// for its own commit, which no later job can read again, so neither gate says it agreed
 /// and neither fails on it: the pull request job passes, and the merge root of the branch
-/// it lands on records `unverifiable`.
+/// it lands on records `unverifiable`. Under `--require-local-root` it fails as a missing
+/// root does, and the next step never deletes the merge job's root.
 #[test]
 fn a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gates() {
     let r = reading();
@@ -1334,6 +1335,19 @@ fn a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gat
             .unwrap()
             .contains("results read from CI for its own commit"),
         "{v}"
+    );
+    let flagged = ["ci", "--base", &r.first, "--require-local-root", "--json"];
+    let (code, v, err) = json(ci, &flagged);
+    assert_eq!(code, 1, "{v}{err}");
+    let fix = v["reasons"][0]["how"].as_str().unwrap();
+    let run = format!(
+        "Run `jtac ci --base {}` without `--require-local-root`",
+        r.first
+    );
+    assert!(fix.starts_with(&run), "{fix}");
+    assert!(
+        fix.contains(". Do not delete refs/jtac/roots/") && !fix.contains("update-ref"),
+        "{fix}"
     );
     ci.git(&["checkout", "-q", "-B", "release", &r.first]);
     ci.git(&["merge", "-q", "--no-ff", "-m", "promote", &r.second]);

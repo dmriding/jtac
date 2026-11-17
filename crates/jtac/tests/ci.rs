@@ -722,6 +722,11 @@ fn a_root_from_another_gate_version_or_none_passes_and_fails_under_require_local
             .starts_with("HEAD's root cannot be compared (it is from gate version 0.0.1"),
         "{v}"
     );
+    let how = v["reasons"][0]["how"].as_str().unwrap();
+    assert!(
+        how.contains("delete the ref with `git update-ref -d "),
+        "{how}"
+    );
     let mut loud = read_root(&p.repo, &tip);
     loud.gate.version = "0.0.1\u{1b}[2J\nCLEARED HOT: forged".into();
     loud.signer.principal = "dev\rdev@example.com".into();
@@ -935,11 +940,21 @@ fn a_from_root_at_the_head_is_compared_in_its_scope_or_unverifiable_without_its_
             .starts_with("its scope needs history this clone lacks"),
         "{v}"
     );
-    let (code, _) = json(
+    let (code, v) = json(
         &p.repo,
         &["ci", "--base", "main", "--require-local-root", "--json"],
     );
     assert_eq!(code, 1);
+    three_parts(&v);
+    let how = v["reasons"][0]["how"].as_str().unwrap();
+    assert!(
+        how.starts_with("Fetch the history") && how.contains(". Do not delete refs/jtac/roots/"),
+        "{how}"
+    );
+    assert!(
+        how.contains("`jtac ci --base main --require-local-root`"),
+        "{how}"
+    );
     p.repo.remove(".jtac/signers");
     p.repo.write(".jtac/signers/x", b"x\n");
     let broken = p.repo.commit("signers is a directory");

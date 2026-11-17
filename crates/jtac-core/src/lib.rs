@@ -44,7 +44,7 @@ pub use root::{
     SignedLever, State,
 };
 pub use schema::{NodeVersion, RootVersion, V1};
-pub use select::{Branch, Reading, Selected, select};
+pub use select::{Branch, ReadCheck, Reading, Selected, select};
 pub use signer::Signer;
 pub use time::{Ts, TsError};
 pub use verdict::{CheckSpec, Facts, Reason, Verdict, gate};

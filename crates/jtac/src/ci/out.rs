@@ -4,11 +4,12 @@
 
 use std::fmt::Write;
 
+use jtac_checks::diff::git::quoted;
 use jtac_core::{Compared, Counts, GitOid, gate};
 use jtac_store::ref_name;
 use serde::Serialize;
 
-use super::head::HeadRoot;
+use super::head::{Cure, HeadRoot};
 use super::levers;
 use crate::judge::Judged;
 use crate::output::{Output, WaiverOut, plain};
@@ -154,13 +155,14 @@ impl CiOut {
                          not computed from this history.",
                         format!("Run `jtac replay {hex}` where the root was written to see its nodes, then {again}."),
                     )),
-                    Compared::Unverifiable if self.require_local_root => self.reasons.push(part(
-                        format!("HEAD's root cannot be compared ({why}), and `--require-local-root` is set."),
-                        "A root this gate cannot compare is treated as a missing one: a rule table \
-                         can change counts under one hash, and history the clone lacks leaves the \
-                         scope unchecked.",
-                        format!("With jtac {} installed, {again}.", env!("CARGO_PKG_VERSION")),
-                    )),
+                    Compared::Unverifiable if self.require_local_root => {
+                        let (why_rule, how) = cure(h.cure, &self.base_rev, &name, &again);
+                        self.reasons.push(part(
+                            format!("HEAD's root cannot be compared ({why}), and `--require-local-root` is set."),
+                            why_rule,
+                            how,
+                        ));
+                    }
                     Compared::Agreed | Compared::Unverifiable => {}
                 }
             }
@@ -169,6 +171,43 @@ impl CiOut {
         self.pass = self.verdict.pass && self.reasons.is_empty();
         self.verdict.command = "ci".to_owned();
         self.verdict.banner = if self.pass { "CLEARED HOT" } else { "ABORT" }.to_owned();
+    }
+}
+
+// Why an unverifiable root fails under `--require-local-root`, and the next step.
+fn cure(cure: Cure, base: &str, name: &str, again: &str) -> (&'static str, String) {
+    let kept = format!(
+        "Do not delete {name} or run `jtac check` on this commit: the root is a merge job's, \
+         and a developer's root must not replace it"
+    );
+    let ci = format!("jtac ci --base {}", quoted(base, "<base>"));
+    match cure {
+        Cure::Recheck => (
+            "A root this gate cannot compare is treated as a missing one: a rule table can \
+             change counts under one hash, so a root from another gate version says nothing \
+             this gate can check.",
+            format!(
+                "With jtac {} installed, {again}.",
+                env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        Cure::Fetch => (
+            "A root this gate cannot compare is treated as a missing one: history the clone \
+             lacks leaves the root's scope unchecked.",
+            format!(
+                "Fetch the history the reason names (`git fetch --unshallow` in a shallow \
+                 clone) and run `{ci} --require-local-root` again. {kept}."
+            ),
+        ),
+        Cure::Nothing => (
+            "A root this gate cannot compare is treated as a missing one, and the flag asks \
+             for the developer's own evidence beside CI's run: this root is a merge job's, \
+             so no run of this job compares it and no developer's root stands at its commit.",
+            format!(
+                "Run `{ci}` without `--require-local-root` for a head that is a merge the \
+                 forge made. {kept}."
+            ),
+        ),
     }
 }
 

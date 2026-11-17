@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use jtac_checks::diff::git::quoted;
-use jtac_core::{Branch, ObservedCheck, Pin, Results, Selected, select};
+use jtac_core::{Branch, Pin, ReadCheck, Results, Selected, select};
 use jtac_policy::{POLICY_PATH, Policy};
 
 use crate::cli::CheckArgs;
@@ -24,7 +24,7 @@ pub fn observe(
     policy: &Policy,
     head: &Head,
     notes: &mut Vec<String>,
-) -> Result<Vec<ObservedCheck>, Refusal> {
+) -> Result<Vec<ReadCheck>, Refusal> {
     let Some((first, _)) = policy.ci_checks().next() else {
         if a.results.is_some() {
             notes.push(format!(

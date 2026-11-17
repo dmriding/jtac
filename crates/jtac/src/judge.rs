@@ -13,8 +13,8 @@ use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, Report, report};
 use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
-    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, ObservedCheck, Outcome,
-    Sha256Digest, SignedLever, Ts, Verdict, gate,
+    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, ReadCheck, Sha256Digest,
+    SignedLever, Ts, Verdict, gate,
 };
 use jtac_policy::{Checks, INTEGRITY_CHECK_ID, POLICY_PATH, facts};
 
@@ -67,7 +67,7 @@ pub struct Offered {
     pub checks: Checks,
     /// The merge job's reading of each `ci` check, in policy order; empty for every other
     /// gate.
-    pub observed: Vec<ObservedCheck>,
+    pub observed: Vec<ReadCheck>,
 }
 
 /// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
@@ -128,7 +128,7 @@ pub fn judge(
     offered: &Offered,
 ) -> Result<Judged, Refusal> {
     let checks = offered.checks;
-    let offered_for = |id: &str| offered.observed.iter().any(|c| c.id == id);
+    let offered_for = |id: &str| offered.observed.iter().any(|c| c.body().id == id);
     let unread = loaded.policy.ci_checks().find(|(id, _)| !offered_for(id));
     if let (Checks::All, Some((id, _))) = (checks, unread) {
         return Err(Refusal::internal(format!(
@@ -199,7 +199,7 @@ pub fn judge(
         offered
             .observed
             .iter()
-            .map(|c| node(Body::Observed(c.clone()))),
+            .map(|c| node(Body::Observed(c.body().clone()))),
     );
     let evidence = nodes.len();
     nodes.extend(offered.waivers.iter().map(|w| w.node.clone()));
@@ -273,5 +273,50 @@ mod tests {
         );
         assert_eq!(err.stderr.bytes, 7);
         assert_eq!(err.stderr.sha, Sha256Digest::of(b"no base"));
+    }
+
+    /// The second fence behind the merge job's read: a `ci` check with no body offered
+    /// refuses before git is asked anything, here a repository that does not exist. Other
+    /// gates hold no `ci` check and get past it, to the repository's own refusal.
+    #[test]
+    fn a_gate_that_holds_every_check_refuses_a_ci_check_it_was_offered_no_result_for() {
+        let text = "version = 2\n[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\" }\n";
+        let policy = jtac_policy::parse(text).unwrap();
+        let loaded = Loaded {
+            matchers: policy.matchers().unwrap(),
+            policy,
+            differs_on_disk: false,
+        };
+        let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let what = |checks| {
+            let head = Head {
+                commit: oid,
+                tree: oid,
+            };
+            let base = Base {
+                commit: oid.hex(),
+                from: String::new(),
+            };
+            let offered = Offered {
+                waivers: Vec::new(),
+                waivable: Vec::new(),
+                adoption: Adoption::None,
+                checks,
+                observed: Vec::new(),
+            };
+            let now = "2026-10-10T18:30:00Z".parse().unwrap();
+            let repo = Path::new("no-such-repository");
+            match judge(repo, &loaded, head, base, now, None, &offered) {
+                Ok(_) => "judged".to_owned(),
+                Err(r) => r.what,
+            }
+        };
+        assert_eq!(
+            what(Checks::All),
+            "jtac could not finish: the merge job judged with no result offered for check `e2e`"
+        );
+        assert!(!what(Checks::Run).contains("no result offered"));
     }
 }

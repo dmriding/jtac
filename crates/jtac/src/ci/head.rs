@@ -69,6 +69,23 @@ pub struct HeadRoot {
     pub recorded: Option<Side>,
     /// What this gate's run from the root's base reached, when one was owed.
     pub run: Option<Side>,
+    /// For an unverifiable root, what would make it comparable.
+    #[serde(skip)]
+    pub cure: Cure,
+}
+
+/// What makes an unverifiable root comparable. `--require-local-root`'s refusal takes its
+/// next step from it, and only `Recheck` may name deleting the ref: a root with `from` is a
+/// merge job's, and a developer's root must never replace it
+/// (`a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gates`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cure {
+    /// A developer's root written again by this gate version.
+    Recheck,
+    /// History the clone lacks.
+    Fetch,
+    /// No run of this job.
+    Nothing,
 }
 
 /// One side of the comparison.
@@ -103,6 +120,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         why: fact.invalid.clone(),
         recorded: None,
         run: None,
+        cure: Cure::Nothing,
     };
     let Some(stored) = ledger.stored[i].as_ref().filter(|_| fact.invalid.is_none()) else {
         return Ok(Some(out));
@@ -117,6 +135,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         out.compared = Compared::Unverifiable;
         out.why =
             Some("a version 1 root is from another gate version and is never compared".into());
+        out.cure = Cure::Recheck;
         return Ok(Some(out));
     }
     if root.gate.version != gate_version {
@@ -125,6 +144,9 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
             "it is from gate version {}, and this is {gate_version}",
             root.gate.version
         ));
+        if root.from.is_none() {
+            out.cure = Cure::Recheck;
+        }
         return Ok(Some(out));
     }
     let base = root
@@ -195,6 +217,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
                      root's base is not held",
                     from.head.hex()
                 ));
+                out.cure = Cure::Fetch;
                 return Ok(Some(out));
             };
             facts.waivable = scope;

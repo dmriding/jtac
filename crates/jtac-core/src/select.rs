@@ -31,6 +31,22 @@ pub enum Selected {
     Read(Reading),
 }
 
+/// A version 3 body as selection read it. `Reading::check` is the one constructor, so a
+/// gate that takes this type is offered no result selection did not read.
+///
+/// ```compile_fail
+/// fn forged(c: jtac_core::ObservedCheck) -> jtac_core::ReadCheck { jtac_core::ReadCheck(c) }
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadCheck(ObservedCheck);
+
+impl ReadCheck {
+    /// The body.
+    pub fn body(&self) -> &ObservedCheck {
+        &self.0
+    }
+}
+
 /// One concluded result and the run it came from. Only `select` makes one, and `check` is
 /// the one way a result becomes a node, so no node says more than selection read
 /// (`a_reading_becomes_the_node_selection_read_and_no_other`).
@@ -48,8 +64,8 @@ pub struct Reading {
 impl Reading {
     /// The version 3 body for policy check `id`, with `blob` the definition file's in the
     /// commit's tree, read from git.
-    pub fn check(&self, id: &str, blob: GitOid) -> ObservedCheck {
-        ObservedCheck {
+    pub fn check(&self, id: &str, blob: GitOid) -> ReadCheck {
+        ReadCheck(ObservedCheck {
             id: id.to_owned(),
             outcome: self.outcome,
             observed: Observed {
@@ -62,7 +78,7 @@ impl Reading {
                 attempt: self.attempt,
                 conclusion: self.conclusion.clone(),
             },
-        }
+        })
     }
 }
 
@@ -257,7 +273,8 @@ mod tests {
                 let Selected::Read(reading) = select(&file(runs), &pin, &commit, &main()) else {
                     panic!("{word:?} {job:?}: no reading");
                 };
-                let node = reading.check("unit", blob);
+                let read = reading.check("unit", blob);
+                let node = read.body();
                 assert!(node.coherent(), "{word:?} {job:?}");
                 assert!(node.observed.is_for(&pin, &commit), "{word:?} {job:?}");
                 let want = match held_twice {
