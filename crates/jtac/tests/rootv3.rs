@@ -601,8 +601,9 @@ fn a_ci_waiver_on_a_merge_recovers_no_pull_request_an_earlier_merge_brought_in()
 /// Decision 64's stated limit: the first-parent line is all a reader has of where the
 /// branch was. `one` stands for the branch's earlier commit, its root standing; a merge
 /// made by hand on `side` with `side` as first parent reads `one` as what it brought in,
-/// and its waiver reaches it, with the merge named. The forge's rule against direct
-/// pushes is the fence (DESIGN.md section 16.3).
+/// and its waiver reaches it, with the merge named. A direct push or a forge that
+/// fast-forwards lands this shape; the fence is the forge making every commit on the
+/// branch (DESIGN.md section 16.3).
 #[test]
 fn a_merge_with_its_parents_reversed_reads_the_old_line_as_the_side_it_brought_in() {
     let h = history();

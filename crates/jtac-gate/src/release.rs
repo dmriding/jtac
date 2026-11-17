@@ -343,6 +343,28 @@ mod tests {
         }
     }
 
+    /// `through` names a merge only where its waiver is what passed the commit: one its
+    /// own document declares off, under either gate, names none.
+    #[test]
+    fn a_commit_its_own_document_declares_off_names_no_merge() {
+        let mut merge = fact(2, true, Some(Reading::Partial), true, true);
+        (merge.ci_off, merge.ci_waived) = (true, true);
+        let brought = |state: Reading, ci_off: bool| {
+            let mut c = fact(4, false, Some(state), true, false);
+            (c.ci_off, c.through) = (ci_off, Some(oid(2)));
+            c
+        };
+        let own = [
+            brought(Reading::Partial, true),
+            brought(Reading::DeclaredOff, false),
+        ];
+        for commit in own {
+            let v = release(&[merge.clone(), commit], false);
+            assert_eq!(v.waived, vec![oid(2), oid(4)], "{v:?}");
+            assert!(v.pass && v.through.is_empty(), "{v:?}");
+        }
+    }
+
     /// A waived merge in the range recovers no partial commit on the first-parent line
     /// itself, which names no merge: a direct push before it, or the pull request's own
     /// commit when the tag sits on it.
