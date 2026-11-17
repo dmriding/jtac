@@ -44,8 +44,9 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
     with results for its own commit. It compares `unverifiable` at both gates; before, it
     compared `disagreed` and failed the pull request job.
   - Under `--require-local-root`, `jtac ci`'s refusal of an unverifiable head root now takes
-    its next step from the cause. For a merge job's root it no longer says to delete the ref
-    and run `jtac check`, which would have put a developer's root in its place.
+    its next step from the cause. For a merge job's root, one with `from` that a trusted CI
+    key signed, it no longer says to delete the ref and run `jtac check`, which would have
+    put a developer's root in its place.
   - A failed check read from CI is explained by the forge's word and the run, and names
     `jtac waive <merge> --ci` as the way to ship over it.
   - `jtac replay` holds a merge root's `observed` to the nodes read from CI in its store.

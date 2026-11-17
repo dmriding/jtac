@@ -1380,6 +1380,88 @@ fn a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gat
     );
 }
 
+/// Decision 65: under `--require-local-root` an unverifiable root is told to leave its ref
+/// alone only when a trusted CI key signed it. One the developer's key signed with a `from`
+/// is nobody's merge root, and is told to write its root again, as before.
+#[test]
+fn an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it() {
+    let f = forge();
+    let tip = f.feature("feat", 1).pop().unwrap();
+    f.push("origin", "feat", true);
+    f.fetch("origin");
+    let merge = f.merge(&tip);
+    let (code, v, err) = f.job(&tip, &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    let written = read_root(&f.ci, &merge);
+    let mut old = written.clone();
+    old.gate.version = "0.0.1".into();
+    let mut far = written.clone();
+    far.from.as_mut().unwrap().head = g("abababababababababababababababababababab");
+    let by_dev = |root: &Root| {
+        let mut root = root.clone();
+        root.signer = read_root(&f.dev, &tip).signer;
+        root
+    };
+    let (old_dev, far_dev) = (by_dev(&old), by_dev(&far));
+    let keep = format!(". Do not delete {} or run `jtac check`", root_ref(&merge));
+    let drop = format!(
+        "Run `jtac ci --base {}` without `--require-local-root`",
+        f.main
+    );
+    let again = "delete the ref with `git update-ref -d ";
+    for (root, key, trust, starts, holds, lacks) in [
+        (
+            &old,
+            &f.ci_key,
+            "trusted",
+            drop.as_str(),
+            keep.as_str(),
+            again,
+        ),
+        (
+            &far,
+            &f.ci_key,
+            "trusted",
+            "Fetch the history",
+            &keep,
+            again,
+        ),
+        (
+            &old_dev,
+            &f.dev_key,
+            "unknown",
+            "With jtac ",
+            again,
+            "Do not",
+        ),
+        (
+            &far_dev,
+            &f.dev_key,
+            "unknown",
+            "With jtac ",
+            again,
+            "Do not",
+        ),
+    ] {
+        put(&f.ci, key, &merge, root);
+        let flagged = ["ci", "--base", &f.main, "--require-local-root", "--json"];
+        let (code, v, err) = json(&f.ci, &flagged);
+        assert_eq!(code, 1, "{v}{err}");
+        let head = &v["head_root"];
+        assert_eq!(
+            (&head["compared"], &head["trust"]),
+            (&"unverifiable".into(), &trust.into()),
+            "{v}"
+        );
+        let how = v["reasons"][0]["how"].as_str().unwrap();
+        assert!(how.starts_with(starts), "{trust}: {how}");
+        assert!(
+            how.contains(holds) && !how.contains(lacks),
+            "{trust}: {how}"
+        );
+    }
+}
+
 /// DESIGN.md section 15.2: a root's `observed` is the checks read from CI among its nodes,
 /// so a merge root signed without them does not replay, though its evidence, counts and
 /// state all recompute.

@@ -116,8 +116,7 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
 /// Run the rules and the checks on `head` and decide. Every offered waiver is given to the
 /// verdict; it keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
 /// A gate that holds every check is offered the body of each `ci` check; one it was not
-/// offered is a refusal before anything runs, never a failed verdict, which would record a
-/// result nobody read.
+/// offered is a refusal, never a failed verdict, which would record a result nobody read.
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -275,9 +274,8 @@ mod tests {
         assert_eq!(err.stderr.sha, Sha256Digest::of(b"no base"));
     }
 
-    /// The second fence behind the merge job's read: a `ci` check with no body offered
-    /// refuses before git is asked anything, here a repository that does not exist. Other
-    /// gates hold no `ci` check and get past it, to the repository's own refusal.
+    /// The second fence behind the merge job's read: a `ci` check with no body offered is
+    /// a refusal for the gate that holds every check, and no other gate is stopped by it.
     #[test]
     fn a_gate_that_holds_every_check_refuses_a_ci_check_it_was_offered_no_result_for() {
         let text = "version = 2\n[checks.e2e]\nci = { workflow = \".github/workflows/ci.yml\" }\n";

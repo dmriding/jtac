@@ -948,12 +948,8 @@ fn a_from_root_at_the_head_is_compared_in_its_scope_or_unverifiable_without_its_
     three_parts(&v);
     let how = v["reasons"][0]["how"].as_str().unwrap();
     assert!(
-        how.starts_with("Fetch the history") && how.contains(". Do not delete refs/jtac/roots/"),
-        "{how}"
-    );
-    assert!(
-        how.contains("`jtac ci --base main --require-local-root`"),
-        "{how}"
+        how.contains("delete the ref with `git update-ref -d ") && !how.contains("Do not"),
+        "an untrusted root is nobody's merge root on the word of its `from`: {how}"
     );
     p.repo.remove(".jtac/signers");
     p.repo.write(".jtac/signers/x", b"x\n");

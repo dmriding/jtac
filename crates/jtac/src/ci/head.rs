@@ -75,17 +75,28 @@ pub struct HeadRoot {
 }
 
 /// What makes an unverifiable root comparable. `--require-local-root`'s refusal takes its
-/// next step from it, and only `Recheck` may name deleting the ref: a root with `from` is a
-/// merge job's, and a developer's root must never replace it
-/// (`a_head_root_that_read_ci_for_its_own_commit_compares_unverifiable_at_both_gates`).
+/// next step from it. A merge job's root is never told to delete its ref, since a
+/// developer's root must not replace it, and a root is a merge job's on a trusted
+/// signature alone, never on the word of its `from`
+/// (`an_unverifiable_root_is_a_merge_job_s_only_when_a_trusted_ci_key_signed_it`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cure {
-    /// A developer's root written again by this gate version.
+    /// The root written again by this gate version: any root that is not a merge job's.
     Recheck,
-    /// History the clone lacks.
+    /// History the clone lacks, for a merge job's root.
     Fetch,
-    /// No run of this job.
+    /// No run of this job, for a merge job's root.
     Nothing,
+}
+
+impl Cure {
+    fn of(merge_job: bool, lacks_history: bool) -> Self {
+        match (merge_job, lacks_history) {
+            (false, _) => Self::Recheck,
+            (true, true) => Self::Fetch,
+            (true, false) => Self::Nothing,
+        }
+    }
 }
 
 /// One side of the comparison.
@@ -120,12 +131,14 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         why: fact.invalid.clone(),
         recorded: None,
         run: None,
-        cure: Cure::Nothing,
+        cure: Cure::Recheck,
     };
     let Some(stored) = ledger.stored[i].as_ref().filter(|_| fact.invalid.is_none()) else {
         return Ok(Some(out));
     };
     let root = &stored.root;
+    let merge_job = root.from.is_some() && matches!(fact.trust, Trust::Trusted);
+    out.cure = Cure::of(merge_job, false);
     out.recorded = Some(Side {
         state: root.state,
         counts: root.counts.clone(),
@@ -135,7 +148,6 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
         out.compared = Compared::Unverifiable;
         out.why =
             Some("a version 1 root is from another gate version and is never compared".into());
-        out.cure = Cure::Recheck;
         return Ok(Some(out));
     }
     if root.gate.version != gate_version {
@@ -144,9 +156,6 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
             "it is from gate version {}, and this is {gate_version}",
             root.gate.version
         ));
-        if root.from.is_none() {
-            out.cure = Cure::Recheck;
-        }
         return Ok(Some(out));
     }
     let base = root
@@ -217,7 +226,7 @@ pub fn compare_head(site: &Site, ledger: &Ledger) -> Result<Option<HeadRoot>, Re
                      root's base is not held",
                     from.head.hex()
                 ));
-                out.cure = Cure::Fetch;
+                out.cure = Cure::of(merge_job, true);
                 return Ok(Some(out));
             };
             facts.waivable = scope;
