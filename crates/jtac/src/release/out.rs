@@ -47,6 +47,9 @@ pub struct ReleaseOut {
     pub failed: Vec<GitOid>,
     /// Declared off.
     pub waived: Vec<GitOid>,
+    /// Of `waived`, the commits read through the CI waiver on the merge that brought them
+    /// in (DESIGN.md section 16.3, decision 64).
+    pub through: Vec<Through>,
     /// Every root the range stands on.
     pub roots: Vec<Sha256Digest>,
     /// `--require-ci`.
@@ -63,6 +66,15 @@ pub struct ReleaseOut {
     pub notes: Vec<String>,
 }
 
+/// A waived commit and the merge whose CI waiver it was read through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Through {
+    /// The commit.
+    pub commit: GitOid,
+    /// The first-parent commit that brought it in.
+    pub merge: GitOid,
+}
+
 impl ReleaseOut {
     /// Fold the verdict in and decide.
     pub fn decide(&mut self, v: &ReleaseVerdict) {
@@ -72,6 +84,8 @@ impl ReleaseOut {
         self.not_ci.clone_from(&v.not_ci);
         self.failed.clone_from(&v.failed);
         self.waived.clone_from(&v.waived);
+        let through = |&(commit, merge)| Through { commit, merge };
+        self.through = v.through.iter().map(through).collect();
         self.roots.clone_from(&v.roots);
         self.declared_off = v.waived.len() as u64;
         let named = [&v.absent, &v.untrusted, &v.partial, &v.not_ci, &v.failed];
@@ -169,7 +183,11 @@ pub fn render(o: &ReleaseOut) -> String {
     );
     let _ = writeln!(s, "  signers   {}", o.signers);
     for c in &o.waived {
-        let _ = writeln!(s, "  waived    {}", short(c));
+        let merge = o.through.iter().find(|t| t.commit == *c);
+        let by = merge.map_or_else(String::new, |t| {
+            format!(" through the CI waiver on {}", short(&t.merge))
+        });
+        let _ = writeln!(s, "  waived    {}{by}", short(c));
     }
     for c in &o.absent {
         let _ = writeln!(s, "  absent    {} no root", c.hex());

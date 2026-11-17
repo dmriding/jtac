@@ -519,6 +519,11 @@ fn a_ci_waiver_on_a_merge_made_around_ci_recovers_the_pull_request_at_release() 
         let (code, v) = release("t2", flag);
         assert_eq!(code, 0, "{flag:?}: {v}");
         assert_eq!(listed(&v["waived"]), both, "{flag:?}: {v}");
+        let through = serde_json::json!([{
+            "commit": format!("sha1:{}", h.one),
+            "merge": format!("sha1:{}", h.merge),
+        }]);
+        assert_eq!(v["through"], through, "{flag:?}: {v}");
         assert_eq!(v["roots"].as_array().unwrap().len(), 2, "{flag:?}: {v}");
         let (code, v) = release("t1", flag);
         assert_eq!(code, 1, "{flag:?}: {v}");
@@ -540,6 +545,13 @@ fn a_ci_waiver_on_a_merge_made_around_ci_recovers_the_pull_request_at_release() 
     assert_eq!(listed(&v["waived"]), both, "{v}");
     assert_eq!(v["roots"].as_array().unwrap().len(), 1, "{v}");
 
+    let text = jtac(&h.repo, &["release", "t2", "--from", &h.zero]).stdout;
+    let line = format!(
+        "  waived    {} through the CI waiver on {}\n",
+        &h.one[..12],
+        &h.merge[..12]
+    );
+    assert!(text.contains(&line), "{text}");
     let text = jtac(&h.repo, &["release", "t1", "--from", &h.zero]).stdout;
     assert!(
         text.contains("jtac waive <merge> --ci --reason <why>")
@@ -584,4 +596,45 @@ fn a_ci_waiver_on_a_merge_recovers_no_pull_request_an_earlier_merge_brought_in()
     assert_eq!(listed("waived"), sorted(&[&h.head, &later]), "{v}");
     assert_eq!(listed("partial"), sorted(&[&h.one]), "{v}");
     assert_eq!(listed("absent"), sorted(&[&h.merge, &h.r1, &h.r2]), "{v}");
+}
+
+/// Decision 64's stated limit: the first-parent line is all a reader has of where the
+/// branch was. `one` stands for the branch's earlier commit, its root standing; a merge
+/// made by hand on `side` with `side` as first parent reads `one` as what it brought in,
+/// and its waiver reaches it, with the merge named. The forge's rule against direct
+/// pushes is the fence (DESIGN.md section 16.3).
+#[test]
+fn a_merge_with_its_parents_reversed_reads_the_old_line_as_the_side_it_brought_in() {
+    let h = history();
+    put(&h.repo, &h.dev, &h.one, &h.dev_root(&h.one, &h.zero));
+    h.repo.git(&["switch", "-q", "-c", "side", &h.zero]);
+    h.repo.write("x.txt", b"x\n");
+    let side = h.repo.commit("side");
+    let ran = jtac(&h.repo, &["check"]);
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let merge_args = ["merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "reversed"];
+    h.repo.git(&[&merge_args[..], &["feature"]].concat());
+    let reversed = h.repo.git(&["rev-parse", "HEAD"]);
+    let parents = h.repo.git(&["rev-parse", "HEAD^1", "HEAD^2"]);
+    assert_eq!(parents, format!("{side}\n{}", h.one));
+    put(
+        &h.repo,
+        &h.dev,
+        &reversed,
+        &h.waived_root(&reversed, &[&reversed], &side),
+    );
+    h.repo.git(&["tag", "-a", "-m", "tr", "tr", &reversed]);
+
+    let (code, v) = json(&h.repo, &["release", "tr", "--from", &h.zero, "--json"]);
+    assert_eq!(code, 0, "{v}");
+    let through = serde_json::json!([{
+        "commit": format!("sha1:{}", h.one),
+        "merge": format!("sha1:{reversed}"),
+    }]);
+    assert_eq!(v["through"], through, "{v}");
+    assert_eq!(
+        (&v["covered"], &v["declared_off"]),
+        (&1.into(), &2.into()),
+        "{v}"
+    );
 }

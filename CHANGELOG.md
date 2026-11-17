@@ -34,8 +34,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   root carries a trusted CI waiver. Until now only the merge commit passed, and no command
   recovered the commits it brought in. A waiver on a merge off the first-parent line
   recovers nothing, and a tag on a pull request's own commit is refused as before. No
-  repository holds a partial root yet, so no reading of an existing one moves. The `fix`
-  line for a partial commit names the merge to waive.
+  repository holds a partial root yet, so no reading of an existing one moves. The output
+  names the merge each such commit was read through, `through` in `--json`, and the `fix`
+  line for a partial commit names the merge to waive. Stated limit: a merge made by hand
+  with its parents reversed and pushed straight to the branch reads the branch's earlier
+  commits as the side it brought in, so its waiver reaches them; requiring pull requests
+  in the forge is the fence.
 - (0.2.27) The readers of root version 3 (`DESIGN.md` sections 9.5 and 15.2, M20, decisions
   58, 62 and 63). No gate writes one yet: every gate still refuses a policy that holds a
   `ci` check. `audit`, `verify` and `release` read each commit through the first root in

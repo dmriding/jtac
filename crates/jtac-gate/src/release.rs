@@ -57,6 +57,8 @@ pub struct ReleaseVerdict {
     pub failed: Vec<GitOid>,
     /// Declared off, in range order.
     pub waived: Vec<GitOid>,
+    /// Of `waived`, each commit a waived merge brought in, with that merge (decision 64).
+    pub through: Vec<(GitOid, GitOid)>,
     /// Every root that gave a state, in range order, each once; with `require_ci`, the
     /// root the CI gate read a first-parent commit through as well.
     pub roots: Vec<Sha256Digest>,
@@ -74,7 +76,8 @@ pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
         |c: &GitOid| (facts.iter()).any(|m| m.commit == *c && m.first_parent && m.ci_waived);
     for f in facts {
         let held = require_ci && f.first_parent;
-        let ci_off = f.ci_off || f.through.as_ref().is_some_and(waived_merge);
+        let merge = f.through.filter(|m| !f.ci_off && waived_merge(m));
+        let ci_off = f.ci_off || merge.is_some();
         let refused = match f.state {
             None | Some(Reading::NotHeld) => Some(&mut v.absent),
             Some(_) if !f.trusted => {
@@ -96,6 +99,8 @@ pub fn release(facts: &[ReleaseFact], require_ci: bool) -> ReleaseVerdict {
         let off = f.state == Some(Reading::DeclaredOff) || f.ci_waived;
         if off || (ci_off && (held || partial)) {
             v.waived.push(f.commit);
+            v.through
+                .extend(merge.filter(|_| partial).map(|m| (f.commit, m)));
         }
         let ci_root = f.ci_root.filter(|_| held);
         for root in f.root.into_iter().chain(ci_root) {
@@ -326,6 +331,11 @@ mod tests {
                     assert_eq!(v.partial, oids(&partial), "{name}: partial");
                     assert_eq!(v.untrusted, oids(&untrusted), "{name}: untrusted");
                     assert_eq!(v.absent, oids(&absent), "{name}: absent");
+                    let named = match waived.contains(&4) {
+                        true => vec![(oid(4), oid(2))],
+                        false => vec![],
+                    };
+                    assert_eq!(v.through, named, "{name}: through");
                     let refused = partial.len() + untrusted.len() + absent.len();
                     assert_eq!(v.pass, refused == 0, "{name}: {v:?}");
                 }
@@ -333,12 +343,19 @@ mod tests {
         }
     }
 
-    /// A tag on the pull request's own commit: the merge is outside the range, the commit
-    /// is on the range's first-parent line and names no merge, and it stays refused.
+    /// A waived merge in the range recovers no partial commit on the first-parent line
+    /// itself, which names no merge: a direct push before it, or the pull request's own
+    /// commit when the tag sits on it.
     #[test]
-    fn a_partial_commit_on_the_first_parent_line_is_refused_whatever_merged_it_later() {
-        let v = release(&[fact(4, true, Some(Reading::Partial), true, false)], false);
-        assert_eq!((v.pass, v.partial), (false, vec![oid(4)]));
+    fn a_waived_merge_recovers_no_partial_commit_on_the_first_parent_line() {
+        let mut merge = fact(2, true, Some(Reading::Partial), true, true);
+        (merge.ci_off, merge.ci_waived) = (true, true);
+        let direct = fact(4, true, Some(Reading::Partial), true, false);
+        for require_ci in [false, true] {
+            let v = release(&[merge.clone(), direct.clone()], require_ci);
+            assert_eq!((v.pass, &v.partial), (false, &vec![oid(4)]), "{v:?}");
+            assert_eq!(v.waived, vec![oid(2)]);
+        }
     }
 
     /// Held to the CI gate, a commit is listed by what that gate read and through which
