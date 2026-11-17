@@ -37,10 +37,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   repository holds a partial root yet, so no reading of an existing one moves. The output
   names the merge each such commit was read through, `through` in `--json`, and the `fix`
   line for a partial commit names the merge to waive. Stated limit: where the branch is
-  fast-forwarded to a merge made elsewhere, by a direct push or by a forge that merges by
-  fast-forward, the branch's own earlier partial commits read as the side that merge
-  brought in, and its waiver reaches them; the fence is the forge making every commit on
-  the branch.
+  fast-forwarded to a merge whose first parent is not its old tip, as a direct push or a
+  forge that merges by fast-forward can land, the branch's own earlier partial commits
+  read as the side that merge brought in, and its waiver reaches them; the fence is the
+  forge making every commit on the branch.
 - (0.2.27) The readers of root version 3 (`DESIGN.md` sections 9.5 and 15.2, M20, decisions
   58, 62 and 63). No gate writes one yet: every gate still refuses a policy that holds a
   `ci` check. `audit`, `verify` and `release` read each commit through the first root in
