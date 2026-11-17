@@ -1132,7 +1132,8 @@ impl Reading {
 /// DESIGN.md section 15.2, invariant of the merge job: every `ci` check is read before
 /// anything is written, so with no file, a file that does not read, a run still going, a
 /// run for another commit or another branch, the job answers 2 with its own command and
-/// the merge has neither a root nor a failure record.
+/// the merge has neither a root nor a failure record. The command names the file quoted
+/// where its path needs it, as a Windows temp dir's `~` and `:` do.
 #[test]
 fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
     let r = reading();
@@ -1192,8 +1193,12 @@ fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
         );
         assert!(ran.stderr.contains(want), "{want}: {}", ran.stderr);
         assert_eq!(ran.stderr.lines().count(), 3, "{want}: {}", ran.stderr);
-        let again = format!("--results {file} --branch");
-        assert!(ran.stderr.contains(&again), "{want}: {}", ran.stderr);
+        let again = [
+            format!("--results {file} --branch"),
+            format!("--results '{file}' --branch"),
+        ];
+        let named = again.iter().any(|a| ran.stderr.contains(a));
+        assert!(named, "{want}: {}", ran.stderr);
     }
     let refs = r.f.second().git(&["for-each-ref", "refs/jtac"]);
     assert!(
