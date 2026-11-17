@@ -2,7 +2,8 @@
 //! from it (DESIGN.md section 7.1). Versioned with `v`, so a reader can pin what it parses.
 
 use jtac_core::{
-    Body, Gate, GitOid, Outcome, Scope, Severity, Sha256Digest, SignedLever, State, Ts,
+    Body, Gate, GitOid, ObservedCheck, Outcome, Scope, Severity, Sha256Digest, SignedLever, State,
+    Ts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,10 @@ pub struct Output {
     pub waived: Vec<FindingOut>,
     /// Every check node, `integrity` first.
     pub checks: Vec<CheckOut>,
+    /// Each check the merge job read from CI, as its node holds it (DESIGN.md section
+    /// 15.2). Absent in an older `state.json`.
+    #[serde(default)]
+    pub observed: Vec<ObservedCheck>,
     /// The policy's `ci` checks, which this gate did not read: the merge job reads them
     /// (DESIGN.md section 15.2). Absent in an older `state.json`.
     #[serde(default)]
@@ -181,6 +186,7 @@ pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256
     let mut advisory = Vec::new();
     let mut waived = Vec::new();
     let mut checks = Vec::new();
+    let mut observed = Vec::new();
     for n in &p.nodes {
         match &n.body {
             Body::Finding(f) if !blocking(f) => {
@@ -206,6 +212,7 @@ pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256
                 argv: c.argv.clone(),
                 cached_from: c.cached_from,
             }),
+            Body::Observed(c) => observed.push(c.clone()),
             _ => {}
         }
     }
@@ -233,6 +240,7 @@ pub fn output(p: &Judged, notes: Vec<String>, preview: bool, root: Option<Sha256
         advisory,
         waived,
         checks,
+        observed,
         unread: p.unread.clone(),
         waivers,
         added_lines: p.report.as_ref().map(|r| r.added_lines),

@@ -67,6 +67,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         waivable: Vec::new(),
         adoption: judge::adoption(&repo, &head)?,
         checks: Checks::Run,
+        observed: Vec::new(),
     };
     let j = judge::judge(&repo, &loaded, head, base, now, cache.as_deref(), &offered)?;
     if let Some(why) = dirty {

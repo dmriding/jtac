@@ -3,10 +3,12 @@
 //! head is `--from`; the rules diff from the branch's old tip under its trust, the head's
 //! chain offers its trusted waivers, the head's root is compared as the pull request job
 //! compared it, with the head's checks run again on its own tree, and the root, signed in the
-//! CI namespace, records what the head had in `from`. Only CI's own verdict fails the job;
+//! CI namespace, records what the head had in `from`. A check the policy reads from CI
+//! takes its result from `--results` (section 15.2). Only CI's own verdict fails the job;
 //! what the head had never stops the merge root. A root on the tip, at the job's fetch or on
 //! the remote when its push is refused, stands only as CI's own for this head.
 
+mod observe;
 mod out;
 mod tree;
 
@@ -148,6 +150,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         &job.merge_base,
     )?;
     chain.held(repo, "check --from")?;
+    let observed = observe::observe(repo, &job.format, a, &loaded.policy, &job.head, &mut notes)?;
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut cache = store.cache();
     let offered = judge::Offered {
@@ -155,6 +158,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         waivable: chain.commits.clone(),
         adoption,
         checks: Checks::All,
+        observed,
     };
     let base = Base {
         commit: job.old.commit.hex(),

@@ -130,6 +130,13 @@ pub struct CheckArgs {
         conflicts_with = "preview"
     )]
     pub from: Option<String>,
+    /// With `--from`: the results file the forge adapter wrote for HEAD, from which each
+    /// check the policy reads from CI takes its result
+    #[arg(long, value_name = "FILE", requires = "from", requires = "branch")]
+    pub results: Option<PathBuf>,
+    /// With `--results`: the branch the job runs for, by the short name the forge reports
+    #[arg(long, value_name = "NAME", requires = "results")]
+    pub branch: Option<String>,
     /// Push the root HEAD stands with, and under `--from` the head's root when it agreed, to
     /// REMOTE through the hook's guard; a push that fails warns
     #[arg(long, value_name = "REMOTE", conflicts_with = "preview")]
@@ -305,6 +312,34 @@ pub struct JsonArg {
 mod tests {
     use super::*;
 
+    fn merge(results: Option<&str>, branch: Option<&str>) -> CheckArgs {
+        CheckArgs {
+            preview: false,
+            base: Some("def".into()),
+            from: Some("abc".into()),
+            results: results.map(Into::into),
+            branch: branch.map(Into::into),
+            push: Some("origin".into()),
+            json: false,
+        }
+    }
+
+    /// DESIGN.md section 15.2: the results file is the merge job's, and selection needs
+    /// the branch it is read for.
+    #[test]
+    fn a_results_file_and_its_branch_come_together_and_only_with_from() {
+        let job = ["jtac", "check", "--from", "abc", "--base", "def"];
+        let with = |more: &[&'static str]| Cli::try_parse_from(job.iter().chain(more));
+        let read = ["--results", "runs.json", "--branch", "main"];
+        let cli = with(&[&read[..], &["--push", "origin"]].concat()).unwrap();
+        let want = merge(Some("runs.json"), Some("main"));
+        assert_eq!(cli.command, Some(Command::Check(want)));
+        assert!(with(&read[..2]).is_err(), "--results without --branch");
+        assert!(with(&read[2..]).is_err(), "--branch without --results");
+        let local = ["jtac", "check"].iter().chain(&read);
+        assert!(Cli::try_parse_from(local).is_err(), "no --from");
+    }
+
     /// `--ci` needs a commit; `--push` never rides with `--preview`.
     #[test]
     fn a_ci_waiver_and_a_push_without_from_parse() {
@@ -327,6 +362,8 @@ mod tests {
                 preview: true,
                 base: Some("main".into()),
                 from: None,
+                results: None,
+                branch: None,
                 push: None,
                 json: true,
             }))
@@ -335,16 +372,7 @@ mod tests {
             "jtac", "check", "--from", "abc", "--base", "def", "--push", "origin",
         ])
         .unwrap();
-        assert_eq!(
-            cli.command,
-            Some(Command::Check(CheckArgs {
-                preview: false,
-                base: Some("def".into()),
-                from: Some("abc".into()),
-                push: Some("origin".into()),
-                json: false,
-            }))
-        );
+        assert_eq!(cli.command, Some(Command::Check(merge(None, None))));
         assert!(Cli::try_parse_from(["jtac", "check", "--from", "abc"]).is_err());
         assert!(Cli::try_parse_from(["jtac", "check", "--push", "origin"]).is_ok());
         assert!(

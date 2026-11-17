@@ -256,28 +256,6 @@ impl Refusal {
         )
     }
 
-    /// The merge job's policy reads a check from CI, and this build takes no results file
-    /// (DESIGN.md section 15.2).
-    pub fn ci_unread(id: &str) -> Self {
-        Self::new(
-            format!(
-                "Check `{id}` in the `{POLICY_PATH}` the merge job judges under is read from \
-                 CI, and this build's `check --from` reads no CI result."
-            ),
-            format!(
-                "A merge root says every check was read for its commit, and a check nobody ran \
-                 or read must never look like one that passed, so the job writes no root it \
-                 can only judge in part. `jtac check` and `jtac ci` judge the `run` checks and \
-                 name `{id}` as unread; the merge job judges under the base branch's policy."
-            ),
-            format!(
-                "Install a jtac whose `check --from` takes `--results`, or give \
-                 `[checks.{id}]` a `run` in that `{POLICY_PATH}`, commit it, and run the same \
-                 jtac command again. Until then the merge has no merge root and reads partial."
-            ),
-        )
-    }
-
     /// The policy blob is not UTF-8.
     pub fn policy_bytes() -> Self {
         Self::new(
@@ -838,7 +816,6 @@ mod tests {
             Refusal::no_policy(),
             Refusal::policy(&parse),
             Refusal::policy_bytes(),
-            Refusal::ci_unread("test"),
             Refusal::policy_not_held("verify", &["abc123"], None),
             Refusal::policy_not_held("release", &["abc123"], Some("up\nnegotiation: forged")),
             Refusal::internal("hash"),

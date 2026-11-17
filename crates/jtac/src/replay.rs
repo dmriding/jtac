@@ -11,7 +11,8 @@ use std::fmt::Write;
 use std::path::Path;
 
 use jtac_core::{
-    Counts, GitOid, Reason, Sha256Digest, Signer, State, counts, from_canonical, gate, merkle_root,
+    Body, Counts, GitOid, Node, Reason, Sha256Digest, Signer, State, counts, from_canonical, gate,
+    merkle_root,
 };
 use jtac_gate::PolicyKind;
 use jtac_policy::{Checks, Policy, facts};
@@ -149,6 +150,10 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         })?;
         nodes.push(node);
     }
+    if !embeds(&root, &nodes) {
+        let what = "the root's `observed` is not the checks read from CI among its nodes";
+        mismatches.push(what.to_owned());
+    }
     for lever in &root.levers {
         let lid = lever.node.id().map_err(Refusal::internal)?;
         if !leaves.contains(&lid) {
@@ -215,6 +220,14 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         notes,
     };
     printed(a, out)
+}
+
+/// Whether `root.observed` is the checks read from CI among `nodes`, each embedded once
+/// (`replay_holds_a_merge_root_s_observed_to_the_checks_read_from_ci_among_its_nodes`).
+fn embeds(root: &jtac_core::Root, nodes: &[Node]) -> bool {
+    let read_from_ci = |n: &&Node| matches!(n.body, Body::Observed(_));
+    let read: Vec<&Node> = nodes.iter().filter(read_from_ci).collect();
+    read.len() == root.observed.len() && read.iter().all(|n| root.observed.contains(n))
 }
 
 /// A root whose signature does not hold: nothing recomputed, one mismatch.

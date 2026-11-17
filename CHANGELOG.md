@@ -27,6 +27,25 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.30) The merge job reads a check from CI (`DESIGN.md` section 15.2, M20, decision 65;
+  issue 161). `jtac check --from` takes `--results <file>`, the results file a forge adapter
+  writes for the commit, and with it `--branch <name>`, the branch's short name as the forge
+  reports it. Each check the policy reads from CI takes its result from that file and its
+  node into the merge root, which is root version 3 with `observed`; the output lists each
+  one with the forge's word and the run, as `observed` in `--json`. The merge and the pull
+  request's commits then read covered. A failed verdict still writes nothing.
+  **Still not ready to adopt:** the action passes no `--results` until the adapter that
+  writes the file ships.
+  - Every result is read before anything runs. A check that is missing or pending, a file
+    that does not read, no file at all, or a `workflow` that is no regular file in the
+    commit's tree answers 2 with the job's own command and writes nothing. Under a policy
+    with no `ci` check the file is not opened.
+  - A pull request whose head is itself a forge's merge under such a policy holds a CI root
+    with results for its own commit. It compares `unverifiable` at both gates; before, it
+    compared `disagreed` and failed the pull request job.
+  - A failed check read from CI is explained by the forge's word and the run, and names
+    `jtac waive <merge> --ci` as the way to ship over it.
+  - `jtac replay` holds a merge root's `observed` to the nodes read from CI in its store.
 - (0.2.29) The local gate and `jtac ci` judge under a policy that reads a check from CI
   (`DESIGN.md` section 15.2, M20; issues 161 and 168). They run the `run` checks and the
   rules, count no `ci` check, and name each one: `unread` in `--json`, a line under

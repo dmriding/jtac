@@ -1,6 +1,7 @@
 //! Gather the evidence for one verdict and hand it to `gate` (DESIGN.md section 11.1 steps 3
 //! to 5): the `integrity` check node first, its findings, then every policy check this gate
-//! runs, in order. A check read from CI is left out and named (section 15.2).
+//! runs, in order. A check read from CI is left out and named, or for the merge job taken
+//! as the body it read from the results file (section 15.2).
 //! With a cache, a check's node may be a hit; without one (`--preview`) every check runs and
 //! nothing is kept, because a pass computed on a dirty tree would be cached under HEAD's
 //! tree id.
@@ -12,8 +13,8 @@ use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, Report, report};
 use jtac_checks::{CAPTURE_CAP, Cache, Checked, Context, run, run_cached, specs};
 use jtac_core::{
-    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, Outcome, Sha256Digest, SignedLever,
-    Ts, Verdict, gate,
+    Body, Capture, CheckBody, Facts, FindingBody, GitOid, Node, ObservedCheck, Outcome,
+    Sha256Digest, SignedLever, Ts, Verdict, gate,
 };
 use jtac_policy::{Checks, INTEGRITY_CHECK_ID, POLICY_PATH, facts};
 
@@ -64,6 +65,9 @@ pub struct Offered {
     pub adoption: Adoption,
     /// Which checks this gate holds (section 15.2): every one for the merge job alone.
     pub checks: Checks,
+    /// The merge job's reading of each `ci` check, in policy order; empty for every other
+    /// gate.
+    pub observed: Vec<ObservedCheck>,
 }
 
 /// Decisions 38 and 45's fact: no parent of `head`, and nothing behind any of them, ever
@@ -111,8 +115,9 @@ pub fn adoption(repo: &Path, head: &Head) -> Result<Adoption, Refusal> {
 
 /// Run the rules and the checks on `head` and decide. Every offered waiver is given to the
 /// verdict; it keeps the ones in scope and only those become leaves (DESIGN.md section 9.4).
-/// A gate that holds every check has no CI result to read yet, and refuses a policy with a
-/// `ci` check before it runs anything.
+/// A gate that holds every check is offered the body of each `ci` check; one it was not
+/// offered is a refusal before anything runs, never a failed verdict, which would record a
+/// result nobody read.
 pub fn judge(
     repo: &Path,
     loaded: &Loaded,
@@ -123,8 +128,12 @@ pub fn judge(
     offered: &Offered,
 ) -> Result<Judged, Refusal> {
     let checks = offered.checks;
-    if let (Checks::All, Some((id, _))) = (checks, loaded.policy.ci_checks().next()) {
-        return Err(Refusal::ci_unread(id));
+    let offered_for = |id: &str| offered.observed.iter().any(|c| c.id == id);
+    let unread = loaded.policy.ci_checks().find(|(id, _)| !offered_for(id));
+    if let (Checks::All, Some((id, _))) = (checks, unread) {
+        return Err(Refusal::internal(format!(
+            "the merge job judged with no result offered for check `{id}`"
+        )));
     }
     let mut facts =
         facts(&loaded.policy, head.commit, head.tree, checks).map_err(Refusal::internal)?;
@@ -186,6 +195,12 @@ pub fn judge(
             }
         }
     }
+    nodes.extend(
+        offered
+            .observed
+            .iter()
+            .map(|c| node(Body::Observed(c.clone()))),
+    );
     let evidence = nodes.len();
     nodes.extend(offered.waivers.iter().map(|w| w.node.clone()));
     let verdict = gate(&facts, &nodes, now);

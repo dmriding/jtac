@@ -3,8 +3,8 @@
 //! recomputes with.
 
 use jtac_core::{
-    CanonicalError, FromHead, GateRef, GitOid, MerkleError, Node, PolicyRef, PolicySource, Root,
-    RootVersion, Sha256Digest, Signer, counts, merkle_root,
+    Body, CanonicalError, FromHead, GateRef, GitOid, MerkleError, Node, PolicyRef, PolicySource,
+    Root, RootVersion, Sha256Digest, Signer, counts, merkle_root,
 };
 
 use crate::chain::Chain;
@@ -27,8 +27,8 @@ pub enum BuildError {
 /// The root and its leaves, the node ids in `nodes` order, the applied waivers as `levers`.
 /// A base at HEAD is a parentless tip judged against itself (DESIGN.md section 10.3), so the
 /// root names none. `from` is the merge job's head (section 15), `None` for a local root.
-/// Version 3 only where the gate left a check unread, so every other root stays the bytes a
-/// 0.2 reader reads (section 15.2).
+/// Version 3 only where the gate left a check unread or read one from CI, so every other
+/// root stays the bytes a 0.2 reader reads (section 15.2).
 pub fn build(
     j: &Judged,
     chain: Chain,
@@ -42,8 +42,10 @@ pub fn build(
     let base = (j.base.commit != j.head.commit.hex())
         .then(|| oid_like(&j.head.commit, &j.base.commit))
         .transpose()?;
+    let read_from_ci = |n: &&Node| matches!(n.body, Body::Observed(_));
+    let observed: Vec<Node> = j.nodes.iter().filter(read_from_ci).cloned().collect();
     let root = Root {
-        v: match j.unread.is_empty() {
+        v: match j.unread.is_empty() && observed.is_empty() {
             true => RootVersion::V2,
             false => RootVersion::V3,
         },
@@ -63,7 +65,7 @@ pub fn build(
         state: j.verdict.state,
         evidence,
         levers: j.levers.clone(),
-        observed: Vec::new(),
+        observed,
         unread: j.unread.clone(),
         counts: counts(&j.nodes),
         signer,
