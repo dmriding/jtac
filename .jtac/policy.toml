@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 [checks.rust-fmt]
 run = [
@@ -27,15 +27,12 @@ required = true
 timeout_secs = 600
 
 [checks.rust-test]
-run = [
-    "cargo",
-    "test",
-    "--workspace",
-    "--all-features",
-    "--locked",
-]
+ci = { workflow = ".github/workflows/ci.yml", job = "coverage" }
 required = true
-timeout_secs = 1200
+
+[checks.rust-test-windows]
+ci = { workflow = ".github/workflows/ci.yml", job = "test-windows" }
+required = true
 
 [checks.rust-doc]
 run = [
