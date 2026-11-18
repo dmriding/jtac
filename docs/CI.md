@@ -91,13 +91,21 @@ starts on `workflow_run` for each named file, listed by the `name:` the file giv
 init refuses, before it writes anything:
 
 - a named file that is not in the work tree;
-- a workflow whose first line that is not blank or a comment is not `name: <name>`, whole
-  on that line, in letters, digits, spaces and `-_./()&,:`: the trigger lists names as
+- a workflow whose name is not in the one form init reads. The trigger lists names as
   patterns and init reads the file without a YAML parser, so a name it read in part or
-  escaped wrong would never fire, silently. Move the line up or rename the workflow, or
-  write `jtac.yml` by hand;
+  escaped wrong would never fire, silently. The form: `name: <name>` is the first line
+  that is not blank or a comment, whole on that line, and the next line is not indented
+  under it; the name is letters, digits, spaces and `-_./()&,:`, in double quotes where it
+  holds a colon, does not start with a letter or is a word YAML reads as a value (`on`,
+  `yes`, `true`); every other line at the left margin is a comment or a plain `key:` that
+  is not `name`, with no tag, anchor, `?`, `<<` or `---`; and every line break is a line
+  feed. Give the file that form, or write `jtac.yml` by hand;
 - a policy already in the tree that lacks a named check: init never rewrites one, and
   prints the lines to add.
+
+After the first merge, `jtac audit <old tip>..<merge>` reads the merge covered by the CI
+key. If no root job ran when the listed workflow finished, the name in `jtac.yml`'s
+`workflows:` is not the workflow's.
 
 Three things the forge keeps, which init prints with your values:
 
