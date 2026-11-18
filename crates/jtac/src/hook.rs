@@ -305,6 +305,7 @@ impl Refusal {
     /// Stdin could not be read as text, so no line can be judged.
     fn hook_stdin(why: &str) -> Self {
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!("`jtac hook pre-push` could not read its stdin: {why}."),
             why: "The hook judges every ref git is about to push; a line it cannot read is a ref \
@@ -320,6 +321,7 @@ impl Refusal {
     /// the hook's stdin, so a protected branch would go unjudged.
     fn mirror(remote: &str, unsets: &str) -> Self {
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!(
                 "`{}` is set: every push to `{}` mirrors.",
@@ -341,6 +343,7 @@ impl Refusal {
     /// A line on the hook's stdin that is not what git writes.
     fn hook_line(line: &str) -> Self {
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!("`jtac hook pre-push` cannot read the line `{line}`."),
             why: "The hook judges every ref git is about to push; a line it cannot read is a ref \
@@ -445,6 +448,7 @@ impl Refusal {
         };
         let kind = if r.is_fence() { "fence" } else { "negotiation" };
         Self {
+            code: 2,
             kind,
             what,
             why,

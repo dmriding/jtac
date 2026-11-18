@@ -1160,10 +1160,11 @@ impl Reading {
 
 /// DESIGN.md section 15.2, invariant of the merge job: every `ci` check is read before
 /// anything is written, so with no file, a file that does not read, a run still going, a
-/// run for another commit or another branch, the job answers 2 with its own command and
-/// the merge has neither a root nor a failure record.
+/// run for another commit or another branch, the job answers with its own command and
+/// the merge has neither a root nor a failure record. The answer is 3 for the run still
+/// going, which an adapter waits out, and 2 for every other, which fails its job.
 #[test]
-fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
+fn a_result_missing_or_pending_writes_nothing_and_a_pending_one_answers_3() {
     let r = reading();
     let ci = &r.f.ci;
     let ran = r.job(&[]);
@@ -1213,9 +1214,10 @@ fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
     ];
     for (file, branch, want) in &rows {
         let ran = r.job(&["--results", file, "--branch", branch]);
+        let code = if want.contains("is pending") { 3 } else { 2 };
         assert_eq!(
             (ran.code, ran.stdout.as_str()),
-            (2, ""),
+            (code, ""),
             "{want}: {}",
             ran.stderr
         );

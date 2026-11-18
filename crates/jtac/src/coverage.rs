@@ -232,6 +232,7 @@ impl Refusal {
             false => "neither",
         };
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!(
                 "{tip}'s root has `from`: a CI root, whose signer must be named for namespace \
@@ -252,6 +253,7 @@ impl Refusal {
 
     pub fn lever_verifier(err: &SignError) -> Self {
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!("cannot check a stored waiver's signature: {err}."),
             why: "A waiver is applied only when its signature holds; one nobody could check must \
@@ -267,6 +269,7 @@ impl Refusal {
     /// ssh-keygen could not run to check a root's signature.
     pub fn verifier(err: &SignError) -> Self {
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!("cannot check a root's signature: {err}."),
             why: "A root counts only when its signature holds; a signature nobody could check \

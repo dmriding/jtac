@@ -104,7 +104,7 @@ impl Run {
         Self {
             stdout: String::new(),
             stderr: if json { r.json() } else { r.text() },
-            code: 2,
+            code: r.code,
         }
     }
 

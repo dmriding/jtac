@@ -5,7 +5,7 @@ to apply: an environment holding the key, a CODEOWNERS line, and two rulesets. E
 and every push to the
 default branch, save the one that creates it, is judged again on the forge's runner, and every pull request merged by
 a commit of the forge's gets a root signed by a CI key that pull request runs cannot reach; the root job needs `contents: write` and
-`pull-requests: read`, which the written workflow grants. The design is `DESIGN.md` section 15; this page is the
+`pull-requests: read`, which the written workflow grants, and `actions: read` where it reads CI results. The design is `DESIGN.md` section 15; this page is the
 operator's.
 
 ## Adopt
@@ -44,6 +44,7 @@ operator's.
 | `push` to the default branch: no pull request, a fast-forward, or a tip with the pull request's own commits on its first-parent line | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
 | `push` that rewrote the branch, or whose old tip the clone cannot fetch | refused, exit 2 | A gate that cannot anchor at the old tip judges nothing, and says so |
 | `push` that created the branch | nothing judged, exit 0 | There is no old tip to diff from; the next push is judged |
+| `workflow_run`: a workflow the policy reads completed | the push rows' commands, each with `--results <file> --branch <name>`, for the completed commit and every merge above the newest the CI gate reads, oldest first | A doorbell: rings only for a push run of the default branch whose commit is on its first-parent line. A result still running is a wait, exit 0, and later merges wait behind it; a result that is missing fails the job. Needs `actions: read` |
 | any other event | refused, exit 2 | `pull_request_target` would hand the pull request head the secrets |
 | either job | `actions/upload-artifact` of `.git/jtac` as `jtac-store-<job>` | `jtac replay` on a downloaded store |
 
@@ -65,17 +66,18 @@ Policy version 2 lets a check name the workflow and job that already run it,
 - The root job reads each `ci` check from a results file:
   `jtac check --from <head> --base <old tip> --results <file> --branch <name>`. With every
   result in, the merge root holds them and the merge and the pull request's commits read
-  covered. A result that is missing or pending exits 2 and writes nothing. A check CI
-  concluded failed fails the verdict, and the failure record names the job and the run.
-- The action passes no `--results` yet: the adapter that writes the file from the forge's
-  runs is not shipped. Under such a policy the action's root job exits 2 and writes no
-  merge root.
-- So on the action no commit reads covered, `verify --require-coverage` fails and
-  `jtac release` refuses.
+  covered. A result still running exits 3, a missing one 2, and both write nothing. A check
+  CI concluded failed fails the verdict, and the failure record names the job and the run.
+- The action writes that file from the forge's runs when a listed workflow's completion
+  starts the root job (`workflow_run`, the table above). Started by a push it passes none,
+  exits 2 and writes no merge root.
+- `jtac init --ci github` still writes the push trigger. Under it and such a policy no
+  commit reads covered, `verify --require-coverage` fails and `jtac release` refuses. This
+  repository's `.github/workflows/jtac.yml` is the one example of the other trigger.
 
-Keep every check `run` until a release notes that the action reads CI results. The file's
-format is `DESIGN.md` section 15.2; a team that writes it from its own forge can pass it
-to the root job today.
+Keep every check `run` until a release notes that `jtac init --ci github` writes that
+workflow. The file's format is `DESIGN.md` section 15.2; a team that writes it from its
+own forge can pass it to the root job today.
 
 ## The release job
 

@@ -487,6 +487,7 @@ impl Refusal {
         let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
         let first = quoted(first.get(..12).unwrap_or(first), "<commit>");
         Self {
+            code: 2,
             kind: "negotiation",
             what: format!(
                 "`--from {from}` holds {first}, the first commit above the old tip on HEAD's \

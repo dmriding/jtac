@@ -1,6 +1,7 @@
 //! What the CLI refuses and how it says so: what, why, how (DESIGN.md section 12), on stderr
-//! with exit 2. A refusal is never a verdict: the gate could not answer. Every refusal here
-//! is a negotiation; the hooks build the fences with `fence`.
+//! with exit 2, or 3 when a result the forge still runs is all that is missing (`not_yet`).
+//! A refusal is never a verdict: the gate could not answer. Every refusal here is a
+//! negotiation; the hooks build the fences with `fence`.
 
 use jtac_checks::diff::git::{GitError, quoted};
 use jtac_policy::{POLICY_PATH, PolicyError};
@@ -21,6 +22,9 @@ pub struct Refusal {
     pub why: String,
     /// The exact next command.
     pub how: String,
+    /// The exit code: 2, or 3 for `not_yet`.
+    #[serde(skip)]
+    pub code: u8,
 }
 
 const FAIL_CLOSED: &str = "A gate that cannot read the repository refuses rather than passes: \
@@ -33,7 +37,15 @@ impl Refusal {
             what: what.into(),
             why: why.into(),
             how: how.into(),
+            code: 2,
         }
+    }
+
+    /// The same refusal under exit 3: nothing is wrong but the time, so an adapter waits
+    /// for the forge and runs the command again where every other refusal fails its job.
+    #[must_use]
+    pub fn not_yet(self) -> Self {
+        Self { code: 3, ..self }
     }
 
     /// A fence: no command clears it from here. `how` says what would, elsewhere.
