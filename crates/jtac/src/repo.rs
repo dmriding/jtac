@@ -331,16 +331,54 @@ pub fn on_disk_matches(repo: &Path, path: &str, sha: &str) -> Result<bool, RepoE
     Ok(text(&git(repo, &["hash-object", "--", path])?) == sha)
 }
 
+/// What the remote's default branch holds of HEAD's history (DESIGN.md section 10.3,
+/// decision 69): the merge base of HEAD with `refs/remotes/origin/HEAD`, and that ref's short
+/// name. Never the upstream, which for a pushed branch is the branch itself, nor a local
+/// branch, whose unpushed commits no gate has seen. `None` without the ref or a common
+/// ancestor; nothing is fetched, and a stale ref only makes the base older.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    /// The merge base, hex.
+    pub commit: String,
+    /// `origin/main`.
+    pub shown: String,
+}
+
+/// `Landed` for `head`, read from this clone alone.
+pub fn landed(repo: &Path, head: &Head) -> Result<Option<Landed>, RepoError> {
+    let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
+    let Some(full) = probe(repo, &name, 1)? else {
+        return Ok(None);
+    };
+    let shown = full
+        .strip_prefix("refs/remotes/")
+        .unwrap_or(&full)
+        .to_owned();
+    let found = probe(repo, &["merge-base", &full, &head.commit.hex()], 1)?;
+    Ok(found.map(|commit| Landed { commit, shown }))
+}
+
+/// Whether `origin` is a remote whose default branch this clone does not name, so `landed`
+/// has nothing to read and the base falls back without saying why.
+pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
+    let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
+    Ok(config(repo, "remote.origin.url")?.is_some() && probe(repo, &name, 1)?.is_none())
+}
+
 /// The base the rules diff from (DESIGN.md section 10.3): the merge base of HEAD with
-/// `explicit`, else the `nearest` covered ancestor, else the merge base with the upstream,
-/// else with the default branch. When that is HEAD itself, or nothing names a candidate, the
-/// rules judge the last commit: the first parent, or the empty tree for a parentless HEAD. An
-/// explicit rev that does not resolve or shares no history is the caller's refusal.
+/// `explicit`; else the `nearest` covered ancestor when it descends from what `landed`
+/// names, or nothing is named, and the `landed` merge base when it does not
+/// (`a_branch_cut_from_a_merge_with_no_root_is_judged_on_its_own_commits`); else the merge
+/// base with the upstream, else with the default branch. When that is HEAD itself, or
+/// nothing names a candidate, the rules judge the last commit: the first parent, or the
+/// empty tree for a parentless HEAD. An explicit rev that does not resolve or shares no
+/// history is the caller's refusal.
 pub fn base(
     repo: &Path,
     head: &Head,
     explicit: Option<&str>,
     nearest: Option<&str>,
+    landed: Option<&Landed>,
 ) -> Result<Base, RepoError> {
     let commit = head.commit.hex();
     let (candidate, reason) = match (explicit, nearest) {
@@ -350,10 +388,25 @@ pub fn base(
             let base = merge_base(repo, rev, &commit)?;
             (Some(base), format!("--base {rev}"))
         }
-        (None, Some(covered)) => (
-            Some(covered.to_owned()),
-            "nearest covered ancestor".to_owned(),
-        ),
+        (None, Some(covered)) => {
+            let own = |l: &Landed| {
+                probe(
+                    repo,
+                    &["merge-base", "--is-ancestor", &l.commit, covered],
+                    1,
+                )
+            };
+            match landed {
+                Some(l) if own(l)?.is_none() => (
+                    Some(l.commit.clone()),
+                    format!("merge base with {}", l.shown),
+                ),
+                _ => (
+                    Some(covered.to_owned()),
+                    "nearest covered ancestor".to_owned(),
+                ),
+            }
+        }
         (None, None) => match candidate(repo)? {
             Some((full, shown)) => match probe(repo, &["merge-base", &full, &commit], 1)? {
                 Some(base) => (Some(base), format!("merge base with {shown}")),

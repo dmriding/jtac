@@ -835,14 +835,64 @@ fn jtac_canonical(v: &Value) -> String {
     v.to_string()
 }
 
+/// DESIGN.md section 10.3, decision 69. A commit origin's default branch already holds left
+/// another machine: a root written here would vouch for it after the fact and stand where
+/// the merge job's belongs, which the job refuses. The run still judges and says how to go
+/// on; a commit waiver naming the commit is the recovery and gets its root.
+#[test]
+fn a_commit_the_default_branch_holds_gets_no_root_unless_a_waiver_names_it() {
+    let a = adopting();
+    let repo = &a.repo;
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    let roots = || repo.git(&["for-each-ref", "refs/jtac/roots/"]);
+    let (code, v) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["root"].is_null() && roots().is_empty(), "{v}");
+    let short = &a.base[..12];
+    let notes = v["notes"].to_string();
+    assert!(
+        notes.contains(&format!(
+            "no root was written: origin/main already holds {short}"
+        )) && notes.contains("commit first")
+            && notes.contains("git fetch origin '+refs/jtac/*:refs/jtac/*'")
+            && notes.contains(&format!("jtac waive {short} --reason")),
+        "{notes}"
+    );
+
+    repo.write("src/b.rs", b"fn b() {}\n");
+    repo.commit("own");
+    let (code, v) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["root"].is_string(), "{v}");
+    assert_eq!(v["base"]["commit"], a.base);
+
+    repo.write("src/c.rs", b"fn c() {}\n");
+    repo.commit("pushed around the gate");
+    repo.git(&["push", "-q", "origin", "main"]);
+    let (code, v) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["root"].is_null(), "{v}");
+    let ran = jtac(
+        repo,
+        &["waive", "HEAD", "--reason", "pushed around the gate"],
+    );
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+    let (code, v) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(v["root"].is_string(), "{v}");
+    assert_eq!(v["state"], "declared_off");
+}
+
 /// The CI waiver (DESIGN.md section 15, decision 48): a commit pushed around CI has no CI
 /// root; `waive --ci` records why, `check --push` writes the root that carries it and sends
 /// it, the verdict stays `covered`, and a second clone's `audit` reads the CI gate declared
 /// off with the reason beside it. `--ci` with another flag, or after a root stands, is refused.
+/// With `origin/HEAD` named, that root is decision 69's one exception.
 #[test]
 fn a_ci_waiver_rides_in_the_root_on_its_commit_and_audit_reads_the_ci_gate_declared_off() {
     let a = adopting();
     let repo = &a.repo;
+    repo.git(&["remote", "set-head", "origin", "main"]);
     repo.write(".jtac/signers", a.signers.as_bytes());
     repo.commit("adopt");
     let ran = jtac(
