@@ -357,6 +357,9 @@ impl Refusal {
 
     /// A ref the decision refused.
     fn push(r: &Refuse, at: &At) -> Self {
+        const BYPASS: &str = "Do not add `--no-verify`: the commit would land with no root of \
+                              its own, absent until a later root covers it and shown by `jtac \
+                              audit` under that root from then on.";
         let raw = at.remote_ref.trim_start_matches("refs/heads/");
         let branch = if raw.contains('`') { "<branch>" } else { raw };
         let remote_ref = quoted(at.remote_ref, "<ref>");
@@ -374,14 +377,14 @@ impl Refusal {
                         "The root ref {stale} is there and does not count (see the note \
                          above), and `jtac check` keeps a root it finds: run `git update-ref \
                          -d {stale}`, then `jtac check` with {} checked out, then push again. \
-                         Do not add `--no-verify`: the commit would land with no root and read \
-                         as absent to every reader.",
+                         {BYPASS}",
                         at.tip
                     ),
                     None => format!(
-                        "Run `jtac check` with {} checked out, then push again. Do not add \
-                         `--no-verify`: the commit would land with no root and read as absent \
-                         to every reader.",
+                        "Run `jtac check` with {} checked out, then push again. If `check` \
+                         passed here before, a pruning fetch since (`git fetch --prune`, or \
+                         `fetch.prune` set) deleted its root, which the remote did not hold \
+                         yet; `check` writes it again. {BYPASS}",
                         at.tip
                     ),
                 },

@@ -752,6 +752,75 @@ fn a_dangling_origin_head_reads_as_no_default_branch() {
     assert!(!v["notes"].to_string().contains("set-head"), "{v}");
 }
 
+/// The default-branch note names one command per state, since `set-head --auto` fails where
+/// the default branch was never fetched and cannot run with no remote named `origin`: a
+/// clone that tracks single branches is told the fetch that brings it, one whose remote has
+/// another name is told the rename, and a repository with no remote is told nothing. Each
+/// command is run here and must leave no note.
+#[test]
+fn each_clone_that_names_no_default_branch_is_told_the_command_that_works_there() {
+    let noted = |repo: &Repo| {
+        let (code, v) = json(repo, &["check", "--preview", "--json"]);
+        assert_eq!(code, 0, "{v}");
+        v["notes"].to_string()
+    };
+    let upstream = passing();
+    assert!(!noted(&upstream).contains("origin"), "no remote, no note");
+    upstream.git(&["branch", "dev"]);
+
+    let narrow = Repo::clone_of(&upstream);
+    keyed(&narrow);
+    narrow.git(&["remote", "set-branches", "origin", "dev"]);
+    narrow.git(&["remote", "set-head", "origin", "--delete"]);
+    narrow.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let notes = noted(&narrow);
+    let add = "git remote set-branches --add origin <branch>";
+    assert!(
+        notes.contains("git ls-remote --symref origin HEAD"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains(add) && notes.contains("git fetch origin"),
+        "{notes}"
+    );
+    narrow.git(&["remote", "set-branches", "--add", "origin", "main"]);
+    narrow.git(&["fetch", "-q", "origin"]);
+    narrow.git(&["remote", "set-head", "origin", "--auto"]);
+    assert!(
+        !noted(&narrow).contains("origin"),
+        "the three commands name it"
+    );
+
+    let renamed = Repo::clone_of(&upstream);
+    keyed(&renamed);
+    renamed.git(&["remote", "rename", "origin", "upstream"]);
+    let notes = noted(&renamed);
+    assert!(
+        notes.contains("git remote rename upstream origin"),
+        "{notes}"
+    );
+    assert!(notes.contains("still gets a root"), "{notes}");
+    let (code, v) = json(&renamed, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(
+        v["root"].is_string(),
+        "the rule is off, as the note says: {v}"
+    );
+    let url = renamed.git(&["remote", "get-url", "upstream"]);
+    renamed.git(&["remote", "add", "second", &url]);
+    let notes = noted(&renamed);
+    assert!(
+        notes.contains("git remote rename <remote> origin"),
+        "{notes}"
+    );
+    renamed.git(&["remote", "remove", "second"]);
+    renamed.git(&["remote", "rename", "upstream", "origin"]);
+    assert!(
+        !noted(&renamed).contains("git remote"),
+        "the rename names it"
+    );
+}
+
 #[test]
 fn past_the_bound_covers_is_a_range_and_a_lost_state_file_only_warns() {
     let repo = passing();

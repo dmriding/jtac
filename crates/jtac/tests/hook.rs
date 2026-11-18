@@ -733,6 +733,37 @@ fn a_real_push_is_refused_before_check_and_carries_its_root_after() {
     );
 }
 
+/// `jtac init`'s fetch refspec makes `refs/jtac/*` a destination git prunes, so a pruning
+/// fetch deletes a root the remote does not hold yet (issue 187). It fails closed: the hook
+/// refuses, its refusal names the cause, and `check` writes the root again.
+#[test]
+fn a_pruning_fetch_deletes_an_unpushed_root_and_the_refusal_names_the_cause() {
+    let origin = Repo::bare(&[]);
+    let repo = Repo::clone_of(&origin);
+    with_policy(&repo, "");
+    repo.commit("base");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    keyed(&repo);
+    install_hook(&repo);
+    let evidence = "+refs/jtac/*:refs/jtac/*";
+    repo.git(&["config", "--add", "remote.origin.fetch", evidence]);
+    repo.write("a.txt", b"a\n");
+    let tip = repo.commit("tip");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["fetch", "-q", "--prune", "origin"]);
+    let held = ["rev-parse", "--verify", "--quiet", &root_ref(&tip)];
+    assert!(!repo.command("git", &held).status.success(), "pruned");
+    let refused = Ran::of(repo.command("git", &["push", "origin", "main"]));
+    assert_ne!(refused.code, 0, "{}", refused.stderr);
+    for cause in ["`git fetch --prune`", "`fetch.prune`", "Run `jtac check`"] {
+        assert!(refused.stderr.contains(cause), "{}", refused.stderr);
+    }
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let pushed = Ran::of(repo.command("git", &["push", "origin", "main"]));
+    assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+    assert!(origin.command("git", &held).status.success(), "sent");
+}
+
 /// Section 15.2: the hook and `status` ask what the local gate judged, which a partial
 /// root says in full, so a root that lists a `ci` check unread carries the push as any
 /// developer root does, and the remote holds it as written.
