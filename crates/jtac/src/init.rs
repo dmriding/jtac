@@ -20,7 +20,7 @@ use crate::keydir::Key;
 use crate::refspec::REFSPEC;
 use crate::refuse::Refusal;
 use crate::repo::RepoError;
-use crate::{Printed, agentcfg, cicfg, detect, hookfile, keydir, refspec, render, repo};
+use crate::{Printed, agentcfg, cicfg, ciread, detect, hookfile, keydir, refspec, render, repo};
 
 /// Everything init found, before it writes anything.
 struct Plan {
@@ -78,10 +78,17 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     if jtac_dir.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
         return Err(Refusal::init_symlink(&jtac_dir));
     }
-    let policy = match policy_path.symlink_metadata() {
-        Ok(_) => None,
+    let reads = ciread::parse(&a.read)?;
+    let (policy, pins) = match policy_path.symlink_metadata() {
+        Ok(_) if a.ci.is_some() => {
+            let kept = detect::kept(&policy_path)?;
+            ciread::held(&kept, &reads)?;
+            (None, kept.ci_checks().map(|(_, p)| p.clone()).collect())
+        }
+        Ok(_) => (None, Vec::new()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Some(detect::policy_text(&detect::detect(&repo)?)?)
+            let new = detect::policy_text(&detect::detect(&repo)?, &reads)?;
+            (Some(new), reads.into_iter().map(|r| r.pin).collect())
         }
         Err(e) => return Err(Refusal::init_io("the policy", &policy_path, &e)),
     };
@@ -91,7 +98,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
     let install = hookfile::judge(&hookfile::read(&hook)?, &script, a.keep_hook)
         .ok_or_else(|| Refusal::init_foreign_hook(&hook, &exe))?;
     let agent = agentcfg::plan(&repo, &exe, a.agent.as_deref())?;
-    let ci = cicfg::plan(&repo, remote.as_deref(), a.ci.as_deref(), &key)?;
+    let ci = cicfg::plan(&repo, remote.as_deref(), a.ci.as_deref(), &key, &pins)?;
     let mut plan = Plan {
         store_there: store.dir().is_dir(),
         repo,
@@ -137,9 +144,14 @@ fn apply(p: &Plan, dry: bool) -> Result<InitOutput, Refusal> {
                 write_new("the policy", &p.repo.join(POLICY_PATH), &new.text)?;
             }
             let found = &new.languages;
+            let read = if new.read.is_empty() {
+                String::new()
+            } else {
+                format!("; read from CI: {}", new.read.join(", "))
+            };
             out.wrote(
                 "policy",
-                format!("policy {POLICY_PATH} (detected: {found})"),
+                format!("policy {POLICY_PATH} (detected: {found}{read})"),
             );
             out.policy = Some(new.text.clone());
             if new.checks == 0 {

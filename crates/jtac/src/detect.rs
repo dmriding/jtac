@@ -6,9 +6,12 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_core::Sha256Digest;
-use jtac_policy::{Detected, Js, POLICY_PATH, PolicyError, Runner, default_policy, policy_hash};
+use jtac_policy::{
+    Detected, Js, POLICY_PATH, Policy, PolicyError, Runner, default_policy, policy_hash,
+};
 use serde_json::Value;
 
+use crate::ciread::{self, Read};
 use crate::init::ask;
 use crate::refuse::Refusal;
 
@@ -100,12 +103,14 @@ pub struct NewPolicy {
     pub checks: usize,
     /// What detection found, for the report.
     pub languages: String,
+    /// The ids `--read` named as read from CI.
+    pub read: Vec<String>,
 }
 
-/// The policy for `d`, its text proven to parse back to the same hash, so the file init
-/// writes is exactly the policy it chose.
-pub fn policy_text(d: &Detected) -> Result<NewPolicy, Refusal> {
-    let policy = default_policy(d);
+/// The policy for `d` with `reads` as its checks read from CI, its text proven to parse back
+/// to the same hash, so the file init writes is exactly the policy it chose.
+pub fn policy_text(d: &Detected, reads: &[Read]) -> Result<NewPolicy, Refusal> {
+    let policy = ciread::apply(default_policy(d), reads)?;
     let text = jtac_policy::to_toml(&policy);
     let hash = policy_hash(&policy).map_err(Refusal::internal)?;
     let back = jtac_policy::parse(&text).map_err(|e| Refusal::internal(e.to_string()))?;
@@ -119,15 +124,20 @@ pub fn policy_text(d: &Detected) -> Result<NewPolicy, Refusal> {
         hash,
         checks: policy.checks.len(),
         languages: languages(d),
+        read: reads.iter().map(|r| r.id.clone()).collect(),
     })
 }
 
-/// The hash of the policy file init kept, which its lever node names.
-pub fn kept_hash(path: &Path) -> Result<Sha256Digest, Refusal> {
+/// The policy file init kept.
+pub fn kept(path: &Path) -> Result<Policy, Refusal> {
     let bytes = std::fs::read(path).map_err(|e| Refusal::init_io("the policy", path, &e))?;
     let text = String::from_utf8(bytes).map_err(|_| Refusal::init_policy(None))?;
-    let policy = jtac_policy::parse(&text).map_err(|e| Refusal::init_policy(Some(&e)))?;
-    policy_hash(&policy).map_err(Refusal::internal)
+    jtac_policy::parse(&text).map_err(|e| Refusal::init_policy(Some(&e)))
+}
+
+/// Its hash, which the lever node names.
+pub fn kept_hash(path: &Path) -> Result<Sha256Digest, Refusal> {
+    policy_hash(&kept(path)?).map_err(Refusal::internal)
 }
 
 impl Refusal {
@@ -274,7 +284,7 @@ mod tests {
             javascript: js(Runner::Pnpm, &["test"]),
             ..Detected::default()
         };
-        let new = policy_text(&d).unwrap();
+        let new = policy_text(&d, &[]).unwrap();
         assert_eq!(new.hash, policy_hash(&default_policy(&d)).unwrap());
         assert!(new.text.contains("[checks.rust-test]"), "{}", new.text);
         assert_eq!(

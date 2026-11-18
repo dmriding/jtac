@@ -3,10 +3,14 @@
 //! user config directory and never printed. Opt-in; a remote that is not GitHub is refused,
 //! since the workflow is GitHub's. Every input is read in `plan`, so a refusal comes before
 //! the first write (`the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps`).
+//! The trigger follows the policy the tree will hold (decision 68): where it reads a check
+//! from CI, the root job starts when that workflow completes, by the name its file gives.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use jtac_checks::git::quoted;
+use jtac_core::Pin;
 
 use crate::ciwf::{self, WORKFLOW_PATH};
 use crate::init::{ask, slashes, write_new};
@@ -14,6 +18,7 @@ use crate::initout::InitOutput;
 use crate::keydir::{self, Key};
 use crate::refuse::Refusal;
 use crate::trust::TRUST_PATH;
+use crate::wfname::{self, Unreadable};
 use crate::{identity, repo};
 
 /// The writes the flag asked for, judged before anything is written.
@@ -22,7 +27,12 @@ pub struct Planned {
     owner: String,
     name: String,
     default_branch: String,
+    /// The workflows the policy reads, by name, and the jobs a ruleset must then require.
+    names: Vec<String>,
+    required: Vec<String>,
     workflow_there: bool,
+    /// A workflow is there with no `workflow_run` trigger, and the policy reads CI.
+    deaf: bool,
     signers_there: bool,
     key: PathBuf,
     /// The CI key's signers line, read now when the key exists; `None` until it is made.
@@ -31,11 +41,13 @@ pub struct Planned {
 }
 
 /// Read the remote, the tree and the keys and decide the writes; `None` without the flag.
+/// `pins` are the checks the policy the tree will hold reads from CI.
 pub fn plan(
     repo: &Path,
     remote: Option<&str>,
     forge: Option<&str>,
     dev: &Key,
+    pins: &[Pin],
 ) -> Result<Option<Planned>, Refusal> {
     let Some(forge) = forge else {
         return Ok(None);
@@ -70,8 +82,14 @@ pub fn plan(
         .gpg_ssh_program
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "ssh-keygen".to_owned());
+    let (names, required) = read_workflows(repo, pins)?;
+    let workflow_there = repo.join(WORKFLOW_PATH).symlink_metadata().is_ok();
+    let kept = std::fs::read_to_string(repo.join(WORKFLOW_PATH)).unwrap_or_default();
     Ok(Some(Planned {
-        workflow_there: repo.join(WORKFLOW_PATH).symlink_metadata().is_ok(),
+        deaf: workflow_there && !names.is_empty() && !kept.contains("workflow_run:"),
+        names,
+        required,
+        workflow_there,
         signers_there: repo.join(TRUST_PATH).symlink_metadata().is_ok(),
         default_branch: default_branch(repo, remote)?,
         repo: repo.to_path_buf(),
@@ -81,6 +99,28 @@ pub fn plan(
         ci_line,
         program: PathBuf::from(program),
     }))
+}
+
+/// Each pinned workflow's name, read from its file in the work tree, and each pin as the
+/// ruleset names it; a file that is missing or gives no plain name is refused.
+fn read_workflows(repo: &Path, pins: &[Pin]) -> Result<(Vec<String>, Vec<String>), Refusal> {
+    let files: BTreeSet<&str> = pins.iter().map(|p| p.workflow.as_str()).collect();
+    let mut names = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(repo.join(file))
+            .map_err(|e| Refusal::init_ci_workflow_unread(file, &e))?;
+        let name = wfname::name(&text).map_err(|e| Refusal::init_ci_workflow_name(file, &e))?;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let required: BTreeSet<String> = (pins.iter())
+        .map(|p| match &p.job {
+            Some(job) => format!("`{job}`"),
+            None => format!("every job of `{}`", p.workflow),
+        })
+        .collect();
+    Ok((names, required.into_iter().collect()))
 }
 
 /// The CI key's signers line from its `.pub`, or the refusal that names how to make one.
@@ -139,13 +179,30 @@ pub fn apply(out: &mut InitOutput, p: Option<&Planned>, dry: bool) -> Result<(),
         out.kept("workflow", format!("workflow {WORKFLOW_PATH}"));
     } else {
         if !dry {
-            let text = ciwf::workflow(version, &p.default_branch);
+            let text = ciwf::workflow(version, &p.default_branch, &p.names);
             write_new("the workflow", &p.repo.join(WORKFLOW_PATH), &text)?;
         }
+        let starts = if p.names.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", its root job starts when {} completes",
+                ciwf::listed(&p.names)
+            )
+        };
         out.wrote(
             "workflow",
-            format!("workflow {WORKFLOW_PATH} (pinned to v{version})"),
+            format!("workflow {WORKFLOW_PATH} (pinned to v{version}{starts})"),
         );
+    }
+    if p.deaf {
+        out.notes.push(format!(
+            "`{WORKFLOW_PATH}` was kept and has no `workflow_run` trigger, while the policy \
+             reads checks from CI: started by a push its root job reads no result and writes \
+             no root. Remove the file and run `jtac init --ci github` again to have it \
+             written for {}, or edit it by docs/CI.md in the jtac repository",
+            ciwf::listed(&p.names)
+        ));
     }
     let both = format!("trust file {TRUST_PATH} (your line and the CI key's)");
     match (p.signers_there, &out.signers, &ci_line) {
@@ -176,7 +233,8 @@ pub fn apply(out: &mut InitOutput, p: Option<&Planned>, dry: bool) -> Result<(),
         (false, _, _) if dry => out.wrote("signers", both),
         (false, _, _) => return Err(Refusal::internal("no signer line for the trust file")),
     }
-    let steps = ciwf::next_steps(&p.owner, &p.name, &key, &p.default_branch);
+    let branch = &p.default_branch;
+    let steps = ciwf::next_steps(&p.owner, &p.name, &key, branch, &p.names, &p.required);
     out.notes.extend(steps);
     Ok(())
 }
@@ -211,6 +269,41 @@ impl Refusal {
              another forge it would never run.",
             "Run `jtac init --ci github --remote <name>` naming the GitHub remote, or adapt \
              the workflow by hand from docs/CI.md in the jtac repository.",
+        )
+    }
+
+    /// A workflow the policy reads is not a file in the work tree.
+    pub fn init_ci_workflow_unread(file: &str, err: &std::io::Error) -> Self {
+        ask(
+            format!("the policy reads a check from `{file}`, which does not read here: {err}."),
+            "The root job starts when that workflow completes, by the name its file gives; \
+             a file that is not in the tree never runs, and every merge would read its \
+             result missing.",
+            "Name the definition file that runs the check, as `jtac init --ci github --read \
+             <id>=.github/workflows/<file>[:<job>]`, or fix the `ci` line in \
+             .jtac/policy.toml and run `jtac init --ci github` again.",
+        )
+    }
+
+    /// A workflow the policy reads gives no name init can write into the trigger.
+    pub fn init_ci_workflow_name(file: &str, why: &Unreadable) -> Self {
+        let what = match why {
+            Unreadable::None => "has no top-level `name:` line".to_owned(),
+            Unreadable::Several => "has more than one top-level `name:` line".to_owned(),
+            Unreadable::Spelling(v) => format!("is named `{v}`, which init does not write"),
+        };
+        ask(
+            format!("`{file}` {what}."),
+            "The root job's trigger lists the workflow by name, as a pattern; a name that is \
+             missing, or that needs an escape init could get wrong, would leave a trigger \
+             that never fires and merges with no root, silently.",
+            format!(
+                "Give `{file}` one `name:` line at the left margin, of letters, digits, \
+                 spaces and `{}`, starting with a letter or quoted, as `name: ci`; commit \
+                 it, then run `jtac init --ci github` again. Or write `{WORKFLOW_PATH}` by \
+                 hand (docs/CI.md in the jtac repository).",
+                wfname::PUNCTUATION
+            ),
         )
     }
 
@@ -280,6 +373,16 @@ mod tests {
             Refusal::init_ci_no_default_branch("origin"),
             Refusal::init_ci_pub(Path::new("/workspace/ci/my.app_ed25519")),
             Refusal::init_ci_dev_line(&id),
+            Refusal::init_ci_workflow_unread(
+                ".github/workflows/ci.yml",
+                &std::io::Error::other("gone"),
+            ),
+            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::None),
+            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::Several),
+            Refusal::init_ci_workflow_name(
+                ".github/workflows/ci.yml",
+                &Unreadable::Spelling("Build*".into()),
+            ),
         ];
         for r in &rows {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");

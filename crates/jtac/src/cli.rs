@@ -85,6 +85,10 @@ pub struct InitArgs {
     /// Write this forge's CI workflow, the first `.jtac/signers` and a CI key (`github`)
     #[arg(long, value_name = "FORGE")]
     pub ci: Option<String>,
+    /// With `--ci`: a check the policy init writes reads from CI at the merge and no gate
+    /// runs, as `<id>=<workflow path>[:<job>]`; once for each
+    #[arg(long, value_name = "CHECK", requires = "ci")]
+    pub read: Vec<String>,
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
@@ -392,6 +396,7 @@ mod tests {
                 keep_hook: false,
                 agent: None,
                 ci: None,
+                read: Vec::new(),
                 json: false,
             }))
         );

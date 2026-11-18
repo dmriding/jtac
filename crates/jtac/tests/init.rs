@@ -1039,3 +1039,139 @@ fn the_ci_workflow_is_opt_in_pins_the_release_and_names_the_operators_steps() {
         ran.stdout
     );
 }
+
+/// A clone of a GitHub repository whose default branch the clone knows.
+fn github() -> Env {
+    let env = Env::new();
+    env.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "git@github.com:example-org/example-app.git",
+    ]);
+    env.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    env
+}
+
+const CI_YML: &str = ".github/workflows/ci.yml";
+
+#[test]
+fn a_named_check_is_read_from_ci_and_the_root_job_starts_when_its_workflow_completes() {
+    let env = github();
+    env.repo.write("Cargo.toml", b"[package]\n");
+    env.repo
+        .write(CI_YML, b"name: Build & Test\non: push\njobs: {}\n");
+    let test = format!("rust-test={CI_YML}:test (stable)");
+    let e2e = format!("e2e={CI_YML}");
+
+    let ran = env.jtac(&["init", "--read", &test]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(ran.stderr.contains("required arguments"), "{}", ran.stderr);
+    assert!(!env.repo.path().join(".jtac").exists(), "nothing written");
+
+    let args = ["--ci", "github", "--read", &test, "--read", &e2e];
+    let ran = env.init(&args);
+    for want in [
+        "wrote policy .jtac/policy.toml (detected: rust; read from CI: rust-test, e2e)",
+        "its root job starts when \"Build & Test\" completes)",
+        "require `test (stable)`, every job of `.github/workflows/ci.yml` on `main`",
+        "a tag named `main`",
+        "run \"Build & Test\" on every push to `main`, `on: push`",
+    ] {
+        assert!(ran.stdout.contains(want), "{want}: {}", ran.stdout);
+    }
+    let policy = std::fs::read_to_string(env.repo.path().join(".jtac/policy.toml")).unwrap();
+    assert!(policy.starts_with("version = 2\n"), "{policy}");
+    for want in [
+        "[checks.rust-fmt]\nrun = [",
+        "[checks.rust-lint]\nrun = [",
+        "[checks.rust-test.ci]\nworkflow = \".github/workflows/ci.yml\"\njob = \"test (stable)\"\n",
+        "[checks.e2e.ci]\nworkflow = \".github/workflows/ci.yml\"\n",
+    ] {
+        assert!(policy.contains(want), "{want}: {policy}");
+    }
+    assert!(!policy.contains("\"test\", \"--workspace\""), "{policy}");
+    let workflow =
+        std::fs::read_to_string(env.repo.path().join(".github/workflows/jtac.yml")).unwrap();
+    assert!(
+        workflow.contains("  workflow_run:\n    workflows: [\"Build & Test\"]\n")
+            && workflow.contains("      actions: read\n")
+            && !workflow.contains("  push:"),
+        "{workflow}"
+    );
+
+    let before = env.snapshot();
+    let ran = env.init(&args);
+    assert!(ran.stdout.contains("nothing to do"), "{}", ran.stdout);
+    assert_eq!(env.snapshot(), before);
+}
+
+#[test]
+fn a_kept_policy_decides_the_trigger_and_a_read_it_lacks_is_refused_with_the_lines() {
+    let env = github();
+    let policy = ".jtac/policy.toml";
+    env.repo
+        .write(policy, b"version = 1\n[checks.test]\nrun = [\"true\"]\n");
+    let read = format!("test={CI_YML}:test");
+    let lines = "[checks.test]\nci = { workflow = \".github/workflows/ci.yml\", job = \"test\" }\n";
+    let before = env.snapshot();
+    let refused = |args: &[&str], want: &str| {
+        let ran = env.jtac(&[&["init", "--ci", "github"], args].concat());
+        assert_eq!(ran.code, 2, "{}", ran.stdout);
+        assert!(ran.stderr.contains(want), "{want}: {}", ran.stderr);
+        assert!(ran.stderr.contains("negotiation: "), "{}", ran.stderr);
+    };
+    refused(&["--read", &read], lines);
+    refused(&["--read", "test"], "`--read test` does not name");
+    refused(&["--read", "test=ci.yml"], "protected.paths");
+    assert_eq!(env.snapshot(), before, "a refusal writes nothing");
+
+    env.repo
+        .write(policy, format!("version = 2\n{lines}").as_bytes());
+    refused(&[], "`.github/workflows/ci.yml`, which does not read here");
+    env.repo.write(CI_YML, b"on: push\njobs: {}\n");
+    refused(
+        &[],
+        "`.github/workflows/ci.yml` has no top-level `name:` line",
+    );
+    env.repo.write(CI_YML, b"name: Build*\non: push\n");
+    refused(
+        &["--read", &read],
+        "is named `Build*`, which init does not write",
+    );
+    let jtac_yml = env.repo.path().join(".github/workflows/jtac.yml");
+    assert!(!jtac_yml.exists() && !env.repo.path().join(".jtac/signers").exists());
+
+    env.repo.write(CI_YML, b"name: ci\non: push\n");
+    let ran = env.init(&["--ci", "github", "--read", &read]);
+    assert!(
+        ran.stdout.contains("kept policy .jtac/policy.toml")
+            && ran
+                .stdout
+                .contains("its root job starts when \"ci\" completes)")
+            && ran.stdout.contains("require `test` on `main`"),
+        "{}",
+        ran.stdout
+    );
+    let text = std::fs::read_to_string(&jtac_yml).unwrap();
+    assert!(text.contains("    workflows: [\"ci\"]\n"), "{text}");
+    assert!(
+        !ran.stdout.contains("no `workflow_run` trigger"),
+        "{}",
+        ran.stdout
+    );
+
+    std::fs::write(&jtac_yml, "name: jtac\non:\n  push:\n").unwrap();
+    let ran = env.init(&["--ci", "github"]);
+    assert!(
+        ran.stdout
+            .contains("`.github/workflows/jtac.yml` was kept and has no `workflow_run` trigger")
+            && ran.stdout.contains("written for \"ci\""),
+        "{}",
+        ran.stdout
+    );
+}

@@ -206,7 +206,7 @@ sends its roots; the same push again succeeds
 
 | Command | Does |
 | --- | --- |
-| `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec; `--ci github` adds the CI workflow, the first `.jtac/signers` and a CI key (`docs/CI.md`). `--dry-run` writes nothing |
+| `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec; `--ci github` adds the CI workflow, the first `.jtac/signers` and a CI key, and `--read <id>=<workflow>[:<job>]` names a check CI already runs, read at the merge and run by no gate (`docs/CI.md`). `--dry-run` writes nothing |
 | `jtac check` | The gate on HEAD; a pass writes a signed root, and `--push <remote>` sends it. `--preview` writes nothing and is the one mode that runs on a dirty tree |
 | `jtac status` | Whether a push would pass; unpushed commits by coverage; waivers in effect |
 | `jtac why` | The last verdict's reasons, each with its rule, why, and the fix |
