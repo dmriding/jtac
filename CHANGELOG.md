@@ -27,6 +27,22 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.32) The GitHub action reads CI results (`DESIGN.md` section 15.2, M21, decision 67).
+  Started by a `workflow_run` trigger, when a workflow the policy reads completes, the
+  root job writes the results file from the forge's runs and passes it to
+  `jtac check --from`. It judges the completed commit, a re-run's result among them, and
+  every merge above the newest the CI gate reads, oldest first, and waits behind a result
+  still running, so each merge root names its parent. The old tip of each push is the forge's push list's. The step
+  that holds the CI key starts only for a push run of the default branch whose commit is
+  on the fetched branch's first-parent line. The job needs `actions: read`.
+  - `jtac check --from --results` exits 3, not 2, while a result it reads is still running,
+    whatever else is missing; with none running, a missing result and every other
+    refusal stay 2.
+  - The action refuses while the remote holds a tag of the branch's name.
+  - The action copies a `binary` input out of the work tree before it runs.
+  - `jtac init --ci github` still writes the push trigger, so `docs/CI.md` keeps "not
+    ready to adopt"; this repository's workflow is on the new one.
+
 - (0.2.31) A failed merge verdict is recorded (`DESIGN.md` section 15.2, M20, decision 66;
   issue 161 note 13). `jtac check --from` whose verdict fails writes a failure record, the
   root it would have written with the state `failed`, signed by the CI key at

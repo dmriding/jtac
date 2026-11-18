@@ -1,7 +1,8 @@
 //! The merge job's reading of each `ci` check (DESIGN.md section 15.2): the results file the
 //! forge adapter wrote, selection for HEAD's push to `--branch`, and one version 3 body per
 //! check. Every check is read before anything runs, so one result missing or pending
-//! answers 2 and writes nothing (`a_result_missing_or_pending_answers_2_and_writes_nothing`).
+//! writes nothing, and the answer is 3 while the forge still runs one and 2 otherwise
+//! (`a_result_missing_or_pending_writes_nothing_and_a_pending_one_answers_3`).
 
 use std::path::Path;
 
@@ -199,7 +200,7 @@ impl Refusal {
                 )
             })
             .collect();
-        ask(
+        let refusal = ask(
             format!(
                 "no result yet for commit {} pushed to {branch}: {}.",
                 &commit[..12],
@@ -214,7 +215,11 @@ impl Refusal {
                  {commit} --ci --reason <why>` records the merge as made around CI.",
                 again(a)
             ),
-        )
+        );
+        match waiting.iter().any(|w| w.state == "pending") {
+            true => refusal.not_yet(),
+            false => refusal,
+        }
     }
 }
 
@@ -275,6 +280,9 @@ mod tests {
         let w = &rows[4].what;
         assert!(w.contains("`test` is missing (job 'unit tests' of .github/workflows/ci.yml)"));
         assert!(w.contains("`<check>` is pending") && w.contains("0123456789ab pushed to main"));
+        let codes: Vec<u8> = rows.iter().map(|r| r.code).collect();
+        assert_eq!(codes, [2, 2, 2, 2, 3], "one pending result is exit 3");
+        assert_eq!(Refusal::ci_waiting(&waiting[..1], &head, &a).code, 2);
         assert!(
             rows[3].what.contains("0123456789ab's tree"),
             "{:?}",
