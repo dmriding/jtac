@@ -73,7 +73,8 @@ Policy version 2 lets a check name the workflow and job that already run it,
   exits 2 and writes no merge root.
 - `jtac init --ci github` still writes the push trigger. Under it and such a policy no
   commit reads covered, `verify --require-coverage` fails and `jtac release` refuses. This
-  repository's `.github/workflows/jtac.yml` is the one example of the other trigger.
+  repository's `.github/workflows/jtac.yml` is the one example of the other trigger, and
+  its `.jtac/policy.toml` of such a policy.
 
 Keep every check `run` until a release notes that `jtac init --ci github` writes that
 workflow. The file's format is `DESIGN.md` section 15.2; a team that writes it from its

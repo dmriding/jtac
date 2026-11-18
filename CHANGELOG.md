@@ -27,6 +27,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.33) This repository's own policy is version 2 (M21). `rust-test` and
+  `rust-test-windows` are read at the merge from the `coverage` and `test-windows` jobs of
+  `.github/workflows/ci.yml`; the local gate and the pull request job run the other checks
+  and name those two as CI's. The change touches `.jtac/`, so its own pull request and
+  merge are judged under the version 1 policy; the next merge is the first to read a
+  result. The binary is unchanged, and the action but for its version pin.
 - (0.2.32) The GitHub action reads CI results (`DESIGN.md` section 15.2, M21, decision 67).
   Started by a `workflow_run` trigger, when a workflow the policy reads completes, the
   root job writes the results file from the forge's runs and passes it to
