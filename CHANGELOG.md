@@ -8,6 +8,16 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Added
 
+- (0.2.34) `jtac init --ci github --read <id>=<workflow path>[:<job>]`, once for each check,
+  writes a version 2 policy that reads the named checks from CI (`DESIGN.md` section 15.2,
+  M21, decision 68). init proposes none. The workflow it writes takes its trigger from the
+  policy the tree will hold: where that reads a check from CI, the root job starts on
+  `workflow_run` for each file the policy names, by the `name:` the file gives, with
+  `actions: read`, and init prints the jobs to require, the tag rule and the every-push
+  rule. Refused before any write: a named file not in the work tree, a workflow whose name
+  init cannot write as it stands, and a policy already in the tree that lacks a named
+  check, with the lines to add. `docs/CI.md` now says how to adopt with checks read from
+  CI and how to move an adopted repository.
 - (0.2.24) The pure half of reading a check from CI (`DESIGN.md` section 15.2, M20, decision
   61). No command reads a result yet, and every gate still refuses a policy that holds a
   `ci` check. `jtac-core` gains node version 3, a check node that holds `observed` in place

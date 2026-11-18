@@ -6,7 +6,7 @@
 pub(crate) const MAX_ECHO_CHARS: usize = 256;
 
 /// `raw` escaped to printable ASCII, cut at a whole char past `MAX_ECHO_CHARS` with `…`.
-pub(crate) fn shown(raw: &str) -> String {
+pub fn shown(raw: &str) -> String {
     let mut out = String::new();
     for c in raw.chars() {
         let piece = if c == '\\' || !(' '..='~').contains(&c) {

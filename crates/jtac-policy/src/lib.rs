@@ -17,6 +17,7 @@ pub mod validate;
 
 pub use check::{Check, DEFAULT_TIMEOUT_SECS, Source};
 pub use defaults::{Detected, Js, Runner, default_policy};
+pub use echo::shown;
 pub use error::PolicyError;
 pub use facts::{Checks, facts};
 pub use glob::{Matcher, Matchers};

@@ -14,7 +14,8 @@ operator's.
    `.github/workflows/jtac.yml`, writes `.jtac/signers` when the repository has none (your
    line for every namespace, the CI key's confined to `jtac-ci-root-v1,jtac-release-v1`),
    makes a CI key under the user config directory (`jtac/ci/<owner>/<repo>_ed25519`), and
-   prints the steps below with your values filled in. The private key is never printed. It
+   prints the steps below with your values filled in. With `--read`, the policy it writes
+   reads the named checks from CI (below). The private key is never printed. It
    refuses before writing anything when the remote is not GitHub or the clone does not know
    the default branch (`git remote set-head origin --auto`).
 2. Add the CODEOWNERS line it prints, `/.jtac/ @<owner>`, so the forge asks a second human on
@@ -55,30 +56,95 @@ gates itself from its own tree before a release carries the change. The `root` j
 up to a hundred runs per branch (`queue: max`); a run dropped beyond that is re-run from
 the Actions tab with its own event, which restores the root.
 
-## Checks read from CI: not ready to adopt
+## Checks read from CI
 
 Policy version 2 lets a check name the workflow and job that already run it,
 `ci = { workflow = ".github/workflows/ci.yml", job = "test" }`, in place of `run`
-(`DESIGN.md` section 15.2). What this release does with one:
+(`DESIGN.md` section 15.2). The team's CI runs the tests once and no jtac gate runs them
+again:
 
 - `jtac check` and `jtac ci` run the `run` checks and the rules and name each `ci` check
   as unread. The developer's root lists them and reads `covered, ci unread` in `jtac audit`.
-- The root job reads each `ci` check from a results file:
-  `jtac check --from <head> --base <old tip> --results <file> --branch <name>`. With every
-  result in, the merge root holds them and the merge and the pull request's commits read
-  covered. A result still running exits 3, a missing one 2, and both write nothing. A check
-  CI concluded failed fails the verdict, and the failure record names the job and the run.
-- The action writes that file from the forge's runs when a listed workflow's completion
-  starts the root job (`workflow_run`, the table above). Started by a push it passes none,
-  exits 2 and writes no merge root.
-- `jtac init --ci github` still writes the push trigger. Under it and such a policy no
-  commit reads covered, `verify --require-coverage` fails and `jtac release` refuses. This
-  repository's `.github/workflows/jtac.yml` is the one example of the other trigger, and
-  its `.jtac/policy.toml` of such a policy.
+- The root job starts when a workflow the policy reads completes for a push to the default
+  branch (`workflow_run`, the table above), writes a results file from the forge's runs and
+  reads each `ci` check from it. With every result in, the merge root holds them and the
+  merge and the pull request's commits read covered. A result still running is a wait, and
+  later merges wait behind it; a missing one fails the job; both write nothing. A check CI
+  concluded failed, skipped or cancelled fails the verdict, and the failure record names the
+  job and the run.
+- The pull request job reads no result. What holds a merge on those jobs is the forge's own
+  required checks.
 
-Keep every check `run` until a release notes that `jtac init --ci github` writes that
-workflow. The file's format is `DESIGN.md` section 15.2; a team that writes it from its
-own forge can pass it to the root job today.
+### Adopt with it
+
+```sh
+jtac init --ci github --read rust-test=.github/workflows/ci.yml:test
+```
+
+`--read <id>=<workflow path>[:<job>]`, once for each check: the check's id, the definition
+file's path from the repository root, and the job by the name the forge reports, a matrix
+leg in full (`test (ubuntu-latest)`). With no job the run's own conclusion is the result.
+init proposes none. An id detection also found, `rust-test` above, is replaced; any other is
+added. The policy it writes is version 2 and printed in full, and the workflow's root job
+starts on `workflow_run` for each named file, listed by the `name:` the file gives.
+
+init refuses, before it writes anything:
+
+- a named file that is not in the work tree;
+- a workflow whose name is not in the one form init reads. The trigger lists names as
+  patterns and init reads the file without a YAML parser, so a name it read in part or
+  escaped wrong would never fire, silently. The form: the file starts with no byte-order
+  mark; `name: <name>` is the first line that is not blank or a comment, whole on that
+  line, and the next line is not indented under it; the name is letters, digits, spaces
+  and `-_./()&,:` with no space at either end, in double quotes where it holds a colon,
+  does not start with a letter or is a word YAML reads as a value (`on`, `yes`, `true`,
+  `y`); every other line at the left margin is a comment or a plain `key:` that is not
+  `name`, with no tag, anchor, `?`, `<<` or `---`, so a file that opens with `---` is
+  refused (#183); and every line ends in a line feed, alone or after a carriage return.
+  Give the file that form, or write `jtac.yml` by hand;
+- a policy already in the tree that lacks a named check: init never rewrites one, and
+  prints the lines to add.
+
+After the first merge, `jtac audit <old tip>..<merge>` reads the merge covered by the CI
+key. If no root job ran when the listed workflow finished, the name in `jtac.yml`'s
+`workflows:` is not the workflow's.
+
+Three things the forge keeps, which init prints with your values:
+
+- **Require the jobs the policy reads** in the default branch's ruleset, beside `jtac`.
+- **No tag named like the default branch.** GitHub's run listing cannot tell such a tag's
+  run from the branch's, so the root job writes no results file while one stands.
+- **Every listed workflow runs on every push to the default branch**: `on: push`, with no
+  `paths` filter. The root job starts only when such a run completes, so a workflow that
+  runs on pull requests alone never starts it and no merge gets a root, with no failed job
+  to say so. A pull request's run tests a trial merge, a tree no commit holds, and is
+  never read. A push a filter skipped is found by the next run that completes, as a
+  missing result that fails the root job.
+
+Renaming a workflow moves the trigger in `jtac.yml` in the same change; renaming a job moves
+the policy's `job`. Both files are protected, so each change is a finding a waiver clears.
+
+### Move an adopted repository
+
+1. Every clone's gate reads version 2 (0.2.21 or newer), and `jtac.yml` pins an action
+   release whose notes say it reads CI results.
+2. In `.jtac/policy.toml` set `version = 2` and give each check CI already runs its `ci`
+   line in place of `run` and `timeout_secs`.
+3. `git rm .github/workflows/jtac.yml`, then `jtac init --ci github`: it keeps the keys and
+   the trust file and writes the workflow with the trigger that policy needs.
+4. Commit both in one pull request. It changes `.jtac/` and `.github/`, so it takes a
+   `JT-PROT-001` waiver for each path and is itself judged under the old policy; the merge
+   after it is the first to read a result.
+
+Never move the policy alone: started by a push, the root job passes no results file, exits
+2 and writes no merge root, so no commit reads covered, `verify --require-coverage` fails
+and `jtac release` refuses. init says so when it keeps a workflow with no `workflow_run`
+trigger under such a policy. This repository's `.github/workflows/jtac.yml` and
+`.jtac/policy.toml` are a hand-written example, built from the tree and not a release.
+
+The results file's format is `DESIGN.md` section 15.2; a team on another forge writes it
+from its own runs and passes it to
+`jtac check --from <head> --base <old tip> --results <file> --branch <name>`.
 
 ## The release job
 
