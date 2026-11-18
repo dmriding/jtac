@@ -316,7 +316,8 @@ fn a_second_check_on_a_covered_head_keeps_the_root_and_the_next_commits_chain_to
 /// a tool version without a toolchain the scrubbed check environment cannot find.
 /// Issue 27: the check in the policy fetches the other clone's root refs, so the tip's ref
 /// appears between this run's look at it and its own write. The ref is created, never
-/// replaced; the loser reports the root that won.
+/// replaced; the loser reports the root that won. The second clone forgets `origin/HEAD`:
+/// decision 69 writes no root on a tip origin's default branch holds.
 #[test]
 fn a_check_that_loses_the_race_to_the_same_tip_reports_the_root_that_won() {
     let first = Repo::init(&[]);
@@ -337,6 +338,7 @@ fn a_check_that_loses_the_race_to_the_same_tip_reports_the_root_that_won() {
 
     let second = Repo::clone_of(&first);
     keyed(&second);
+    second.git(&["remote", "set-head", "origin", "--delete"]);
     assert_eq!(second.git(&["rev-parse", "HEAD"]), head);
     assert!(root_refs(&second).is_empty());
     let (code, out) = json(&second, &["check", "--json"]);
@@ -632,6 +634,122 @@ fn the_nearest_covered_ancestor_is_on_the_first_parent_line_or_none_at_all() {
     assert_eq!(root["covers"], serde_json::json!([format!("sha1:{merge}")]));
     assert_eq!(root["parents"][0]["commit"], format!("sha1:{x}"));
     assert_eq!(root["parents"].as_array().unwrap().len(), 1, "{root}");
+}
+
+/// DESIGN.md section 10.3, decision 69. A merge root trails its merge, so a branch cut in
+/// between has no covered ancestor nearer than the merge before: diffed from there it was
+/// judged for the merge's change, and a branch that merged `main` in for everyone's since.
+/// The base is what origin's default branch already holds unless a root of the branch's own
+/// is nearer; without `origin/HEAD` the old base stands and a note says what to run.
+#[test]
+fn a_branch_cut_from_a_merge_with_no_root_is_judged_on_its_own_commits() {
+    let upstream = Repo::init(&[]);
+    with_policy(&upstream, "");
+    let two = b"#[test]\nfn keeps() {}\n#[test]\nfn stays() {}\nfn a() {}\n";
+    upstream.write("src/lib.rs", two);
+    let first = upstream.commit("base");
+    keyed(&upstream);
+    assert_eq!(jtac(&upstream, &["check"]).code, 0);
+    upstream.write("src/lib.rs", b"#[test]\nfn stays() {}\nfn a() {}\n");
+    let merge = upstream.commit("a merge that drops a test, its root not landed");
+
+    let repo = Repo::clone_of(&upstream);
+    keyed(&repo);
+    repo.git(&["fetch", "-q", "origin", "+refs/jtac/*:refs/jtac/*"]);
+    repo.git(&["switch", "-q", "-c", "feature"]);
+    repo.write("own.txt", b"own\n");
+    let own = repo.commit("own");
+    let (code, _) = json(&repo, &["check", "--preview", "--json", "--base", &first]);
+    assert_eq!(code, 1, "the merge's change blocks when it is in the diff");
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["commit"], merge);
+    assert_eq!(v["base"]["from"], "merge base with origin/main");
+    let root = root_json(&repo, &own);
+    assert_eq!(root["covers"], serde_json::json!([format!("sha1:{own}")]));
+    assert_eq!(root["parents"], serde_json::json!([]));
+
+    repo.write("next.txt", b"next\n");
+    let next = repo.commit("next");
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["commit"], own);
+    assert_eq!(v["base"]["from"], "nearest covered ancestor");
+
+    upstream.write("src/lib.rs", b"fn a() {}\n");
+    let landed = upstream.commit("another merge, another dropped test");
+    repo.git(&["fetch", "-q", "origin"]);
+    let main_in = ["merge", "-q", "--no-ff", "--no-gpg-sign", "-m", "main in"];
+    repo.git(&[&main_in[..], &["origin/main"]].concat());
+    let merged = repo.git(&["rev-parse", "HEAD"]);
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["commit"], landed);
+    assert_eq!(v["base"]["from"], "merge base with origin/main");
+    let root = root_json(&repo, &merged);
+    assert_eq!(
+        root["covers"],
+        serde_json::json!([format!("sha1:{merged}")])
+    );
+    assert_eq!(root["parents"][0]["commit"], format!("sha1:{next}"));
+
+    repo.git(&["remote", "set-head", "origin", "--delete"]);
+    let (code, v) = json(&repo, &["check", "--preview", "--json"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["base"]["commit"], next);
+    let notes = v["notes"].to_string();
+    assert!(
+        notes.contains("git remote set-head origin --auto"),
+        "{notes}"
+    );
+}
+
+/// Decision 69 reads origin's default branch on every run, so each state of that read has
+/// to answer: a remote that renamed the branch leaves `origin/HEAD` naming one that is gone,
+/// which is no name and a note, never git's failure under every `check`, and a tag of the
+/// gone branch's name is not the branch; a remote that holds nothing yet has no default
+/// branch, and the note's command would fail there; another origin ref whose object is
+/// missing changes nothing, and the named branch's own missing object refuses.
+#[test]
+fn a_dangling_origin_head_reads_as_no_default_branch() {
+    let upstream = passing();
+    let repo = Repo::clone_of(&upstream);
+    keyed(&repo);
+    let gone = "refs/remotes/origin/renamed";
+    repo.git(&["symbolic-ref", "refs/remotes/origin/HEAD", gone]);
+    repo.git(&["switch", "-q", "-c", "feature"]);
+    repo.write("own.txt", b"own\n");
+    repo.commit("own");
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["from"], "merge base with main");
+    assert!(v["root"].is_string(), "{v}");
+    let notes = v["notes"].to_string();
+    assert!(
+        notes.contains("git remote set-head origin --auto"),
+        "{notes}"
+    );
+    let (code, v) = json(&repo, &["check", "--preview", "--json", "--base", "HEAD~1"]);
+    assert_eq!(code, 0, "{v}");
+    repo.git(&["update-ref", &format!("refs/tags/{gone}"), "HEAD"]);
+    let lost = b"0000000000000000000000000000000000000001\n";
+    repo.write(".git/refs/remotes/origin/0lost", lost);
+    let (code, v) = json(&repo, &["check", "--preview", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["from"], "merge base with main");
+    repo.write(".git/refs/remotes/origin/renamed", lost);
+    let ran = jtac(&repo, &["check", "--preview", "--base", "HEAD~1"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
+
+    let empty = Repo::bare(&[]);
+    let first = Repo::clone_of(&empty);
+    with_policy(&first, "");
+    first.write("src/lib.rs", b"fn a() {}\n");
+    first.commit("base");
+    keyed(&first);
+    let (code, v) = json(&first, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!v["notes"].to_string().contains("set-head"), "{v}");
 }
 
 #[test]

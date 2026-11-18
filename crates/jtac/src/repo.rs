@@ -331,16 +331,71 @@ pub fn on_disk_matches(repo: &Path, path: &str, sha: &str) -> Result<bool, RepoE
     Ok(text(&git(repo, &["hash-object", "--", path])?) == sha)
 }
 
+/// What the remote's default branch holds of HEAD's history (DESIGN.md section 10.3,
+/// decision 69): the merge base of HEAD with `origin_default`, and that ref's short name.
+/// Never the upstream, which for a pushed branch is the branch itself, nor a local branch,
+/// whose unpushed commits no gate has seen. `None` without the ref or a common ancestor.
+/// Nothing is fetched: the ref is the clone's, as stale or as moved as the clone left it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Landed {
+    /// The merge base, hex.
+    pub commit: String,
+    /// `origin/main`.
+    pub shown: String,
+}
+
+/// `Landed` for `head`, read from this clone alone.
+pub fn landed(repo: &Path, head: &Head) -> Result<Option<Landed>, RepoError> {
+    let Some((full, shown)) = origin_default(repo)? else {
+        return Ok(None);
+    };
+    let found = probe(repo, &["merge-base", &full, &head.commit.hex()], 1)?;
+    Ok(found.map(|commit| Landed { commit, shown }))
+}
+
+/// The branch `refs/remotes/origin/HEAD` names, full and short, when that exact ref is in
+/// this clone: the one read of origin's default branch. A symref left pointing at a branch
+/// the remote renamed is no name, never a git failure; `show-ref --verify` matches the ref
+/// alone, where `rev-parse` would find a tag of that name; a ref whose object is missing
+/// refuses (`a_dangling_origin_head_reads_as_no_default_branch` holds all three).
+fn origin_default(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
+    let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
+    let Some(full) = probe(repo, &name, 1)? else {
+        return Ok(None);
+    };
+    if probe(repo, &["show-ref", "--verify", "--quiet", &full], 1)?.is_none() {
+        return Ok(None);
+    }
+    let shown = full
+        .strip_prefix("refs/remotes/")
+        .unwrap_or(&full)
+        .to_owned();
+    Ok(Some((full, shown)))
+}
+
+/// Whether this clone holds branches of `origin` and names none as its default, so `landed`
+/// has nothing to read and the base falls back. A remote that holds nothing yet has no
+/// default branch to name. Names alone are listed: the default format reads each object.
+pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
+    let names = ["for-each-ref", "--count=1", "--format=%(refname)"];
+    let held = git(repo, &[&names[..], &["refs/remotes/origin/"]].concat())?;
+    Ok(!text(&held).is_empty() && origin_default(repo)?.is_none())
+}
+
 /// The base the rules diff from (DESIGN.md section 10.3): the merge base of HEAD with
-/// `explicit`, else the `nearest` covered ancestor, else the merge base with the upstream,
-/// else with the default branch. When that is HEAD itself, or nothing names a candidate, the
-/// rules judge the last commit: the first parent, or the empty tree for a parentless HEAD. An
-/// explicit rev that does not resolve or shares no history is the caller's refusal.
+/// `explicit`; else the `nearest` covered ancestor when it descends from what `landed`
+/// names, or nothing is named, and the `landed` merge base when it does not
+/// (`a_branch_cut_from_a_merge_with_no_root_is_judged_on_its_own_commits`); else the merge
+/// base with the upstream, else with the default branch. When that is HEAD itself, or
+/// nothing names a candidate, the rules judge the last commit: the first parent, or the
+/// empty tree for a parentless HEAD. An explicit rev that does not resolve or shares no
+/// history is the caller's refusal.
 pub fn base(
     repo: &Path,
     head: &Head,
     explicit: Option<&str>,
     nearest: Option<&str>,
+    landed: Option<&Landed>,
 ) -> Result<Base, RepoError> {
     let commit = head.commit.hex();
     let (candidate, reason) = match (explicit, nearest) {
@@ -350,10 +405,25 @@ pub fn base(
             let base = merge_base(repo, rev, &commit)?;
             (Some(base), format!("--base {rev}"))
         }
-        (None, Some(covered)) => (
-            Some(covered.to_owned()),
-            "nearest covered ancestor".to_owned(),
-        ),
+        (None, Some(covered)) => {
+            let own = |l: &Landed| {
+                probe(
+                    repo,
+                    &["merge-base", "--is-ancestor", &l.commit, covered],
+                    1,
+                )
+            };
+            match landed {
+                Some(l) if own(l)?.is_none() => (
+                    Some(l.commit.clone()),
+                    format!("merge base with {}", l.shown),
+                ),
+                _ => (
+                    Some(covered.to_owned()),
+                    "nearest covered ancestor".to_owned(),
+                ),
+            }
+        }
         (None, None) => match candidate(repo)? {
             Some((full, shown)) => match probe(repo, &["merge-base", &full, &commit], 1)? {
                 Some(base) => (Some(base), format!("merge base with {shown}")),
@@ -431,12 +501,8 @@ fn candidate(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
     )? {
         return Ok(Some(remote(full)));
     }
-    if let Some(full) = probe(
-        repo,
-        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-        1,
-    )? {
-        return Ok(Some(remote(full)));
+    if let Some(named) = origin_default(repo)? {
+        return Ok(Some(named));
     }
     for name in ["main", "master"] {
         let full = format!("refs/heads/{name}");

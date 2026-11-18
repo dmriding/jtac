@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_checks::Cache;
-use jtac_core::{FromHead, GateRef, Root, Sha256Digest, Ts};
+use jtac_core::{Body, FromHead, GateRef, Root, Scope, Sha256Digest, Ts};
 use jtac_policy::Checks;
 use jtac_sign::Identity;
 use jtac_store::{Store, StoredRoot};
@@ -52,13 +52,26 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let mut notes: Vec<String> = roots.notes().collect();
     let covered = chain::covered(&repo, &roots, &head)?;
     let nearest = chain::nearest(&repo, &covered, &head)?;
-    let base =
-        repo::base(&repo, &head, a.base.as_deref(), nearest.as_deref()).map_err(|e| {
-            match &a.base {
-                Some(rev) => Refusal::base(rev, &e),
-                None => Refusal::repository(&e),
-            }
-        })?;
+    let landed = repo::landed(&repo, &head).map_err(|e| Refusal::repository(&e))?;
+    let base = repo::base(
+        &repo,
+        &head,
+        a.base.as_deref(),
+        nearest.as_deref(),
+        landed.as_ref(),
+    )
+    .map_err(|e| match &a.base {
+        Some(rev) => Refusal::base(rev, &e),
+        None => Refusal::repository(&e),
+    })?;
+    if a.base.is_none() && repo::default_unnamed(&repo).map_err(|e| Refusal::repository(&e))? {
+        notes.push(
+            "this clone does not name origin's default branch (`origin/HEAD` names no branch \
+             it holds), so the base ignores what that branch already holds; run `git remote \
+             set-head origin --auto`"
+                .to_owned(),
+        );
+    }
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut file_cache = store.cache();
     let cache: Option<&mut dyn Cache> = signer.as_ref().map(|_| &mut file_cache as &mut dyn Cache);
@@ -104,7 +117,13 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         from: None,
     };
     let chain = || chain::chain(&repo, &store, &covered, &head, &j.base.commit);
-    let root_id = site.commit(&j, chain, &mut notes)?.map(|w| w.id);
+    let root_id = match landed.filter(|l| withheld(l, &j, existing.is_some())) {
+        Some(l) => {
+            notes.push(not_this_clones(&l.shown, &head.commit.hex()));
+            None
+        }
+        None => site.commit(&j, chain, &mut notes)?.map(|w| w.id),
+    };
     let sent = match (&a.push, root_id) {
         (Some(remote), Some(_)) => Some(rootpush::send(&store, remote, &[head.commit])),
         (Some(_), None) => {
@@ -121,6 +140,31 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     printed.warn = state::write(&store, &out).err();
     printed.note = sent.map(|s| s.text).filter(|t| !t.is_empty());
     Ok(printed)
+}
+
+/// Whether a passing run leaves no root (DESIGN.md section 10.3, decision 69): the remote's
+/// default branch already holds HEAD, HEAD has none, and no commit waiver names it. Such a
+/// root would vouch for a commit that left another machine and stop the merge job, which
+/// keeps only its own; the waiver is the bypass merge's recovery and still gets its root
+/// (`a_commit_the_default_branch_holds_gets_no_root_unless_a_waiver_names_it`).
+fn withheld(landed: &repo::Landed, j: &Judged, rooted: bool) -> bool {
+    let waived = j.levers.iter().any(
+        |l| matches!(&l.node.body, Body::Lever(b) if matches!(b.scope, Some(Scope::Commit { .. }))),
+    );
+    landed.commit == j.head.commit.hex() && j.verdict.pass && !rooted && !waived
+}
+
+/// The note a withheld root leaves: what, why, and the three ways on.
+fn not_this_clones(shown: &str, hex: &str) -> String {
+    let short = &hex[..12];
+    format!(
+        "no root was written: {shown} already holds {short}, so this run judged a commit that \
+         left another machine, and a root from here would stand where CI's merge root belongs. \
+         To push a branch cut from it, commit first; to wait for CI's root, `git fetch origin \
+         '+refs/jtac/*:refs/jtac/*'`; if it reached {shown} around the gate, say why with `jtac \
+         waive {short} --reason \"<why>\"` (add `--ci` where CI should have covered it), then \
+         `jtac check` again"
+    )
 }
 
 /// What a root is written with, for `check` and the merge job alike.

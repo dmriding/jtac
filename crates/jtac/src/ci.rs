@@ -42,8 +42,8 @@ pub fn ci(a: &CiArgs, cwd: &Path) -> Result<Printed, Refusal> {
         return Err(Refusal::shallow());
     }
     let base_tip = repo::peel(&repo, &format, &a.base).map_err(|_| Refusal::rev("ci", &a.base))?;
-    let base =
-        repo::base(&repo, &head, Some(&a.base), None).map_err(|e| Refusal::base(&a.base, &e))?;
+    let base = repo::base(&repo, &head, Some(&a.base), None, None)
+        .map_err(|e| Refusal::base(&a.base, &e))?;
     let base_trust = Signers::at(&repo, &base_tip, &a.base)?;
     let adoption = adoption_of(&base_trust);
     let signers = match &a.signers {

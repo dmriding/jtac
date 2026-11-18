@@ -8,7 +8,11 @@ Before anything is merged:
    notes. Post the acceptance comment from section 10 on your first pull
    request and add a `Signed-off-by` trailer with your real name and email to
    every commit. A merge that is exactly the clean merge of its parents, such
-   as the "Update branch" button writes, is exempt.
+   as the "Update branch" button writes, is exempt. The acceptance check runs
+   on `pull_request_target`, which GitHub blocks in public repositories from
+   2026-12-02 unless an Actions policy allows it: this repository's policy
+   allows it for `.github/workflows/cla.yml` alone (issue 163). A new trigger
+   in that file has to be added to the policy too.
 2. **Read `DESIGN.md`.** It is the source of truth. If the code and the design
    disagree, say so in the pull request instead of picking one.
 3. **Pass the quality bars.** Every commit runs clean through:

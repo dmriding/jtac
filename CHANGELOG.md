@@ -37,6 +37,13 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.35) The local gate's base (`DESIGN.md` section 10.3, M22, decision 69). `jtac check`
+  diffs from the merge base with the remote's default branch, the one `origin/HEAD` names,
+  unless a covered ancestor of the branch's own is nearer the tip: a branch cut from a
+  merge whose root has not landed is judged on its own commits, and so is one that merged
+  the default branch in. `check` writes no root on a commit that branch already holds
+  unless a commit waiver names it, and says how to go on; such a root made the merge job
+  refuse. A clone whose `origin` names no default branch keeps the old base, with a note.
 - (0.2.33) This repository's own policy is version 2 (M21). `rust-test` and
   `rust-test-windows` are read at the merge from the `coverage` and `test-windows` jobs of
   `.github/workflows/ci.yml`; the local gate and the pull request job run the other checks
