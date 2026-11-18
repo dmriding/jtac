@@ -31,7 +31,7 @@ pub struct Planned {
     names: Vec<String>,
     required: Vec<String>,
     workflow_there: bool,
-    /// A workflow is there with no `workflow_run` trigger, and the policy reads CI.
+    /// A workflow is there without the trigger line init writes, and the policy reads CI.
     deaf: bool,
     signers_there: bool,
     key: PathBuf,
@@ -86,7 +86,7 @@ pub fn plan(
     let workflow_there = repo.join(WORKFLOW_PATH).symlink_metadata().is_ok();
     let kept = std::fs::read_to_string(repo.join(WORKFLOW_PATH)).unwrap_or_default();
     Ok(Some(Planned {
-        deaf: workflow_there && !names.is_empty() && !kept.contains("workflow_run:"),
+        deaf: workflow_there && !names.is_empty() && !ciwf::listens(&kept, &names),
         names,
         required,
         workflow_there,
@@ -197,11 +197,12 @@ pub fn apply(out: &mut InitOutput, p: Option<&Planned>, dry: bool) -> Result<(),
     }
     if p.deaf {
         out.notes.push(format!(
-            "`{WORKFLOW_PATH}` was kept and has no `workflow_run` trigger, while the policy \
-             reads checks from CI: started by a push its root job reads no result and writes \
-             no root. Remove the file and run `jtac init --ci github` again to have it \
-             written for {}, or edit it by docs/CI.md in the jtac repository",
-            ciwf::listed(&p.names)
+            "`{WORKFLOW_PATH}` was kept and holds no line `{}` under a `workflow_run:` line, \
+             the trigger init writes for this policy, which reads checks from CI: a root job no listed \
+             workflow starts reads no result and writes no root. A file that lists them in \
+             another spelling needs nothing; otherwise remove it and run `jtac init --ci \
+             github` again, or edit it by docs/CI.md in the jtac repository",
+            ciwf::trigger_line(&p.names)
         ));
     }
     let both = format!("trust file {TRUST_PATH} (your line and the CI key's)");
@@ -315,12 +316,12 @@ impl Refusal {
             format!(
                 "Give `{file}` that form, then run `jtac init --ci github` again with the \
                  same flags: no byte-order mark; `name: <name>` as the first line that is \
-                 not blank or a comment, whole on that line, the next line not indented \
-                 under it; the name of letters, digits, spaces and `{}` with no space at \
+                 not blank or a comment, whole on that line, one `---` line allowed before \
+                 it, the next line not indented under it; the name of letters, digits, spaces and `{}` with no space at \
                  either end, in double quotes where it holds a colon, does not start with a \
                  letter, or is a word YAML reads as a value (`on`, `yes`, `true`, `y`); \
                  every other line at the left margin a comment or a plain `key:` that is \
-                 not `name`, with no tag, anchor, `?`, `<<` or `---`; each line ended by a \
+                 not `name`, with no tag, anchor, `?`, `<<` or further `---`; each line ended by a \
                  line feed, alone or after a carriage return. Or write `{WORKFLOW_PATH}` by \
                  hand (docs/CI.md in the jtac repository).",
                 wfname::PUNCTUATION

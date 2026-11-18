@@ -37,6 +37,17 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.36) Three leftovers of policy version 2 (issues 177, 182, 183).
+  - `jtac replay <commit> --record` replays a failure record as `replay` does a root, and
+    holds it when its verdict fails again. The output gains `document`; a root replayed
+    beside a record, and the refusal for a commit that holds a record and no root, name
+    `--record`.
+  - `jtac show` prints the failure records the range's commits hold, apart from the refs a
+    push sends; JSON gains `records`. The merge job's refusal of a standing record names
+    `jtac show`.
+  - `jtac init --ci github` reads a workflow that opens with one `---` line, and notes a
+    kept `jtac.yml` that does not hold the `workflows:` line it would write under
+    `workflow_run:`, where it tested for the text `workflow_run:` alone.
 - (0.2.35) The local gate's base (`DESIGN.md` section 10.3, M22, decision 69). `jtac check`
   diffs from the merge base with the remote's default branch, the one `origin/HEAD` names,
   unless a covered ancestor of the branch's own is nearer the tip: a branch cut from a
@@ -91,7 +102,6 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
     the document's own text adds no line to a note or a refusal.
   - A ref on the tip that holds no root is refused as a standing root is, with the ref to
     delete; it was a store error.
-  - `jtac show` and `jtac replay` do not read a record yet (issue 177).
 - (0.2.30) The merge job reads a check from CI (`DESIGN.md` section 15.2, M20, decision 65;
   issue 161). `jtac check --from` takes `--results <file>`, the results file a forge adapter
   writes for the commit, and with it `--branch <name>`, the branch's short name as the forge

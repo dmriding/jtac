@@ -95,12 +95,13 @@ init refuses, before it writes anything:
   patterns and init reads the file without a YAML parser, so a name it read in part or
   escaped wrong would never fire, silently. The form: the file starts with no byte-order
   mark; `name: <name>` is the first line that is not blank or a comment, whole on that
-  line, and the next line is not indented under it; the name is letters, digits, spaces
+  line, with at most one `---` line before it, alone or with a comment, and the next line
+  is not indented under it; the name is letters, digits, spaces
   and `-_./()&,:` with no space at either end, in double quotes where it holds a colon,
   does not start with a letter or is a word YAML reads as a value (`on`, `yes`, `true`,
   `y`); every other line at the left margin is a comment or a plain `key:` that is not
-  `name`, with no tag, anchor, `?`, `<<` or `---`, so a file that opens with `---` is
-  refused (#183); and every line ends in a line feed, alone or after a carriage return.
+  `name`, with no tag, anchor, `?`, `<<` or further `---`; and every line ends in a line
+  feed, alone or after a carriage return.
   Give the file that form, or write `jtac.yml` by hand;
 - a policy already in the tree that lacks a named check: init never rewrites one, and
   prints the lines to add.
@@ -138,8 +139,9 @@ the policy's `job`. Both files are protected, so each change is a finding a waiv
 
 Never move the policy alone: started by a push, the root job passes no results file, exits
 2 and writes no merge root, so no commit reads covered, `verify --require-coverage` fails
-and `jtac release` refuses. init says so when it keeps a workflow with no `workflow_run`
-trigger under such a policy. This repository's `.github/workflows/jtac.yml` and
+and `jtac release` refuses. init says so when the workflow it keeps under such a policy
+does not hold the `workflows:` line it would write, under `workflow_run:` and spelled as
+it writes it. This repository's `.github/workflows/jtac.yml` and
 `.jtac/policy.toml` are a hand-written example, built from the tree and not a release.
 
 The results file's format is `DESIGN.md` section 15.2; a team on another forge writes it
