@@ -764,6 +764,37 @@ fn a_pruning_fetch_deletes_an_unpushed_root_and_the_refusal_names_the_cause() {
     assert!(origin.command("git", &held).status.success(), "sent");
 }
 
+/// What the no-root refusal says of `--no-verify`, held to `audit`: a commit pushed around
+/// the hook reads absent until a later root's walk covers it, and no walk reaches a commit
+/// the default branch holds (decision 69), which stays absent under the next root.
+#[test]
+fn a_bypassed_commit_is_covered_by_a_later_root_on_a_branch_and_not_on_the_default_branch() {
+    let origin = Repo::bare(&[]);
+    let repo = Repo::clone_of(&origin);
+    with_policy(&repo, "");
+    repo.commit("base");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    keyed(&repo);
+    install_hook(&repo);
+    let around = |file: &str, branch: &str| {
+        repo.write(file, b"around\n");
+        let bypassed = repo.commit("pushed around the hook");
+        repo.git(&["push", "-q", "--no-verify", "origin", branch]);
+        repo.write(&format!("next-{file}"), b"next\n");
+        repo.commit("next");
+        assert_eq!(jtac(&repo, &["check"]).code, 0);
+        let out = jtac(&repo, &["audit", "--json", &format!("{bypassed}~1..HEAD")]);
+        let v: Value = serde_json::from_str(&out.stdout).unwrap();
+        let rows = v["rows"].as_array().unwrap().clone();
+        let of = |r: &Value| r["commit"] == format!("sha1:{bypassed}");
+        rows.into_iter().find(of).unwrap()["state"].clone()
+    };
+    assert_eq!(around("d.txt", "main"), "absent");
+    repo.git(&["switch", "-q", "-c", "feature"]);
+    assert_eq!(around("f.txt", "feature"), "covered");
+}
+
 /// Section 15.2: the hook and `status` ask what the local gate judged, which a partial
 /// root says in full, so a root that lists a `ci` check unread carries the push as any
 /// developer root does, and the remote holds it as written.

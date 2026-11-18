@@ -386,18 +386,29 @@ pub enum Unnamed {
     Remote(Option<String>),
 }
 
-/// `Unnamed` for this clone, `None` where the default branch is named. Names alone are
-/// listed: the default `for-each-ref` format reads each object.
+/// `Unnamed` for this clone, `None` where the default branch is named. A remote is one the
+/// clone's own config gives a URL: `git remote` also lists a name any other scope sets a key
+/// for, which no `git remote rename` finds. Refs are listed by name: the default
+/// `for-each-ref` format reads each object.
 pub fn unnamed(repo: &Path) -> Result<Option<Unnamed>, RepoError> {
     if origin_default(repo)?.is_some() {
         return Ok(None);
     }
-    let listed = text(&git(repo, &["remote"])?);
-    let remotes: Vec<&str> = listed.lines().collect();
-    match remotes[..] {
+    let urls = ["config", "--local", "--name-only", "--get-regexp"];
+    let listed =
+        probe(repo, &[&urls[..], &[r"^remote\..*\.url$"]].concat(), 1)?.unwrap_or_default();
+    let named = |key: &str| {
+        Some(
+            key.strip_prefix("remote.")?
+                .strip_suffix(".url")?
+                .to_owned(),
+        )
+    };
+    let remotes: Vec<String> = listed.lines().filter_map(named).collect();
+    match &remotes[..] {
         [] => return Ok(None),
-        _ if remotes.contains(&"origin") => {}
-        [only] => return Ok(Some(Unnamed::Remote(Some(only.to_owned())))),
+        _ if remotes.iter().any(|name| name == "origin") => {}
+        [only] => return Ok(Some(Unnamed::Remote(Some(only.clone())))),
         _ => return Ok(Some(Unnamed::Remote(None))),
     }
     let names = ["for-each-ref", "--count=1", "--format=%(refname)"];

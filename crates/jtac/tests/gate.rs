@@ -755,8 +755,10 @@ fn a_dangling_origin_head_reads_as_no_default_branch() {
 /// The default-branch note names one command per state, since `set-head --auto` fails where
 /// the default branch was never fetched and cannot run with no remote named `origin`: a
 /// clone that tracks single branches is told the fetch that brings it, one whose remote has
-/// another name is told the rename, and a repository with no remote is told nothing. Each
-/// command is run here and must leave no note.
+/// another name is told the rename, its name as one shell word, and a repository with no
+/// remote is told nothing. A remote is one this clone's config gives a URL: a key alone,
+/// as a global `remote.origin.prune` sets, is none. Each command is run here and must
+/// leave no note.
 #[test]
 fn each_clone_that_names_no_default_branch_is_told_the_command_that_works_there() {
     let noted = |repo: &Repo| {
@@ -765,8 +767,16 @@ fn each_clone_that_names_no_default_branch_is_told_the_command_that_works_there(
         v["notes"].to_string()
     };
     let upstream = passing();
+    upstream.git(&["config", "remote.elsewhere.prune", "true"]);
     assert!(!noted(&upstream).contains("origin"), "no remote, no note");
     upstream.git(&["branch", "dev"]);
+
+    let wide = Repo::clone_of(&upstream);
+    keyed(&wide);
+    wide.git(&["remote", "set-head", "origin", "--delete"]);
+    let notes = noted(&wide);
+    assert!(notes.contains("run `git remote set-head origin"), "{notes}");
+    assert!(!notes.contains("set-branches"), "{notes}");
 
     let narrow = Repo::clone_of(&upstream);
     keyed(&narrow);
@@ -814,6 +824,19 @@ fn each_clone_that_names_no_default_branch_is_told_the_command_that_works_there(
         "{notes}"
     );
     renamed.git(&["remote", "remove", "second"]);
+    renamed.git(&["config", "remote.origin.prune", "true"]);
+    let named = "git remote rename upstream origin";
+    assert!(noted(&renamed).contains(named), "a key is no remote");
+    renamed.git(&["config", "--unset", "remote.origin.prune"]);
+    for (name, shown) in [
+        ("a;touch${IFS}pwned", "rename 'a;touch${IFS}pwned' origin`"),
+        ("a`b", "rename <remote> origin` on the remote that holds"),
+    ] {
+        renamed.git(&["remote", "rename", "upstream", name]);
+        let notes = noted(&renamed);
+        assert!(notes.contains(shown), "{notes}");
+        renamed.git(&["remote", "rename", name, "upstream"]);
+    }
     renamed.git(&["remote", "rename", "upstream", "origin"]);
     assert!(
         !noted(&renamed).contains("git remote"),

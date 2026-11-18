@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_checks::Cache;
+use jtac_checks::git::quoted;
 use jtac_core::{Body, FromHead, GateRef, Root, Scope, Sha256Digest, Ts};
 use jtac_policy::Checks;
 use jtac_sign::Identity;
@@ -154,6 +155,7 @@ fn withheld(landed: &repo::Landed, j: &Judged, rooted: bool) -> bool {
 /// what the base loses, and the command for that state
 /// (`each_clone_that_names_no_default_branch_is_told_the_command_that_works_there`).
 fn default_note(unnamed: &repo::Unnamed) -> String {
+    const PLACE: &str = "<remote>";
     const LOST: &str = "so the base ignores what that branch already holds";
     const HEAD: &str = "this clone does not name origin's default branch (`origin/HEAD` names \
                         no branch it holds)";
@@ -166,13 +168,14 @@ fn default_note(unnamed: &repo::Unnamed) -> String {
              set-head origin --auto`"
         ),
         repo::Unnamed::Remote(only) => {
-            let named = only.as_deref().filter(|name| !name.contains('`'));
+            let named = only.as_deref().map(|name| quoted(name, PLACE));
+            let known = named.as_deref().filter(|name| *name != PLACE);
             format!(
                 "no remote of this clone is named `origin`, the one name the default branch is \
                  read under, {LOST} and a commit it holds still gets a root; run `git remote \
                  rename {} origin`{}",
-                named.unwrap_or("<remote>"),
-                match named {
+                known.unwrap_or(PLACE),
+                match known {
                     Some(_) => "",
                     None => " on the remote that holds the default branch",
                 }

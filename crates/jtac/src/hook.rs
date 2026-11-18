@@ -358,8 +358,9 @@ impl Refusal {
     /// A ref the decision refused.
     fn push(r: &Refuse, at: &At) -> Self {
         const BYPASS: &str = "Do not add `--no-verify`: the commit would land with no root of \
-                              its own, absent until a later root covers it and shown by `jtac \
-                              audit` under that root from then on.";
+                              its own and read as absent until a later root covers it, which \
+                              `jtac audit` then names. None covers a commit the default branch \
+                              holds: there it stays absent until a signed waiver.";
         let raw = at.remote_ref.trim_start_matches("refs/heads/");
         let branch = if raw.contains('`') { "<branch>" } else { raw };
         let remote_ref = quoted(at.remote_ref, "<ref>");
@@ -383,8 +384,8 @@ impl Refusal {
                     None => format!(
                         "Run `jtac check` with {} checked out, then push again. If `check` \
                          passed here before, a pruning fetch since (`git fetch --prune`, or \
-                         `fetch.prune` set) deleted its root, which the remote did not hold \
-                         yet; `check` writes it again. {BYPASS}",
+                         `fetch.prune` or `remote.<name>.prune` set) deleted its root, which \
+                         the remote did not hold yet. {BYPASS}",
                         at.tip
                     ),
                 },
@@ -683,11 +684,12 @@ mod tests {
             assert_eq!(r.kind, *kind, "{r:?}");
             assert!(r.text().contains(&format!("\n{kind}: ")), "{r:?}");
         }
-        assert!(
-            Refusal::push(&Refuse::Absent, &at)
-                .how
-                .contains("jtac check")
-        );
+        for told in [&at, &stale] {
+            let how = Refusal::push(&Refuse::Absent, told).how;
+            assert!(how.contains("jtac check"), "{how}");
+            assert!(how.contains("until a later root covers it"), "{how}");
+            assert!(how.contains("stays absent until a signed waiver"), "{how}");
+        }
         let unknown = Refusal::push(&Refuse::Unknown, &at);
         assert!(
             unknown.how.contains("git fetch origin refs/heads/main"),
