@@ -50,7 +50,8 @@ ABORT: 2 reasons block
 Every block and refusal has three parts: what happened, why the rule exists, and
 what to do next. A refusal says whether it is a fence (no path to yes from inside
 a session) or a negotiation (run this). Exit 0 is pass, 1 is block, 2 is a
-refusal: the gate could not answer.
+refusal: the gate could not answer. The merge job's `check --from --results`
+also answers 3: a result it reads is still running.
 
 ## What it is today
 
@@ -113,10 +114,11 @@ The aim is a gate a whole team can lean on: a pass means every bar the
 repository sets has signed evidence behind it, and a person is asked only for
 what could not be proven.
 
-- **Next: tiering by blast radius.** Policy classifies each change by what it
-  touches. A low tier merges on the CI verdict, a high tier needs a named
-  person who owns the area, and a change to the gate's own policy is always
-  high tier (`DESIGN.md` section 15).
+- **Next: signer roles, the ledger view and tiering by blast radius,** each
+  with its own design round (`DESIGN.md` section 15.2). Tiering: policy
+  classifies each change by what it touches. A low tier merges on the CI
+  verdict, a high tier needs a named person who owns the area, and a change
+  to the gate's own policy is always high tier (`DESIGN.md` section 15).
 - **Then, for teams.** Organisation policy from a signed release of a policy
   repository, and `jtac policy`, `jtac scope` and `jtac who` (`DESIGN.md`
   sections 7, 15 and 18).
@@ -190,8 +192,8 @@ sends its roots; the same push again succeeds
 ## How it works
 
 - Runs the repository's own format, lint and test checks on HEAD's tree, plus
-  deterministic diff-integrity rules on the change since the last covered
-  commit: removed or weakened tests (`JT-TEST`), new lint suppressions
+  deterministic diff-integrity rules on the change since the base
+  (`DESIGN.md` section 10.3): removed or weakened tests (`JT-TEST`), new lint suppressions
   (`JT-SUP`), weakened CI (`JT-CI`), protected paths touched (`JT-PROT`),
   credential-shaped strings (`JT-SEC`), oversized files and functions
   (`JT-SIZE`), comment discipline (`JT-CMT`), lines added (`JT-ADD`).
@@ -212,7 +214,7 @@ sends its roots; the same push again succeeds
 | Command | Does |
 | --- | --- |
 | `jtac init` | Signing key, local store, default policy from what the tree holds, the `pre-push` hook, the evidence refspec; `--ci github` adds the CI workflow, the first `.jtac/signers` and a CI key, and `--read <id>=<workflow>[:<job>]` names a check CI already runs, read at the merge and run by no gate (`docs/CI.md`). `--dry-run` writes nothing |
-| `jtac check` | The gate on HEAD; a pass writes a signed root, and `--push <remote>` sends it. `--preview` writes nothing and is the one mode that runs on a dirty tree |
+| `jtac check` | The gate on HEAD; a pass writes a signed root unless `DESIGN.md` section 10.3 withholds it, as on a commit the default branch already holds, and `--push <remote>` sends it. `--preview` writes nothing and is the one mode that runs on a dirty tree |
 | `jtac status` | Whether a push would pass; unpushed commits by coverage; waivers in effect |
 | `jtac why` | The last verdict's reasons, each with its rule, why, and the fix |
 | `jtac waive` | The signed off-switch: one commit, one rule under one path for up to 30 days, or with `--ci` the CI gate on a commit merged without it, with a reason |

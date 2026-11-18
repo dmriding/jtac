@@ -8,6 +8,13 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [0.2.37] - 2026-11-19
 
+Policy version 2: a check is run by the gate or read from the repository's own CI. The
+action in this release reads CI results, and `docs/CI.md` has the steps to adopt it. Each
+entry describes the tree at its own version: a "yet" or a "not ready to adopt" in one is
+closed by a later entry. Among them, 0.2.35 (the local gate's base, and no root on a commit
+the default branch already holds) and 0.2.27 (readings that move) change what a repository
+on a version 1 policy sees.
+
 ### Added
 
 - (0.2.34) `jtac init --ci github --read <id>=<workflow path>[:<job>]`, once for each check,
@@ -40,7 +47,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 ### Changed
 
 - (0.2.37) README lists checks read from a repository's own CI among what works, where it
-  stood under what is planned.
+  stood under what is planned, and sends `check`'s base and its withheld root to `DESIGN.md`
+  section 10.3. README and `docs/CI.md` name exit 3 of `check --from --results`.
 - (0.2.37) Three developer-facing texts (issues 138, 185, 187).
   - `jtac check`'s note for a clone that names no default branch has one command per
     state: `set-head` as before, the fetch that brings the branch first where the clone
