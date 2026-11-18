@@ -4,7 +4,7 @@
 //! check is refused with the lines to add.
 
 use jtac_core::Pin;
-use jtac_policy::{Check, POLICY_PATH, Policy, PolicyError, Source};
+use jtac_policy::{Check, Detected, POLICY_PATH, Policy, PolicyError, Source, default_policy};
 
 use crate::init::ask;
 use crate::refuse::Refusal;
@@ -48,7 +48,11 @@ pub fn parse(values: &[String]) -> Result<Vec<Read>, Refusal> {
 
 /// `policy` with each read as a required `ci` check, which makes it version 2; with none,
 /// unchanged. A read the policy's own rules refuse is refused here in their words.
-pub fn apply(mut policy: Policy, reads: &[Read]) -> Result<Policy, Refusal> {
+pub fn apply(policy: Policy, reads: &[Read]) -> Result<Policy, Refusal> {
+    put(policy, reads).map_err(|e| Refusal::init_read(&e))
+}
+
+fn put(mut policy: Policy, reads: &[Read]) -> Result<Policy, PolicyError> {
     if reads.is_empty() {
         return Ok(policy);
     }
@@ -60,13 +64,16 @@ pub fn apply(mut policy: Policy, reads: &[Read]) -> Result<Policy, Refusal> {
         };
         policy.checks.insert(read.id.clone(), check);
     }
-    jtac_policy::validate(&policy).map_err(|e| Refusal::init_read(&e))?;
+    jtac_policy::validate(&policy)?;
     Ok(policy)
 }
 
-/// A kept policy holds every read as written, or the refusal that names the lines.
+/// A kept policy holds every read as written, or the refusal that names the lines. A read
+/// refused under the default policy is the flag's fault; one only the kept file refuses is
+/// the file's, and each refusal names its own fix.
 pub fn held(kept: &Policy, reads: &[Read]) -> Result<(), Refusal> {
-    apply(kept.clone(), reads)?;
+    apply(default_policy(&Detected::default()), reads)?;
+    put(kept.clone(), reads).map_err(|e| Refusal::init_read_file(&e))?;
     let lacking: Vec<&Read> = reads
         .iter()
         .filter(|r| kept.checks.get(&r.id).and_then(Check::pin) != Some(&r.pin))
@@ -113,6 +120,16 @@ impl Refusal {
                  [a-z0-9_-], the path under `.github/` from the repository root, the job as \
                  the forge reports it."
             ),
+        )
+    }
+
+    /// The tree's own policy, and not the default one, refuses a `--read`.
+    pub fn init_read_file(err: &PolicyError) -> Self {
+        let [what, why, fix] = err.parts_in(POLICY_PATH);
+        ask(
+            format!("{POLICY_PATH} in the work tree cannot hold a check `--read` names: {what}."),
+            why,
+            format!("In the work tree, {fix}; then run `jtac init --ci github` again."),
         )
     }
 
@@ -233,6 +250,23 @@ mod tests {
         );
         let r = held(&kept, &[read("x", "ci.yml", None)]).unwrap_err();
         assert!(r.what.contains("protected.paths"), "{r:?}");
+        assert!(
+            r.how.contains("the path under `.github/`"),
+            "the flag's: {r:?}"
+        );
+        let open =
+            jtac_policy::parse("version = 1\n[protected]\npaths = [\".jtac/**\"]\n").unwrap();
+        let r = held(&open, &[read("test", ci, None)]).unwrap_err();
+        assert!(
+            r.what.starts_with(".jtac/policy.toml in the work tree"),
+            "{r:?}"
+        );
+        assert!(
+            r.how.contains(
+                "add the path `.github/workflows/ci.yml` to protected.paths in .jtac/policy.toml"
+            ) && !r.how.contains("--read"),
+            "the file's: {r:?}"
+        );
     }
 
     #[test]
@@ -242,6 +276,7 @@ mod tests {
         for r in [
             Refusal::init_read_spelling("x"),
             Refusal::init_read(&pin),
+            Refusal::init_read_file(&pin),
             Refusal::init_read_kept(&[&lacking]),
         ] {
             assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");

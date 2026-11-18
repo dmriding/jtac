@@ -1136,8 +1136,11 @@ fn a_kept_policy_decides_the_trigger_and_a_read_it_lacks_is_refused_with_the_lin
     env.repo.write(CI_YML, b"on: push\njobs: {}\n");
     refused(
         &[],
-        "`.github/workflows/ci.yml` has no top-level `name:` line",
+        "`.github/workflows/ci.yml` does not open with its `name:` line",
     );
+    env.repo
+        .write(CI_YML, b"name: Build and test\n  the workspace\non: push\n");
+    refused(&[], "has an indented line under its `name:` line");
     env.repo.write(CI_YML, b"name: Build*\non: push\n");
     refused(
         &["--read", &read],

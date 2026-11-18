@@ -288,20 +288,25 @@ impl Refusal {
     /// A workflow the policy reads gives no name init can write into the trigger.
     pub fn init_ci_workflow_name(file: &str, why: &Unreadable) -> Self {
         let what = match why {
-            Unreadable::None => "has no top-level `name:` line".to_owned(),
-            Unreadable::Several => "has more than one top-level `name:` line".to_owned(),
+            Unreadable::NotFirst => "does not open with its `name:` line".to_owned(),
+            Unreadable::Continued => {
+                "has an indented line under its `name:` line, which may continue the name"
+                    .to_owned()
+            }
             Unreadable::Spelling(v) => format!("is named `{v}`, which init does not write"),
         };
         ask(
             format!("`{file}` {what}."),
-            "The root job's trigger lists the workflow by name, as a pattern; a name that is \
-             missing, or that needs an escape init could get wrong, would leave a trigger \
-             that never fires and merges with no root, silently.",
+            "The root job's trigger lists the workflow by name, as a pattern, and init reads \
+             the name without a YAML parser; a name it read in part, or one that needs an \
+             escape it could get wrong, would leave a trigger that never fires and merges \
+             with no root, silently.",
             format!(
-                "Give `{file}` one `name:` line at the left margin, of letters, digits, \
-                 spaces and `{}`, starting with a letter or quoted, as `name: ci`; commit \
-                 it, then run `jtac init --ci github` again. Or write `{WORKFLOW_PATH}` by \
-                 hand (docs/CI.md in the jtac repository).",
+                "Make `name: <name>` the first line of `{file}` that is not blank or a \
+                 comment, whole on that line, of letters, digits, spaces and `{}`, starting \
+                 with a letter or quoted, as `name: ci`; then run `jtac init --ci github` \
+                 again. Or write `{WORKFLOW_PATH}` by hand (docs/CI.md in the jtac \
+                 repository).",
                 wfname::PUNCTUATION
             ),
         )
@@ -377,8 +382,8 @@ mod tests {
                 ".github/workflows/ci.yml",
                 &std::io::Error::other("gone"),
             ),
-            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::None),
-            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::Several),
+            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::NotFirst),
+            Refusal::init_ci_workflow_name(".github/workflows/ci.yml", &Unreadable::Continued),
             Refusal::init_ci_workflow_name(
                 ".github/workflows/ci.yml",
                 &Unreadable::Spelling("Build*".into()),

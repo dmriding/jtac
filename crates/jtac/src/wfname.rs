@@ -1,17 +1,19 @@
 //! A GitHub workflow's name, read from its file for `on.workflow_run.workflows`, whose
-//! entries are glob patterns over names. Pure and not a YAML parser: one column-0 `name:`
-//! line in a spelling that needs no escape as YAML or as a pattern is a name, and every
-//! other file is unreadable, so a name init cannot be sure of is never written
-//! (`only_a_plainly_spelled_name_is_read_and_every_other_file_is_unreadable`).
+//! entries are glob patterns over names. Pure and not a YAML parser, so it reads only what
+//! no parser could read otherwise: the file's first line that is not blank or a comment is
+//! `name:` with a value complete on that line, in a spelling that needs no escape as YAML
+//! or as a pattern. Nothing above it can hold it inside another value and nothing below
+//! continues it. Every other file is unreadable, so a name init cannot be sure of is never
+//! written (`only_a_plainly_spelled_name_is_read_and_every_other_file_is_unreadable`).
 
 /// Why a workflow file gave no name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unreadable {
-    /// No column-0 `name:` line: GitHub then shows the path, which no page says the trigger
-    /// matches.
-    None,
-    /// More than one.
-    Several,
+    /// The first line that is not blank or a comment is not a `name:` line. With no name
+    /// GitHub shows the path, which no page says the trigger matches.
+    NotFirst,
+    /// The line after the `name:` line is indented, so the value may run on.
+    Continued,
     /// The value as written, outside the spelling, escaped to printable ASCII.
     Spelling(String),
 }
@@ -44,23 +46,25 @@ fn value(rest: &str) -> Option<&str> {
     let name = rest.split(" #").next()?.trim_end();
     let bare = name.starts_with(|c: char| c.is_ascii_alphabetic())
         && !name.contains(": ")
+        && !name.ends_with(':')
         && !NOT_STRINGS.iter().any(|w| w.eq_ignore_ascii_case(name));
     (bare && plain(name)).then_some(name)
 }
 
 /// The workflow's name from its file's text.
 pub fn name(text: &str) -> Result<String, Unreadable> {
-    let mut lines = text.lines().filter_map(|l| {
-        let rest = l.strip_prefix("name:")?;
-        (rest.is_empty() || rest.starts_with(' ')).then_some(rest)
-    });
-    let rest = lines.next().ok_or(Unreadable::None)?;
-    if lines.next().is_some() {
-        return Err(Unreadable::Several);
+    let mut lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
+    let rest = (lines.next())
+        .and_then(|l| l.strip_prefix("name:"))
+        .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        .ok_or(Unreadable::NotFirst)?;
+    let name = value(rest).ok_or_else(|| Unreadable::Spelling(jtac_policy::shown(rest.trim())))?;
+    if lines.next().is_some_and(|l| l.starts_with([' ', '\t'])) {
+        return Err(Unreadable::Continued);
     }
-    value(rest)
-        .map(str::to_owned)
-        .ok_or_else(|| Unreadable::Spelling(jtac_policy::shown(rest.trim())))
+    Ok(name.to_owned())
 }
 
 #[cfg(test)]
@@ -71,33 +75,50 @@ mod tests {
     fn only_a_plainly_spelled_name_is_read_and_every_other_file_is_unreadable() {
         for (text, want) in [
             ("name: ci\non: push\n", "ci"),
-            ("# header\nname: ci\r\non: push\r\n", "ci"),
             (
-                "on: push\nname:   Build & Test (linux)  \n",
+                "# header\n\n  # indented comment\nname: ci\r\non: push\r\n",
+                "ci",
+            ),
+            (
+                "name:   Build & Test (linux)  \n\non: push\n",
                 "Build & Test (linux)",
             ),
             ("name: ci # the tests\n", "ci"),
             ("name: \"CI: build\"\n", "CI: build"),
             ("name: 'Run Tests'   # quoted\n", "Run Tests"),
             ("name: \"123\"\n", "123"),
-            ("name: release/v2.build_all\n", "release/v2.build_all"),
-            ("name: ci\njobs:\n  a:\n    name: leg\n", "ci"),
+            ("name: release/v2.build_all", "release/v2.build_all"),
+            ("name: ci\n  # an indented comment\non: push\n", "ci"),
+            ("name: ci\njobs:\n  a:\n    name: leg\nname: again\n", "ci"),
         ] {
             assert_eq!(name(text).as_deref(), Ok(want), "{text:?}");
         }
         for text in [
+            "on: push\nname: ci\n",
             "on: push\njobs:\n  a:\n    name: leg\n",
             "",
+            "# only a comment\n",
             "\"name\": ci\n",
             "name : ci\n",
             "name:ci\n",
             "{name: ci, on: push}\n",
             " name: ci\n",
             "\u{feff}name: ci\n",
+            "---\nname: ci\n",
+            "run-name: \"Deploy\nname: ci\"\n",
+            "env: {\nname: ci\n}\n",
         ] {
-            assert_eq!(name(text), Err(Unreadable::None), "{text:?}");
+            assert_eq!(name(text), Err(Unreadable::NotFirst), "{text:?}");
         }
-        assert_eq!(name("name: a\nname: b\n"), Err(Unreadable::Several));
+        for text in [
+            "name: Build and test\n  the workspace\non: push\n",
+            "name: ci\n\n  tests\n",
+            "name: ci\n\ttests\n",
+            "name: ci\n# a comment at the margin\n  indented: after it\n",
+            "name: \"ci\"\n  on: push\n",
+        ] {
+            assert_eq!(name(text), Err(Unreadable::Continued), "{text:?}");
+        }
         for value in [
             "",
             "Build*",
@@ -121,6 +142,7 @@ mod tests {
             "123",
             "2 fast",
             "ci: build",
+            "ci:",
             "a \"b\"",
         ] {
             assert_eq!(

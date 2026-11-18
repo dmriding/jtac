@@ -91,9 +91,11 @@ starts on `workflow_run` for each named file, listed by the `name:` the file giv
 init refuses, before it writes anything:
 
 - a named file that is not in the work tree;
-- a workflow with no `name:` line at the left margin, more than one, or a name outside
-  letters, digits, spaces and `-_./()&,:`: the trigger lists names as patterns, and one
-  init got wrong would never fire, silently. Rename it, or write the workflow by hand;
+- a workflow whose first line that is not blank or a comment is not `name: <name>`, whole
+  on that line, in letters, digits, spaces and `-_./()&,:`: the trigger lists names as
+  patterns and init reads the file without a YAML parser, so a name it read in part or
+  escaped wrong would never fire, silently. Move the line up or rename the workflow, or
+  write `jtac.yml` by hand;
 - a policy already in the tree that lacks a named check: init never rewrites one, and
   prints the lines to add.
 
