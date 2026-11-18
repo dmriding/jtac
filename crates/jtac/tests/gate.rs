@@ -817,6 +817,11 @@ fn each_clone_that_names_no_default_branch_is_told_the_command_that_works_there(
         "the rule is off, as the note says: {v}"
     );
     let url = renamed.git(&["remote", "get-url", "upstream"]);
+    renamed.git(&["config", "--add", "remote.upstream.url", &url]);
+    assert!(
+        noted(&renamed).contains("rename upstream origin"),
+        "one remote"
+    );
     renamed.git(&["remote", "add", "second", &url]);
     let notes = noted(&renamed);
     assert!(

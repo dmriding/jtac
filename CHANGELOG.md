@@ -45,9 +45,9 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   - The `pre-push` refusal of a tip with no root names a pruning fetch as a cause: with
     the evidence refspec, `git fetch --prune` deletes a root the remote does not hold yet.
     `README.md` and `DESIGN.md` section 9.6 say so.
-  - A commit pushed around the gate is described as absent until a later root covers it,
-    and on the default branch until a waiver, in the same refusal, `README.md` and
-    `DESIGN.md`, where it read as absent for good.
+  - A commit pushed around the gate is described as absent unless a later root reaches
+    it, which no rule promises, in the same refusal, `README.md` and `DESIGN.md`, where it
+    read as absent for good.
 - (0.2.36) Three leftovers of policy version 2 (issues 177, 182, 183).
   - `jtac replay <commit> --record` replays a failure record as `replay` does a root, and
     holds it when its verdict fails again. The output gains `document`; a root replayed

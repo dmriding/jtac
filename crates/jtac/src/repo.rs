@@ -404,7 +404,9 @@ pub fn unnamed(repo: &Path) -> Result<Option<Unnamed>, RepoError> {
                 .to_owned(),
         )
     };
-    let remotes: Vec<String> = listed.lines().filter_map(named).collect();
+    let mut remotes: Vec<String> = listed.lines().filter_map(named).collect();
+    remotes.sort_unstable();
+    remotes.dedup();
     match &remotes[..] {
         [] => return Ok(None),
         _ if remotes.iter().any(|name| name == "origin") => {}

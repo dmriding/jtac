@@ -358,9 +358,8 @@ impl Refusal {
     /// A ref the decision refused.
     fn push(r: &Refuse, at: &At) -> Self {
         const BYPASS: &str = "Do not add `--no-verify`: the commit would land with no root of \
-                              its own and read as absent until a later root covers it, which \
-                              `jtac audit` then names. None covers a commit the default branch \
-                              holds: there it stays absent until a signed waiver.";
+                              its own and read as absent unless a later root reaches it, which \
+                              no rule promises; `jtac audit` shows which.";
         let raw = at.remote_ref.trim_start_matches("refs/heads/");
         let branch = if raw.contains('`') { "<branch>" } else { raw };
         let remote_ref = quoted(at.remote_ref, "<ref>");
@@ -687,8 +686,8 @@ mod tests {
         for told in [&at, &stale] {
             let how = Refusal::push(&Refuse::Absent, told).how;
             assert!(how.contains("jtac check"), "{how}");
-            assert!(how.contains("until a later root covers it"), "{how}");
-            assert!(how.contains("stays absent until a signed waiver"), "{how}");
+            assert!(how.contains("unless a later root reaches it"), "{how}");
+            assert!(how.contains("no rule promises"), "{how}");
         }
         let unknown = Refusal::push(&Refuse::Unknown, &at);
         assert!(

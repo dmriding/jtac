@@ -17,9 +17,8 @@ can verify it, and can see which commits have none.
   blocks by default, with the reason and the fix.
 - **It records what happened, including what did not.** A pass is a signed
   record for that exact tree. A push around the gate still lands, but with no
-  record of its own: its commits read as absent until a later pass on the
-  branch covers them, judging their changes in its own diff. On the default
-  branch no later pass does, and they stay absent until a signed waiver.
+  record of its own: its commits read as absent unless a later pass reaches
+  them, which nothing promises.
 - **CI checks it again.** The same binary re-runs the gate on pull requests.
   [CI gate](#ci-gate) says what a merge gets.
 

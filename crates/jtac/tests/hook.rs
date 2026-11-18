@@ -765,10 +765,11 @@ fn a_pruning_fetch_deletes_an_unpushed_root_and_the_refusal_names_the_cause() {
 }
 
 /// What the no-root refusal says of `--no-verify`, held to `audit`: a commit pushed around
-/// the hook reads absent until a later root's walk covers it, and no walk reaches a commit
-/// the default branch holds (decision 69), which stays absent under the next root.
+/// the hook reads absent unless a later root reaches it, and the base decides that, not the
+/// bypass. The next root stops at a commit the branch's upstream or the default branch
+/// holds (section 10.3, decision 69) and walks over it from a covered ancestor.
 #[test]
-fn a_bypassed_commit_is_covered_by_a_later_root_on_a_branch_and_not_on_the_default_branch() {
+fn a_bypassed_commit_is_absent_unless_a_later_root_reaches_it_and_the_base_decides_that() {
     let origin = Repo::bare(&[]);
     let repo = Repo::clone_of(&origin);
     with_policy(&repo, "");
@@ -780,7 +781,7 @@ fn a_bypassed_commit_is_covered_by_a_later_root_on_a_branch_and_not_on_the_defau
     let around = |file: &str, branch: &str| {
         repo.write(file, b"around\n");
         let bypassed = repo.commit("pushed around the hook");
-        repo.git(&["push", "-q", "--no-verify", "origin", branch]);
+        repo.git(&["push", "-q", "--no-verify", "-u", "origin", branch]);
         repo.write(&format!("next-{file}"), b"next\n");
         repo.commit("next");
         assert_eq!(jtac(&repo, &["check"]).code, 0);
@@ -790,9 +791,24 @@ fn a_bypassed_commit_is_covered_by_a_later_root_on_a_branch_and_not_on_the_defau
         let of = |r: &Value| r["commit"] == format!("sha1:{bypassed}");
         rows.into_iter().find(of).unwrap()["state"].clone()
     };
-    assert_eq!(around("d.txt", "main"), "absent");
-    repo.git(&["switch", "-q", "-c", "feature"]);
-    assert_eq!(around("f.txt", "feature"), "covered");
+    repo.git(&["switch", "-q", "-c", "unrooted"]);
+    assert_eq!(
+        around("u.txt", "unrooted"),
+        "absent",
+        "its upstream holds it"
+    );
+    repo.git(&["switch", "-q", "main"]);
+    assert_eq!(
+        around("d.txt", "main"),
+        "absent",
+        "the default branch holds it"
+    );
+    repo.git(&["switch", "-q", "-c", "rooted"]);
+    assert_eq!(
+        around("r.txt", "rooted"),
+        "covered",
+        "walked from main's root"
+    );
 }
 
 /// Section 15.2: the hook and `status` ask what the local gate judged, which a partial
