@@ -706,8 +706,10 @@ fn a_branch_cut_from_a_merge_with_no_root_is_judged_on_its_own_commits() {
 
 /// Decision 69 reads origin's default branch on every run, so each state of that read has
 /// to answer: a remote that renamed the branch leaves `origin/HEAD` naming one that is gone,
-/// which is no name and a note, never git's failure under every `check`; a remote that
-/// holds nothing yet has no default branch, and the note's command would fail there.
+/// which is no name and a note, never git's failure under every `check`, and a tag of the
+/// gone branch's name is not the branch; a remote that holds nothing yet has no default
+/// branch, and the note's command would fail there; another origin ref whose object is
+/// missing changes nothing, and the named branch's own missing object refuses.
 #[test]
 fn a_dangling_origin_head_reads_as_no_default_branch() {
     let upstream = passing();
@@ -729,6 +731,15 @@ fn a_dangling_origin_head_reads_as_no_default_branch() {
     );
     let (code, v) = json(&repo, &["check", "--preview", "--json", "--base", "HEAD~1"]);
     assert_eq!(code, 0, "{v}");
+    repo.git(&["update-ref", &format!("refs/tags/{gone}"), "HEAD"]);
+    let lost = b"0000000000000000000000000000000000000001\n";
+    repo.write(".git/refs/remotes/origin/0lost", lost);
+    let (code, v) = json(&repo, &["check", "--preview", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["from"], "merge base with main");
+    repo.write(".git/refs/remotes/origin/renamed", lost);
+    let ran = jtac(&repo, &["check", "--preview", "--base", "HEAD~1"]);
+    assert_eq!(ran.code, 2, "{}", ran.stdout);
 
     let empty = Repo::bare(&[]);
     let first = Repo::clone_of(&empty);

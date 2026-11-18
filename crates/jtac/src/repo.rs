@@ -353,17 +353,17 @@ pub fn landed(repo: &Path, head: &Head) -> Result<Option<Landed>, RepoError> {
     Ok(found.map(|commit| Landed { commit, shown }))
 }
 
-/// The branch `refs/remotes/origin/HEAD` names, full and short, when that branch is a ref
-/// of this clone: the one read of origin's default branch. A symref left pointing at a
-/// branch the remote renamed is no name, never a git failure
-/// (`a_dangling_origin_head_reads_as_no_default_branch`); a ref whose object is missing
-/// stays one (`a_candidate_pointing_at_a_missing_object_refuses_instead_of_falling_back`).
+/// The branch `refs/remotes/origin/HEAD` names, full and short, when that exact ref is in
+/// this clone: the one read of origin's default branch. A symref left pointing at a branch
+/// the remote renamed is no name, never a git failure; `show-ref --verify` matches the ref
+/// alone, where `rev-parse` would find a tag of that name; a ref whose object is missing
+/// refuses (`a_dangling_origin_head_reads_as_no_default_branch` holds all three).
 fn origin_default(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
     let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
     let Some(full) = probe(repo, &name, 1)? else {
         return Ok(None);
     };
-    if probe(repo, &["rev-parse", "--verify", "--quiet", &full], 1)?.is_none() {
+    if probe(repo, &["show-ref", "--verify", "--quiet", &full], 1)?.is_none() {
         return Ok(None);
     }
     let shown = full
@@ -375,9 +375,10 @@ fn origin_default(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
 
 /// Whether this clone holds branches of `origin` and names none as its default, so `landed`
 /// has nothing to read and the base falls back. A remote that holds nothing yet has no
-/// default branch to name.
+/// default branch to name. Names alone are listed: the default format reads each object.
 pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
-    let held = git(repo, &["for-each-ref", "--count=1", "refs/remotes/origin/"])?;
+    let names = ["for-each-ref", "--count=1", "--format=%(refname)"];
+    let held = git(repo, &[&names[..], &["refs/remotes/origin/"]].concat())?;
     Ok(!text(&held).is_empty() && origin_default(repo)?.is_none())
 }
 
