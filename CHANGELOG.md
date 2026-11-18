@@ -32,7 +32,9 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   root it would have written with the state `failed`, signed by the CI key at
   `refs/jtac/failed/<xx>/<commit>` and sent by `--push` as a merge root is. It covers
   nothing. `--json` gains `record`. **Changed reading:** a merge CI failed, and every
-  first-parent commit back to its old tip, reads CI `failed` where it read absent.
+  first-parent commit back to its old tip, reads CI `failed` where it read absent, and
+  that merge takes no tree match from its head's root (decision 63), so one that read
+  covered by tree reads absent.
   - `jtac audit` prints `ci failed:` with the check, the forge's word and the run, and
     `ci note:` beside a reading that outranks the record; `--json` rows gain `ci_record`.
     `jtac release` lists such a commit under `failed`. `jtac waive <merge> --ci` ships over
@@ -42,9 +44,12 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
   - A record on the tip that is not CI's own for this head is exit 2 with the ref named,
     from a job whose verdict failed and no other command. The remote's own, when it refuses
     the push, gets the same test.
-  - `jtac check --from` refuses a head on HEAD's first-parent line, a merge pushed with the
-    pull request as its first parent, and names `jtac ci`; the action routes that push to
-    `jtac ci` as it does a fast-forward.
+  - `jtac check --from` refuses a tip whose first-parent line above the old tip holds a
+    commit of the pull request's own, as a merge pushed with the pull request as its first
+    parent leaves it, and names `jtac ci`; the action routes that push to `jtac ci` as it
+    does a fast-forward.
+  - A store's reason for a document that does not read is one line, so a document's own
+    text adds no line to a note or a refusal.
   - A ref on the tip that holds no root is refused as a standing root is, with the ref to
     delete; it was a store error.
   - `jtac show` and `jtac replay` do not read a record yet (issue 177).

@@ -183,24 +183,38 @@ fn commits(
 }
 
 /// Loud, in three parts, and never a refusal. `names` are the refs the push carried and
-/// `lines` what to print of them; the next step names each ref when one is no root's,
-/// since the roots' pattern would leave a failure record behind.
+/// `lines` what to print of them, each led by its ref; the next step names each ref when
+/// one is no root's, since the roots' pattern would leave a failure record behind, and a
+/// failure record among `lines` is named as one.
 fn warning(remote: &str, names: &[String], lines: &[String], why: &str) -> String {
-    let mut s = format!("jtac: WARNING: the roots did not reach {remote}: {why}.\n");
+    let (roots, failed) = (Space::Roots.prefix(), Space::Failed.prefix());
+    let record = lines.iter().any(|l| l.starts_with(failed));
+    let what = match record {
+        true => "the failure record",
+        false => "the roots",
+    };
+    let mut s = format!("jtac: WARNING: {what} did not reach {remote}: {why}.\n");
     for r in lines {
         let _ = writeln!(s, "jtac:   {r}");
     }
-    let roots = Space::Roots.prefix();
     let spec = match names.iter().all(|n| n.starts_with(roots)) {
         true => format!("'{roots}*:{roots}*'"),
         false => names.join(" "),
     };
-    let _ = writeln!(
-        s,
-        "The code push proceeds: a root push never blocks it. Until the roots arrive, every \
-         reader sees these commits as absent; a rejected root most often means the remote \
-         already holds another root for that commit, which stands."
-    );
+    let _ = match record {
+        true => writeln!(
+            s,
+            "Until it arrives, no reader sees that CI's verdict failed, and the merge reads \
+             absent; a rejected failure record most often means the remote already holds one \
+             for that commit, which stands, and the job then says whose it is."
+        ),
+        false => writeln!(
+            s,
+            "The code push proceeds: a root push never blocks it. Until the roots arrive, every \
+             reader sees these commits as absent; a rejected root most often means the remote \
+             already holds another root for that commit, which stands."
+        ),
+    };
     let _ = writeln!(s, "next: git push {} {spec}", quoted(remote, "<remote>"));
     s
 }

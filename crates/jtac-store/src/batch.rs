@@ -5,7 +5,7 @@ use std::path::Path;
 
 use jtac_core::{Root, from_canonical};
 
-use crate::refs::{Listed, Roots, Space};
+use crate::refs::{Listed, Roots, Space, one_line};
 use crate::roots::StoredRoot;
 use crate::{Store, StoreError};
 
@@ -110,8 +110,8 @@ fn stored(space: Space, l: &Listed, chunk: &[Record]) -> Result<StoredRoot, Stri
         Record::Missing => Err(format!("the root commit has no {name}")),
     };
     let json = blob(&chunk[1], "root.json")?;
-    let root: Root = from_canonical(&json).map_err(|e| e.to_string())?;
-    space.admits(&root).map_err(|e| e.to_string())?;
+    let root: Root = from_canonical(&json).map_err(one_line)?;
+    space.admits(&root).map_err(one_line)?;
     if root.commit != l.commit {
         return Err(format!("the root is for {}", root.commit));
     }

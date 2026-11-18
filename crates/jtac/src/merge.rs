@@ -51,8 +51,9 @@ struct Job<'a> {
 
 impl<'a> Job<'a> {
     /// Preflight as `check` has it, then the three commits: `--base` on HEAD's first-parent
-    /// line, `--from` a held commit that is neither on that line, HEAD included, nor behind
-    /// the old tip, and a merge base between the two (decisions 47 and 66).
+    /// line, `--from` a held commit that is not HEAD, is not behind the old tip and holds
+    /// no commit of that line above it, and a merge base between the two (decisions 47
+    /// and 66).
     fn resolve(a: &'a CheckArgs, cwd: &Path) -> Result<Self, Refusal> {
         let (Some(from_rev), Some(base_rev)) = (&a.from, &a.base) else {
             unreachable!("clap: `--from` requires `--base`")
@@ -77,9 +78,9 @@ impl<'a> Job<'a> {
         let old =
             repo::peel(&repo, &format, base_rev).map_err(|_| Refusal::rev("check", base_rev))?;
         let line = first_parent_line(&repo, &head);
-        if !line.contains(&old.commit.hex()) {
+        let Some(at) = line.iter().position(|c| *c == old.commit.hex()) else {
             return Err(Refusal::from_base(base_rev, &head.commit.hex(), from_rev));
-        }
+        };
         let merge_base = repo::probe(
             &repo,
             &["merge-base", &old.commit.hex(), &from.commit.hex()],
@@ -90,8 +91,12 @@ impl<'a> Job<'a> {
         if merge_base == from.commit.hex() {
             return Err(Refusal::from_behind(from_rev, base_rev));
         }
-        if line.contains(&from.commit.hex()) {
-            return Err(Refusal::from_first_parent(from_rev, base_rev));
+        let first = at
+            .checked_sub(1)
+            .map_or(head.commit.hex(), |i| line[i].clone());
+        let own = ["merge-base", "--is-ancestor", &first, &from.commit.hex()];
+        if (repo::probe(&repo, &own, 1).map_err(|e| Refusal::repository(&e))?).is_some() {
+            return Err(Refusal::from_first_parent(from_rev, base_rev, &first));
         }
         Ok(Self {
             repo,
@@ -346,7 +351,7 @@ fn arrived(
     notes: &mut Vec<String>,
 ) -> Result<(), Refusal> {
     let tip = &keeper.job.head.commit;
-    let noun = noun(space);
+    let noun = space.noun();
     let stored = match store.remote(space, remote, tip) {
         Ok(Some(s)) => s,
         Ok(None) => return Err(Refusal::unsent(space, tip, remote)),
@@ -364,14 +369,6 @@ fn arrived(
          stays here unsent"
     ));
     Ok(())
-}
-
-/// What the tip's document is called.
-fn noun(space: Space) -> &'static str {
-    match space {
-        Space::Roots => "root",
-        Space::Failed => "failure record",
-    }
 }
 
 /// The head's own policy, for comparing its root; one that does not read is a note.
@@ -482,22 +479,25 @@ impl Keeper<'_> {
 }
 
 impl Refusal {
-    /// `--from` is on HEAD's first-parent line above the old tip: a merge pushed with the
-    /// pull request as its first parent, whose own commits a document with `from` would
-    /// reach (`the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line`).
-    pub fn from_first_parent(from: &str, base: &str) -> Self {
+    /// `first`, the lowest commit of HEAD's first-parent line above the old tip, is one
+    /// `--from` holds. The pull request's commits on that line are a prefix of it from
+    /// there, since a first parent of one is one, so the one test finds any
+    /// (`the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line`).
+    pub fn from_first_parent(from: &str, base: &str, first: &str) -> Self {
         let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
+        let first = quoted(first.get(..12).unwrap_or(first), "<commit>");
         Self {
             kind: "negotiation",
             what: format!(
-                "`--from {from}` is on HEAD's first-parent line: HEAD is no commit a forge makes \
-                 for a pull request, whose head is never on that line."
+                "`--from {from}` holds {first}, the first commit above the old tip on HEAD's \
+                 first-parent line: HEAD is no commit a forge makes for a pull request, whose \
+                 own commits are never on that line."
             ),
             why: "A merge root and a failure record speak for the tip and its first-parent line \
                   back to the old tip, which a merge, a squash and a rebase fill with the \
-                  forge's own commits; here that line is the pull request's own, as a merge \
+                  forge's own commits; here that line holds the pull request's, as a merge \
                   pushed with its parents reversed leaves it, and CI's signature would read \
-                  each of its commits covered or failed."
+                  each of them covered or failed."
                 .to_owned(),
             how: format!(
                 "Run `jtac ci --base {base}` on the tip instead, as for a direct push; it writes \
@@ -512,7 +512,7 @@ impl Refusal {
     pub fn unsent(space: Space, tip: &GitOid, remote: &str) -> Self {
         let remote = quoted(remote, "<remote>");
         let name = space.ref_name(tip);
-        let noun = noun(space);
+        let noun = space.noun();
         let whose = match space {
             Space::Roots => "merge root",
             Space::Failed => noun,
@@ -549,9 +549,10 @@ impl Refusal {
         let remote = remote.map_or("<remote>".to_owned(), |r| quoted(r, "<remote>"));
         let name = space.ref_name(tip);
         let what = format!(
-            "the tip {} already carries a {} this job did not write: {why}.",
+            "the tip {} already carries a {} this job did not write: {}.",
             &hex[..12],
-            noun(space)
+            space.noun(),
+            crate::output::plain(why)
         );
         match space {
             Space::Roots => Self::fence(
@@ -613,7 +614,7 @@ fn named(
              signer's {}; a `.jtac/signers` line with `namespaces=\"{}\"` names it",
             Namespace::CiRoot.as_str(),
             trust.describe(),
-            noun(space),
+            space.noun(),
             Namespace::CiRoot.as_str()
         ));
     }
@@ -673,17 +674,17 @@ mod tests {
         assert!(u.what.contains("origin refused the failure record's ref"));
         assert!(u.why.contains("reads absent"), "{u:?}");
         assert!(u.how.contains(&format!("`git push origin {name}`")));
-        let f = Refusal::from_first_parent("abc123", "main");
+        let f = Refusal::from_first_parent("abc123", "main", "0123456789abcdef");
         assert!(
             f.what
-                .contains("`--from abc123` is on HEAD's first-parent line")
+                .contains("`--from abc123` holds 0123456789ab, the first commit")
         );
         assert!(f.why.contains("covered or failed"), "{f:?}");
         assert!(f.how.contains("`jtac ci --base main`") && f.how.contains("Do not pass"));
         for (r, kind) in [(r, "fence"), (u, "fence"), (f, "negotiation")] {
             assert!(r.text().contains(&format!("\n{kind}: ")), "{r:?}");
         }
-        let forged = Refusal::from_first_parent("a\nfence: x", "b");
+        let forged = Refusal::from_first_parent("a\nfence: x", "b", "c\nfence: x");
         assert!(!forged.text().contains("\nfence: x"), "{forged:?}");
     }
 }

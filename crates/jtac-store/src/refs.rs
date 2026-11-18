@@ -24,6 +24,14 @@ pub enum Space {
     Failed,
 }
 
+/// Why a document does not read, on one line: a parse error quotes the document, and a
+/// reader prints the reason in a note or a refusal
+/// (`a_reason_that_quotes_the_document_is_one_line`).
+pub(crate) fn one_line(e: impl std::fmt::Display) -> String {
+    let flat = |c: char| if c.is_control() { ' ' } else { c };
+    e.to_string().chars().map(flat).collect()
+}
+
 impl Space {
     /// The namespace, with its trailing slash.
     pub fn prefix(self) -> &'static str {
@@ -40,7 +48,7 @@ impl Space {
     }
 
     /// What a ref's content is called in a refusal.
-    fn noun(self) -> &'static str {
+    pub fn noun(self) -> &'static str {
         match self {
             Self::Roots => "root",
             Self::Failed => "failure record",
@@ -188,8 +196,8 @@ fn read_at(
         name: name.to_owned(),
         what,
     };
-    let root: Root = from_canonical(&doc.blob("root.json")?).map_err(|e| refuse(e.to_string()))?;
-    space.admits(&root).map_err(|e| refuse(e.to_string()))?;
+    let root: Root = from_canonical(&doc.blob("root.json")?).map_err(|e| refuse(one_line(e)))?;
+    space.admits(&root).map_err(|e| refuse(one_line(e)))?;
     if root.commit != *commit {
         return Err(refuse(format!(
             "the {} is for {}",

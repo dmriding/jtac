@@ -1759,6 +1759,14 @@ fn every_commit_of_a_failed_rebase_reads_failed() {
         assert_eq!(r["ci_record"]["commit"], sha(&tip), "{v}");
     }
     assert_eq!(row(&v, &old)["ci"], "covered", "{v}");
+    let (code, v, err) = json(&second, &["audit", "main~1", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    let below = row(&v, &earlier);
+    assert_eq!(
+        (&below["ci"], &below["ci_record"]["commit"]),
+        (&"failed".into(), &sha(&tip).into()),
+        "a range below the record's own commit: {v}"
+    );
     let text = ok(&second, &["audit", "main"]);
     let reaches = format!(
         "ci failed: {}'s failure record reaches it: checks",
@@ -1890,15 +1898,21 @@ fn a_record_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
     let notes = v["verdict"]["notes"].to_string();
     let kept = "origin already holds CI's own failure record for this head";
     assert!(notes.contains(kept), "{notes}");
+    assert!(
+        err.contains("WARNING: the failure record did not reach origin")
+            && !err.contains("the roots did not reach"),
+        "{err}"
+    );
     assert!(!v["pushed"].to_string().contains(&name), "{v}");
     assert_eq!(read_record(&r.f.second(), &r.second), first);
 }
 
-/// Decision 66, issue 161 note 13: a merge pushed with the pull request as its first
-/// parent leaves the pull request's own commits on the tip's first-parent line, where a
-/// document with `from` would reach each of them. The job refuses it for the head and for
-/// any commit of that line, names `jtac ci`, which judges the push and writes nothing, and
-/// leaves no ref behind.
+/// Decision 66, issue 161 note 13: a tip whose first-parent line holds a commit of the pull
+/// request's own, where a document with `from` would reach it. Three shapes: the head as
+/// the first parent, an earlier commit of the pull request as the first parent with the
+/// head second, and that commit as the only parent. The job refuses each for every head
+/// that holds the line's first commit, names `jtac ci`, which judges the push and writes
+/// nothing, and leaves no ref behind.
 #[test]
 fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
     let f = forge();
@@ -1907,26 +1921,32 @@ fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
     f.fetch("origin");
     f.at_main();
     let tree = f.ci.git(&["rev-parse", &format!("{}^{{tree}}", a[1])]);
-    let parents = ["-p", a[1].as_str(), "-p", f.main.as_str()];
     let made = ["commit-tree", "--no-gpg-sign", "-m", "merge", tree.as_str()];
-    let tip = f.ci.git(&[&made[..], &parents[..]].concat());
-    f.ci.git(&["reset", "-q", "--hard", &tip]);
-    for head in &a {
-        let flags = [
-            "check", "--from", head, "--base", &f.main, "--push", "origin",
-        ];
-        let ran = jtac(&f.ci, &flags);
-        assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
-        let what = format!("jtac: `--from {head}` is on HEAD's first-parent line");
-        assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
-        let how = format!(
-            "negotiation: Run `jtac ci --base {}` on the tip instead",
-            f.main
-        );
-        assert!(ran.stderr.contains(&how), "{}", ran.stderr);
-        assert_eq!(ran.stderr.lines().count(), 3, "{}", ran.stderr);
+    let (head, first, main) = (a[1].as_str(), a[0].as_str(), f.main.as_str());
+    let shapes: [(&[&str], &[&str]); 3] = [
+        (&["-p", head, "-p", main], &[first, head]),
+        (&["-p", first, "-p", head], &[head]),
+        (&["-p", first], &[head]),
+    ];
+    for (parents, heads) in shapes {
+        let tip = f.ci.git(&[&made[..], parents].concat());
+        f.ci.git(&["reset", "-q", "--hard", &tip]);
+        for from in heads {
+            let flags = ["check", "--from", from, "--base", main, "--push", "origin"];
+            let ran = jtac(&f.ci, &flags);
+            assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+            let what = format!(
+                "jtac: `--from {from}` holds {}, the first commit above the old tip on HEAD's \
+                 first-parent line",
+                &first[..12]
+            );
+            assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+            let how = format!("negotiation: Run `jtac ci --base {main}` on the tip instead");
+            assert!(ran.stderr.contains(&how), "{}", ran.stderr);
+            assert_eq!(ran.stderr.lines().count(), 3, "{}", ran.stderr);
+        }
+        let ran = jtac(&f.ci, &["ci", "--base", main]);
+        assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+        assert!(!f.ci.git(&["for-each-ref", "refs/jtac"]).contains(&tip));
     }
-    let ran = jtac(&f.ci, &["ci", "--base", &f.main]);
-    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
-    assert!(!f.ci.git(&["for-each-ref", "refs/jtac"]).contains(&tip));
 }

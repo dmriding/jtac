@@ -103,9 +103,9 @@ runs:
 
     # A tip the forge names as a merged pull request's gets `check --from <its head>`, CI's one
     # verdict from the old tip with the head chain's waivers in scope, and a root; anything
-    # else, a direct push, a fast-forward or a merge with the head on its first-parent line
-    # (decision 66), gets `jtac ci` from the old tip and no root, so a bypass is judged and
-    # never signed over (decision 43); a root on the tip, at the fetch
+    # else, a direct push, a fast-forward or a tip with the pull request's commits on its
+    # first-parent line (decision 66), gets `jtac ci` from the old tip and no root, so a
+    # bypass is judged and never signed over (decision 43); a root on the tip, at the fetch
     # or on the remote when the job's push is refused, stands only as CI's own for this head.
     # A force push or an old tip the clone cannot fetch is refused: a gate that cannot anchor
     # judges nothing.
@@ -164,10 +164,13 @@ runs:
               "Nothing else to do."
           gate ci --base "$BEFORE"; exit $?
         fi
-        # `grep -c`, not `-q`: an early exit would fail `rev-list` under pipefail.
-        if [ "$(git rev-list --first-parent "$BEFORE..$GITHUB_SHA" | grep -c -x -F "$head" || true)" != 0 ]; then
-          say "jtac: no CI root: the head of pull request #$number is on the tip's first-parent line, so the commits there are the pull request's own and not the forge's; the push is judged below." \
-              "A merge root speaks for the tip's first-parent line back to the old tip, which every merge the forge makes fills with its own commits; a merge pushed with the pull request as its first parent does not." \
+        # The pull request's commits on the tip's first-parent line are a prefix of it from the
+        # old tip, so the lowest commit there is the one test (decision 66).
+        git fetch -q "$REMOTE" "+refs/pull/$number/head:refs/remotes/pull/$number/head"
+        first=$(git rev-list --first-parent "$BEFORE..$GITHUB_SHA" | tail -n 1)
+        if [ -n "$first" ] && git merge-base --is-ancestor "$first" "$head"; then
+          say "jtac: no CI root: $(git rev-parse --short "$first"), the first commit this push put on the branch's first-parent line, is pull request #$number's own and not the forge's; the push is judged below." \
+              "A merge root speaks for the tip's first-parent line back to the old tip, which every merge the forge makes fills with its own commits; a merge pushed with the pull request's commits as its first parent does not." \
               "Merge pull requests through the forge and deny direct pushes in the ruleset. jtac waive <commit> --ci --reason records a merge made around CI."
           gate ci --base "$BEFORE"; exit $?
         fi
@@ -177,7 +180,6 @@ runs:
               "Run jtac init --ci github in a clone: it prints the environment and gh secret set commands with the key path filled in; then re-run this job."
           exit 2
         fi
-        git fetch -q "$REMOTE" "+refs/pull/$number/head:refs/remotes/pull/$number/head"
         # The head repository's roots for the pull request's own commits alone, where this clone
         # holds none, and no tags: a fork never supplies the old tip's root, so the merge root's
         # parent stays the branch's own. A root already on the tip is `check --from`'s to judge.

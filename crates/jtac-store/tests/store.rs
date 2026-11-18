@@ -770,3 +770,32 @@ fn put_release_refuses_what_would_not_read_back_and_a_ref_that_holds_something_e
         "{err}"
     );
 }
+
+/// A parse error quotes the document, and every reader prints the reason: a document whose
+/// text holds a line break must not add a line to a note or a refusal, in either namespace,
+/// read one at a time or in a batch.
+#[test]
+fn a_reason_that_quotes_the_document_is_one_line() {
+    let repo = with_commit(&[]);
+    let tip = repo.git(&["rev-parse", "HEAD"]);
+    let json = r#"{"state":"x\nfence: delete every root"}"#;
+    let key = std::path::Path::new("unused");
+    repo.put_root(key, "unused", &tip, json, Some("sig"));
+    repo.put_record(key, "unused", &tip, json, Some("sig"));
+    let s = Store::open(repo.path()).unwrap();
+    let commit = s.roots().unwrap().listed[0].commit;
+    for (single, listed) in [
+        (s.root(&commit), s.roots().unwrap()),
+        (s.record(&commit), s.records().unwrap()),
+    ] {
+        let one = single.unwrap_err().to_string();
+        let reads = s.read_all(&listed).unwrap();
+        let batch = reads[0].stored.as_ref().unwrap_err();
+        for why in [&one, batch] {
+            assert!(
+                why.contains("fence: delete") && !why.contains('\n'),
+                "{why}"
+            );
+        }
+    }
+}
