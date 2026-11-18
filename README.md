@@ -54,7 +54,7 @@ refusal: the gate could not answer.
 
 ## What it is today
 
-**v0.2.18 is the latest release.**
+**v0.2.37 is the latest release.**
 [`DESIGN.md`](https://github.com/dmriding/jtac/blob/main/DESIGN.md) is the source of
 truth; `main` is the development line; a release is a signed `v*` tag
 ([`docs/RELEASING.md`](https://github.com/dmriding/jtac/blob/main/docs/RELEASING.md)).
@@ -75,6 +75,10 @@ What works now:
 - **The CI gate, on GitHub.** `jtac ci` judges every pull request again and
   compares the pushed root with its own run; a merge commit gets a root the
   CI key signed.
+- **Checks read from your own CI.** Under policy version 2 a check names the
+  workflow and job that already run it; the merge reads that result for the
+  exact commit, and no gate runs the check a second time
+  ([`docs/CI.md`](https://github.com/dmriding/jtac/blob/main/docs/CI.md)).
 - **The release gate.** A tag is attested only when every commit in its range
   is covered or declared off by a trusted root.
 - **Reading evidence.** `jtac verify` and `jtac audit` work in any clone,
@@ -99,7 +103,7 @@ What it is not yet:
 
 jtac gates this repository. Every commit on `main` since v0.2.7 is covered
 (`jtac audit v0.2.7..main`), and each release since v0.2.9 carries a release
-attestation the CI key signed (`jtac release v0.2.18 --verify`). Older commits read `absent` where
+attestation the CI key signed (`jtac release v0.2.37 --verify`). Older commits read `absent` where
 no root reaches them: they predate the first root, or went around the gate where no later root
 covers them.
 
@@ -113,9 +117,9 @@ what could not be proven.
   touches. A low tier merges on the CI verdict, a high tier needs a named
   person who owns the area, and a change to the gate's own policy is always
   high tier (`DESIGN.md` section 15).
-- **Then, for teams.** Checks reused from a trusted CI run, organisation
-  policy from a signed release of a policy repository, and `jtac policy`,
-  `jtac scope` and `jtac who` (`DESIGN.md` sections 7, 15 and 18).
+- **Then, for teams.** Organisation policy from a signed release of a policy
+  repository, and `jtac policy`, `jtac scope` and `jtac who` (`DESIGN.md`
+  sections 7, 15 and 18).
 - **v0.3, review round and packet.** Model reviewers whose reports are
   recorded as evidence and never approve; a human sees only what could not be
   proven.
@@ -127,8 +131,8 @@ what could not be proven.
 
 Released so far: v0.1, the local gate (checks, diff rules, signed roots, the
 `pre-push` hook, the shell command classifier, the advisory tool-call hook,
-`jtac bench`, the install script); v0.2, the CI gate, the release gate and
-`jtac backtest`.
+`jtac bench`, the install script); v0.2, the CI gate, the release gate,
+`jtac backtest` and checks read from a repository's own CI.
 
 ## Install
 
@@ -232,7 +236,7 @@ Only roots and signatures travel. In any clone:
 git fetch origin '+refs/jtac/*:refs/jtac/*'   # jtac init adds this refspec
 jtac verify main                               # exit 1 on a bad root
 jtac audit main                                # the coverage table
-jtac release v0.2.18 --verify                  # the release attestation against the roots
+jtac release v0.2.37 --verify                  # the release attestation against the roots
 ```
 
 That refspec makes `refs/jtac/*` a namespace a pruning fetch prunes: `git fetch --prune`, or

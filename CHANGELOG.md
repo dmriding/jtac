@@ -6,6 +6,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ## [Unreleased]
 
+## [0.2.37] - 2026-11-19
+
 ### Added
 
 - (0.2.34) `jtac init --ci github --read <id>=<workflow path>[:<job>]`, once for each check,
@@ -37,6 +39,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.37) README lists checks read from a repository's own CI among what works, where it
+  stood under what is planned.
 - (0.2.37) Three developer-facing texts (issues 138, 185, 187).
   - `jtac check`'s note for a clone that names no default branch has one command per
     state: `set-head` as before, the fetch that brings the branch first where the clone
