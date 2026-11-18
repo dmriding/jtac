@@ -4,8 +4,8 @@
 //! Where the nodes are not local, the root's signature is the answer and the detail is not;
 //! a signature that does not hold ends it: nothing is recomputed for an invalid root. The
 //! facts are the root's shape's (section 15.2): the `run` checks for a root without `from`,
-//! which is held to the policy in the tree it names as every reader holds it. A failure
-//! record replays the same way and holds when its verdict fails again.
+//! which is held to the policy in the tree it names as every reader holds it. With
+//! `--record` a failure record replays the same way and holds when its verdict fails again.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -258,23 +258,20 @@ fn embeds(root: &jtac_core::Root, nodes: &[Node]) -> bool {
     read.len() == root.observed.len() && read.iter().all(|n| root.observed.contains(n))
 }
 
-/// The document to replay: the root, or the failure record when `--record` asks for it or
-/// the commit holds no root.
+/// The root, or with `--record` the failure record. A commit with no root is refused
+/// though it holds a record, so a failed merge never answers 0 to a plain `replay`
+/// (`replay_and_show_read_a_failure_record_and_no_record_stops_either`).
 fn document(store: &Store, commit: &GitOid, record: bool) -> Result<(Space, StoredRoot), Refusal> {
-    let root = match record {
-        true => None,
-        false => store.root(commit).map_err(Refusal::store)?,
-    };
-    if let Some(stored) = root {
-        return Ok((Space::Roots, stored));
+    let hex = commit.hex();
+    if record {
+        let stored = store.record(commit).map_err(Refusal::store)?;
+        let found = stored.map(|s| (Space::Failed, s));
+        return found.ok_or_else(|| Refusal::no_record(&hex));
     }
-    let stored = store.record(commit).map_err(Refusal::store)?;
-    stored
-        .map(|s| (Space::Failed, s))
-        .ok_or_else(|| match record {
-            true => Refusal::no_record(&commit.hex()),
-            false => Refusal::no_root(&commit.hex()),
-        })
+    let stored = store.root(commit).map_err(Refusal::store)?;
+    let recorded = matches!(store.record(commit), Ok(Some(_)));
+    let found = stored.map(|s| (Space::Roots, s));
+    found.ok_or_else(|| Refusal::no_root(&hex, recorded))
 }
 
 /// A note for the failure record beside a replayed root: no record stops the root's replay.

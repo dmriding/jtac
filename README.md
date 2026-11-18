@@ -212,9 +212,9 @@ sends its roots; the same push again succeeds
 | `jtac why` | The last verdict's reasons, each with its rule, why, and the fix |
 | `jtac waive` | The signed off-switch: one commit, one rule under one path for up to 30 days, or with `--ci` the CI gate on a commit merged without it, with a reason |
 | `jtac verify [range]` | Every root bearing on the range: tree, signature, waivers, chain; exit 1 on an invalid one, or on an absent commit with `--require-coverage` |
-| `jtac replay <commit>` | Recomputes a root's Merkle root, counts and verdict from the local nodes, on the machine that ran the check |
+| `jtac replay <commit>` | Recomputes a root's Merkle root, counts and verdict from the local nodes, on the machine that ran the check; `--record` replays a failed merge's failure record |
 | `jtac audit [range]` | The coverage table: covered, declared off, absent, by which root, signed by whom; a `ci` tag where a CI waiver stands in for CI's root |
-| `jtac show [range]` | The root refs a push would send, byte for byte |
+| `jtac show [range]` | The root refs a push would send, byte for byte, and apart from them the failure records the range holds |
 | `jtac release <tag>` | The release gate: every commit since the previous attested release (or `--from`) covered or declared off by a root the tag's tree trusts, else refused naming each; `--require-ci` holds the first-parent line to CI's roots; `--push <remote>` signs the attestation in `jtac-release-v1` and sends it; `--verify` holds a tag's attestation to this clone's roots |
 | `jtac bench` | The public proof: ten controls attacked through their real path in a scratch repository, each row quoting the gate |
 | `jtac backtest <range>` | What the diff-integrity rules would have said over merged history: one unit per first-parent commit, a summary of counts and rule ids that names no path; `--rows <file>` writes the findings for adjudication. Writes nothing to the repository |

@@ -1961,11 +1961,13 @@ fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
     assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
 }
 
-/// Issue 177: `replay` recomputes a failure record as it does a root and holds it when the
-/// verdict fails again; a commit with no root replays its record, and one with both replays
-/// the root and names `--record`. `show` prints the record apart from what a push sends. No
-/// record stops either: a second clone is told the nodes are not local, a record signed
-/// over a verdict that passes is a mismatch, and a ref that holds none is a note.
+/// Issue 177: `replay --record` recomputes a failure record as `replay` does a root and
+/// holds it when the verdict fails again. Without the flag a commit that holds a record
+/// and no root is refused, naming it, so a failed merge never answers 0; one with both
+/// replays the root and names `--record`. `show` prints the record first, apart from what
+/// a push sends. No record stops either: a second clone is told the nodes are not local, a
+/// record signed over a verdict that passes is a mismatch, and a ref that holds none is a
+/// note beside a root and nothing beside none.
 #[test]
 fn replay_and_show_read_a_failure_record_and_no_record_stops_either() {
     let r = reading();
@@ -1974,18 +1976,26 @@ fn replay_and_show_read_a_failure_record_and_no_record_stops_either() {
     let (code, v, err) = r.concluded("failure", "", true);
     assert_eq!(code, 1, "{v}{err}");
     let record = read_record(ci, &r.second);
-    for more in [&[][..], &["--record"]] {
-        let (code, v, err) = json(ci, &[&["replay", &r.second, "--json"][..], more].concat());
-        assert_eq!(code, 0, "{v}{err}");
-        assert_eq!(v["document"], "failure record", "{v}");
-        assert_eq!(v["root"], record.id().unwrap().to_string(), "{v}");
-        assert_eq!(v["state"]["recorded"], "failed", "{v}");
-        assert_eq!(v["state"]["recomputed"], "failed", "{v}");
-        assert_eq!((&v["pass"], &v["matches"]), (&false.into(), &true.into()));
-        let notes = v["notes"].to_string();
-        assert!(notes.contains("it failed on: check `e2e` is Fail"), "{v}");
-    }
-    let text = ok(ci, &["replay", &r.second]);
+    let ran = jtac(ci, &["replay", &r.second]);
+    let what = format!(
+        "jtac: {} has no root in this clone, and holds a failure record.",
+        r.second
+    );
+    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+    let how = format!("Run `jtac replay {} --record` to replay", r.second);
+    assert!(ran.stderr.contains(&how), "{}", ran.stderr);
+    let (code, v, err) = json(ci, &["replay", &r.second, "--record", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["document"], "failure record", "{v}");
+    assert_eq!(v["root"], record.id().unwrap().to_string(), "{v}");
+    assert_eq!(v["state"]["recorded"], "failed", "{v}");
+    assert_eq!(v["state"]["recomputed"], "failed", "{v}");
+    assert_eq!((&v["pass"], &v["matches"]), (&false.into(), &true.into()));
+    let notes = v["notes"].to_string();
+    assert!(notes.contains("it failed on: check `e2e` is Fail"), "{v}");
+    assert!(!notes.contains("also holds a failure record"), "{v}");
+    let text = ok(ci, &["replay", &r.second, "--record"]);
     let line = format!("REPLAYED: {}'s failure record replays to ABORT ", r.second);
     assert!(text.starts_with(&line), "{text}");
 
@@ -2003,9 +2013,10 @@ fn replay_and_show_read_a_failure_record_and_no_record_stops_either() {
         first.ends_with("; 1 failure records are held and not sent"),
         "{text}"
     );
-    assert!(text.contains(&format!("\nrecord {name} ")), "{text}");
+    let at = |line: &str| text.find(line).unwrap_or(usize::MAX);
+    assert!(at(&format!("\nrecord {name} ")) < at("\nref "), "{text}");
 
-    let ran = jtac(&r.f.second(), &["replay", &r.second]);
+    let ran = jtac(&r.f.second(), &["replay", &r.second, "--record"]);
     let what = format!(
         "jtac: the failure record for {} verifies, but its nodes are not in this clone's store.",
         r.second
@@ -2060,4 +2071,9 @@ fn replay_and_show_read_a_failure_record_and_no_record_stops_either() {
     assert_eq!(shown["root_json"], "", "{v}");
     let note = shown["note"].as_str().unwrap_or_default();
     assert!(note.starts_with("it does not hold a failure record"), "{v}");
+    ci.git(&["update-ref", &failed_ref(&r.first), &r.second]);
+    let ran = jtac(ci, &["replay", &r.first]);
+    let what = format!("jtac: {} has no root in this clone.", r.first);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
 }

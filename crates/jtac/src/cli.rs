@@ -248,10 +248,10 @@ pub struct VerifyArgs {
 /// `jtac replay` flags.
 #[derive(Args, Debug, PartialEq, Eq)]
 pub struct ReplayArgs {
-    /// The commit whose root to replay
+    /// The commit whose root, or with `--record` failure record, to replay
     #[arg(value_name = "COMMIT")]
     pub commit: String,
-    /// Replay the commit's failure record, which is also what a commit with no root replays
+    /// Replay the commit's failure record, which holds when its verdict fails again
     #[arg(long)]
     pub record: bool,
     /// An allowed-signers file instead of `.jtac/signers` at HEAD

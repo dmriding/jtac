@@ -140,7 +140,8 @@ the policy's `job`. Both files are protected, so each change is a finding a waiv
 Never move the policy alone: started by a push, the root job passes no results file, exits
 2 and writes no merge root, so no commit reads covered, `verify --require-coverage` fails
 and `jtac release` refuses. init says so when the workflow it keeps under such a policy
-does not hold the `workflows:` line it would write, spelled as it writes it. This repository's `.github/workflows/jtac.yml` and
+does not hold the `workflows:` line it would write, under `workflow_run:` and spelled as
+it writes it. This repository's `.github/workflows/jtac.yml` and
 `.jtac/policy.toml` are a hand-written example, built from the tree and not a release.
 
 The results file's format is `DESIGN.md` section 15.2; a team on another forge writes it

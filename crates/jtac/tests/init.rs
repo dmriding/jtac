@@ -1162,7 +1162,8 @@ fn a_kept_policy_decides_the_trigger_and_a_read_it_lacks_is_refused_with_the_lin
     );
     let text = std::fs::read_to_string(&jtac_yml).unwrap();
     assert!(text.contains("    workflows: [\"ci\"]\n"), "{text}");
-    let note = "`.github/workflows/jtac.yml` was kept and holds no line `workflows: [\"ci\"]`";
+    let note = "`.github/workflows/jtac.yml` was kept and holds no line `workflows: [\"ci\"]` \
+                under a `workflow_run:` line";
     assert!(!ran.stdout.contains(note), "{}", ran.stdout);
     let ran = env.init(&["--ci", "github"]);
     assert!(!ran.stdout.contains(note), "{}", ran.stdout);
@@ -1173,6 +1174,8 @@ fn a_kept_policy_decides_the_trigger_and_a_read_it_lacks_is_refused_with_the_lin
         run("workflows: [\"deploy\"]"),
         run("workflows: [\"ci\", \"deploy\"]"),
         run("# workflows: [\"ci\"]"),
+        run("types: [completed]\n  workflow_dispatch:\n    workflows: [\"ci\"]"),
+        "name: jtac\non:\n  push:\njobs:\n  a:\n    run: |\n      workflows: [\"ci\"]\n".to_owned(),
         "name: jtac\non:\n  push:\n# workflow_run: later\n".to_owned(),
     ] {
         std::fs::write(&jtac_yml, &kept).unwrap();

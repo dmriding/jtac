@@ -38,15 +38,16 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 ### Changed
 
 - (0.2.36) Three leftovers of policy version 2 (issues 177, 182, 183).
-  - `jtac replay <commit>` replays a failure record as it does a root, for a commit that
-    holds no root or with `--record`, and holds it when its verdict fails again. The
-    output gains `document`, and a root replayed beside a record names `--record`.
+  - `jtac replay <commit> --record` replays a failure record as `replay` does a root, and
+    holds it when its verdict fails again. The output gains `document`; a root replayed
+    beside a record, and the refusal for a commit that holds a record and no root, name
+    `--record`.
   - `jtac show` prints the failure records the range's commits hold, apart from the refs a
     push sends; JSON gains `records`. The merge job's refusal of a standing record names
     `jtac show`.
   - `jtac init --ci github` reads a workflow that opens with one `---` line, and notes a
-    kept `jtac.yml` that does not hold the `workflows:` line it would write, where it
-    tested for the text `workflow_run:` alone.
+    kept `jtac.yml` that does not hold the `workflows:` line it would write under
+    `workflow_run:`, where it tested for the text `workflow_run:` alone.
 - (0.2.35) The local gate's base (`DESIGN.md` section 10.3, M22, decision 69). `jtac check`
   diffs from the merge base with the remote's default branch, the one `origin/HEAD` names,
   unless a covered ancestor of the branch's own is nearer the tip: a branch cut from a

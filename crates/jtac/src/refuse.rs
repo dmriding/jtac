@@ -593,15 +593,23 @@ impl Refusal {
     }
 
     /// `replay` on a commit with no root ref.
-    pub fn no_root(commit: &str) -> Self {
+    pub fn no_root(commit: &str, recorded: bool) -> Self {
+        let (also, first) = match recorded {
+            true => (
+                ", and holds a failure record",
+                format!("Run `jtac replay {commit} --record` to replay the failure record. "),
+            ),
+            false => ("", String::new()),
+        };
         Self::new(
-            format!("{commit} has no root in this clone."),
+            format!("{commit} has no root in this clone{also}."),
             "`jtac replay` recomputes a root from its nodes; a commit without a root has \
              nothing to replay, and a commit covered by a later root is replayed through that \
-             root's tip.",
+             root's tip. A failure record is replayed only when asked for, so a merge whose \
+             verdict failed never answers as a root does.",
             format!(
-                "Run `jtac audit {commit}` to see which root covers it, or `git fetch origin \
-                 +refs/jtac/*:refs/jtac/*` if the root was written elsewhere."
+                "{first}Run `jtac audit {commit}` to see which root covers it, or `git fetch \
+                 origin +refs/jtac/*:refs/jtac/*` if the root was written elsewhere."
             ),
         )
     }
@@ -891,7 +899,8 @@ mod tests {
             ),
             Refusal::no_upstream(),
             Refusal::trust("not a regular file"),
-            Refusal::no_root("abc"),
+            Refusal::no_root("abc", false),
+            Refusal::no_root("abc", true),
             Refusal::no_record("abc"),
             Refusal::not_local("root", "abc", "its nodes are not in this clone's store"),
             Refusal::policy_differs("root", "abc", "sha256:0"),

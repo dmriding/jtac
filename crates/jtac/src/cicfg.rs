@@ -197,8 +197,8 @@ pub fn apply(out: &mut InitOutput, p: Option<&Planned>, dry: bool) -> Result<(),
     }
     if p.deaf {
         out.notes.push(format!(
-            "`{WORKFLOW_PATH}` was kept and holds no line `{}`, the `workflow_run` trigger \
-             init writes for this policy, which reads checks from CI: a root job no listed \
+            "`{WORKFLOW_PATH}` was kept and holds no line `{}` under a `workflow_run:` line, \
+             the trigger init writes for this policy, which reads checks from CI: a root job no listed \
              workflow starts reads no result and writes no root. A file that lists them in \
              another spelling needs nothing; otherwise remove it and run `jtac init --ci \
              github` again, or edit it by docs/CI.md in the jtac repository",

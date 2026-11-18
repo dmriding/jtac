@@ -150,11 +150,15 @@ pub fn trigger_line(names: &[String]) -> String {
     format!("workflows: [{}]", listed(names))
 }
 
-/// Whether a kept workflow holds `trigger_line` on a line of its own. No YAML is read, so
-/// the same list in another spelling is not found; the note that follows says which line.
+/// Whether a kept workflow holds `trigger_line` on the line under `workflow_run:`, as init
+/// writes the two. No YAML is read, so the same list in another spelling is not found; the
+/// note that follows says which lines.
 pub fn listens(kept: &str, names: &[String]) -> bool {
     let line = trigger_line(names);
-    kept.lines().any(|l| l.trim() == line)
+    let lines: Vec<&str> = kept.lines().map(str::trim).collect();
+    lines
+        .windows(2)
+        .any(|w| w[0] == "workflow_run:" && w[1] == line)
 }
 
 /// The CI key's line for `.jtac/signers`, confined to its namespaces so it signs no ordinary
