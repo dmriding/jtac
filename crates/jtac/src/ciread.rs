@@ -129,7 +129,10 @@ impl Refusal {
         ask(
             format!("{POLICY_PATH} in the work tree cannot hold a check `--read` names: {what}."),
             why,
-            format!("In the work tree, {fix}; then run `jtac init --ci github` again."),
+            format!(
+                "In the work tree, {fix}; then run `jtac init --ci github` again with the \
+                 same flags."
+            ),
         )
     }
 

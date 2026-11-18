@@ -257,7 +257,8 @@ impl Refusal {
             "no remote names the forge.",
             "The workflow names the default branch the merge root job watches and the \
              repository the CODEOWNERS line is for, both read from the remote.",
-            "Run `git remote add origin <url>`, then `jtac init --ci github` again.",
+            "Run `git remote add origin <url>`, then `jtac init --ci github` again with the \
+             same flags.",
         )
     }
 
@@ -312,15 +313,16 @@ impl Refusal {
              that needs an escape it could get wrong, would leave a trigger that never fires \
              and merges with no root, silently.",
             format!(
-                "Give `{file}` that form, then run `jtac init --ci github` again: `name: \
-                 <name>` as the first line that is not blank or a comment, whole on that \
-                 line, the next line not indented under it; the name of letters, digits, \
-                 spaces and `{}`, in double quotes where it holds a colon, does not start \
-                 with a letter, or is a word YAML reads as a value (`on`, `yes`, `true`); \
+                "Give `{file}` that form, then run `jtac init --ci github` again with the \
+                 same flags: no byte-order mark; `name: <name>` as the first line that is \
+                 not blank or a comment, whole on that line, the next line not indented \
+                 under it; the name of letters, digits, spaces and `{}` with no space at \
+                 either end, in double quotes where it holds a colon, does not start with a \
+                 letter, or is a word YAML reads as a value (`on`, `yes`, `true`, `y`); \
                  every other line at the left margin a comment or a plain `key:` that is \
-                 not `name`, with no tag, anchor, `?`, `<<` or `---`; line feeds as the only \
-                 line breaks. Or write `{WORKFLOW_PATH}` by hand (docs/CI.md in the jtac \
-                 repository).",
+                 not `name`, with no tag, anchor, `?`, `<<` or `---`; each line ended by a \
+                 line feed, alone or after a carriage return. Or write `{WORKFLOW_PATH}` by \
+                 hand (docs/CI.md in the jtac repository).",
                 wfname::PUNCTUATION
             ),
         )
@@ -334,7 +336,8 @@ impl Refusal {
              all name that branch; a guess from the branch checked out would fence a feature \
              branch and leave the real one unsigned.",
             format!(
-                "Run `git remote set-head {} --auto`, then `jtac init --ci github` again.",
+                "Run `git remote set-head {} --auto`, then `jtac init --ci github` again \
+                 with the same flags.",
                 quoted(remote, "<remote>")
             ),
         )
@@ -348,7 +351,8 @@ impl Refusal {
             "The trust file names the CI key by its public half; without it the key could \
              sign roots no reader trusts.",
             format!(
-                "Run `ssh-keygen -y -f {key} > {key}.pub`, then `jtac init --ci github` again."
+                "Run `ssh-keygen -y -f {key} > {key}.pub`, then `jtac init --ci github` again \
+                 with the same flags."
             ),
         )
     }
@@ -365,7 +369,7 @@ impl Refusal {
              can clear the next protected change; the CI key alone could clear nothing.",
             format!(
                 "Run `ssh-keygen -y -f {path} > {path}.pub`, then `jtac init --ci github` \
-                 again."
+                 again with the same flags."
             ),
         )
     }

@@ -93,13 +93,15 @@ init refuses, before it writes anything:
 - a named file that is not in the work tree;
 - a workflow whose name is not in the one form init reads. The trigger lists names as
   patterns and init reads the file without a YAML parser, so a name it read in part or
-  escaped wrong would never fire, silently. The form: `name: <name>` is the first line
-  that is not blank or a comment, whole on that line, and the next line is not indented
-  under it; the name is letters, digits, spaces and `-_./()&,:`, in double quotes where it
-  holds a colon, does not start with a letter or is a word YAML reads as a value (`on`,
-  `yes`, `true`); every other line at the left margin is a comment or a plain `key:` that
-  is not `name`, with no tag, anchor, `?`, `<<` or `---`; and every line break is a line
-  feed. Give the file that form, or write `jtac.yml` by hand;
+  escaped wrong would never fire, silently. The form: the file starts with no byte-order
+  mark; `name: <name>` is the first line that is not blank or a comment, whole on that
+  line, and the next line is not indented under it; the name is letters, digits, spaces
+  and `-_./()&,:` with no space at either end, in double quotes where it holds a colon,
+  does not start with a letter or is a word YAML reads as a value (`on`, `yes`, `true`,
+  `y`); every other line at the left margin is a comment or a plain `key:` that is not
+  `name`, with no tag, anchor, `?`, `<<` or `---`, so a file that opens with `---` is
+  refused (#183); and every line ends in a line feed, alone or after a carriage return.
+  Give the file that form, or write `jtac.yml` by hand;
 - a policy already in the tree that lacks a named check: init never rewrites one, and
   prints the lines to add.
 

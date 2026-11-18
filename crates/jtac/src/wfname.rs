@@ -30,7 +30,7 @@ pub enum Unreadable {
 pub const PUNCTUATION: &str = "-_./()&,:";
 
 /// YAML reads these bare words as something other than a string.
-const NOT_STRINGS: &[&str] = &["true", "false", "null", "yes", "no", "on", "off"];
+const NOT_STRINGS: &[&str] = &["true", "false", "null", "yes", "no", "on", "off", "y", "n"];
 
 fn plain(name: &str) -> bool {
     !name.is_empty()
@@ -112,6 +112,58 @@ pub fn name(text: &str) -> Result<String, Unreadable> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values outside the spelling that echo as written.
+    const SPELLING: &[&str] = &[
+        "",
+        "Build*",
+        "Build C++",
+        "what?",
+        "!ci",
+        "[ci]",
+        "\"ci\" extra",
+        "\"ci",
+        "'ci\"",
+        "\"\"",
+        "\" ci\"",
+        "|",
+        ">-",
+        "&anchor ci",
+        "*alias",
+        "!!str ci",
+        "true",
+        "False",
+        "null",
+        "YES",
+        "No",
+        "on",
+        "Off",
+        "y",
+        "N",
+        "123",
+        "2 fast",
+        "ci: build",
+        "ci:",
+        "a:b",
+        "a \"b\"",
+        "ci#x",
+    ];
+
+    /// Values outside the spelling, and their echo in printable ASCII.
+    const ESCAPED: &[(&str, &str)] = &[
+        ("ci\ttests", "ci\\u{0009}tests"),
+        ("ci\t", "ci\\u{0009}"),
+        ("caf\u{e9}", "caf\\u{00E9}"),
+        ("ci\u{a0}", "ci\\u{00A0}"),
+        ("\u{a0}ci", "\\u{00A0}ci"),
+        ("ci\u{a0} # c", "ci\\u{00A0} # c"),
+        ("\u{a0}\"ci\"", "\\u{00A0}\"ci\""),
+        ("\"ci\"\u{a0}", "\"ci\"\\u{00A0}"),
+        ("ci\u{2003}", "ci\\u{2003}"),
+        ("a\\b", "a\\u{005C}b"),
+        ("\"a\\\"b\"", "\"a\\u{005C}\"b\""),
+        ("ci \u{1b}[2J", "ci \\u{001B}[2J"),
+    ];
 
     #[test]
     fn only_a_plainly_spelled_name_is_read_and_every_other_file_is_unreadable() {
@@ -210,57 +262,17 @@ mod tests {
             let text = format!("name: ci\non: push\n{rival}\n");
             assert_eq!(name(&text), Err(Unreadable::Again), "{text:?}");
         }
-        for value in [
-            "",
-            "Build*",
-            "Build C++",
-            "what?",
-            "!ci",
-            "[ci]",
-            "\"ci\" extra",
-            "\"ci",
-            "'ci\"",
-            "\"\"",
-            "\" ci\"",
-            "|",
-            ">-",
-            "&anchor ci",
-            "*alias",
-            "!!str ci",
-            "true",
-            "No",
-            "on",
-            "123",
-            "2 fast",
-            "ci: build",
-            "ci:",
-            "a:b",
-            "a \"b\"",
-            "ci#x",
-        ] {
+        for value in SPELLING {
             assert_eq!(
                 name(&format!("name: {value}\n")),
-                Err(Unreadable::Spelling(value.to_owned())),
+                Err(Unreadable::Spelling((*value).to_owned())),
                 "{value:?}"
             );
         }
-        for (value, shown) in [
-            ("ci\ttests", "ci\\u{0009}tests"),
-            ("ci\t", "ci\\u{0009}"),
-            ("caf\u{e9}", "caf\\u{00E9}"),
-            ("ci\u{a0}", "ci\\u{00A0}"),
-            ("\u{a0}ci", "\\u{00A0}ci"),
-            ("ci\u{a0} # c", "ci\\u{00A0} # c"),
-            ("\u{a0}\"ci\"", "\\u{00A0}\"ci\""),
-            ("\"ci\"\u{a0}", "\"ci\"\\u{00A0}"),
-            ("ci\u{2003}", "ci\\u{2003}"),
-            ("a\\b", "a\\u{005C}b"),
-            ("\"a\\\"b\"", "\"a\\u{005C}\"b\""),
-            ("ci \u{1b}[2J", "ci \\u{001B}[2J"),
-        ] {
+        for (value, shown) in ESCAPED {
             assert_eq!(
                 name(&format!("name: {value}\n")),
-                Err(Unreadable::Spelling(shown.to_owned())),
+                Err(Unreadable::Spelling((*shown).to_owned())),
                 "{value:?}"
             );
         }
