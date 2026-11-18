@@ -766,8 +766,9 @@ fn a_pruning_fetch_deletes_an_unpushed_root_and_the_refusal_names_the_cause() {
 
 /// What the no-root refusal says of `--no-verify`, held to `audit`: a commit pushed around
 /// the hook reads absent unless a later root reaches it, and the base decides that, not the
-/// bypass. The next root stops at a commit the branch's upstream or the default branch
-/// holds (section 10.3, decision 69) and walks over it from a covered ancestor.
+/// bypass. The next root stops at a commit the branch's upstream holds where no ancestor
+/// is covered, and at one the default branch holds though an ancestor is (section 10.3,
+/// decision 69); it walks over one on a branch cut from a covered commit.
 #[test]
 fn a_bypassed_commit_is_absent_unless_a_later_root_reaches_it_and_the_base_decides_that() {
     let origin = Repo::bare(&[]);
@@ -798,6 +799,10 @@ fn a_bypassed_commit_is_absent_unless_a_later_root_reaches_it_and_the_base_decid
         "its upstream holds it"
     );
     repo.git(&["switch", "-q", "main"]);
+    repo.write("rooted.txt", b"rooted\n");
+    repo.commit("a covered ancestor below the bypass");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["push", "-q", "origin", "main"]);
     assert_eq!(
         around("d.txt", "main"),
         "absent",
