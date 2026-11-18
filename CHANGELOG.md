@@ -48,8 +48,8 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
     commit of the pull request's own, as a merge pushed with the pull request as its first
     parent leaves it, and names `jtac ci`; the action routes that push to `jtac ci` as it
     does a fast-forward.
-  - A store's reason for a document that does not read is one line, so a document's own
-    text adds no line to a note or a refusal.
+  - The store's reason for a root or a failure record that does not read is one line, so
+    the document's own text adds no line to a note or a refusal.
   - A ref on the tip that holds no root is refused as a standing root is, with the ref to
     delete; it was a store error.
   - `jtac show` and `jtac replay` do not read a record yet (issue 177).

@@ -1912,7 +1912,8 @@ fn a_record_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
 /// the first parent, an earlier commit of the pull request as the first parent with the
 /// head second, and that commit as the only parent. The job refuses each for every head
 /// that holds the line's first commit, names `jtac ci`, which judges the push and writes
-/// nothing, and leaves no ref behind.
+/// nothing, and leaves no ref behind. A head ahead of HEAD holds HEAD itself, the line's
+/// first commit when the old tip is HEAD's parent, and is refused the same way.
 #[test]
 fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
     let f = forge();
@@ -1949,4 +1950,11 @@ fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
         assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
         assert!(!f.ci.git(&["for-each-ref", "refs/jtac"]).contains(&tip));
     }
+    let tip = f.ci.git(&[&made[..], &["-p", main]].concat());
+    f.ci.git(&["reset", "-q", "--hard", &tip]);
+    let ahead = f.ci.git(&[&made[..], &["-p", tip.as_str()]].concat());
+    let ran = jtac(&f.ci, &["check", "--from", &ahead, "--base", main]);
+    let what = format!("jtac: `--from {ahead}` holds {}, the first", &tip[..12]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
 }
