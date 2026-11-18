@@ -146,7 +146,9 @@ it writes it. This repository's `.github/workflows/jtac.yml` and
 
 The results file's format is `DESIGN.md` section 15.2; a team on another forge writes it
 from its own runs and passes it to
-`jtac check --from <head> --base <old tip> --results <file> --branch <name>`.
+`jtac check --from <head> --base <old tip> --results <file> --branch <name>`. Exit 3 means
+a result it reads is still running: run the command again with a fresh results file when
+the run concludes.
 
 ## The release job
 
