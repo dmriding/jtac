@@ -23,6 +23,7 @@ use serde::Serialize;
 
 use crate::Printed;
 use crate::cli::ReplayArgs;
+use crate::init::ask;
 use crate::refuse::Refusal;
 use crate::repo::{self, Head};
 use crate::trust::Signers;
@@ -250,6 +251,73 @@ fn held(
     state
 }
 
+impl Refusal {
+    /// `replay` on a commit with no root ref.
+    pub fn no_root(commit: &str, recorded: bool) -> Self {
+        let (also, first) = match recorded {
+            true => (
+                ", and holds a failure record",
+                format!("Run `jtac replay {commit} --record` to replay the failure record. "),
+            ),
+            false => ("", String::new()),
+        };
+        ask(
+            format!("{commit} has no root in this clone{also}."),
+            "`jtac replay` recomputes a root from its nodes; a commit without a root has \
+             nothing to replay, and a commit covered by a later root is replayed through that \
+             root's tip. A failure record is replayed only when asked for, so a merge whose \
+             verdict failed never answers as a root does.",
+            format!(
+                "{first}Run `jtac audit {commit}` to see which root covers it, or `git fetch \
+                 origin +refs/jtac/*:refs/jtac/*` if the root was written elsewhere."
+            ),
+        )
+    }
+
+    /// `replay --record` on a commit with no failure record ref.
+    pub fn no_record(commit: &str) -> Self {
+        ask(
+            format!("{commit} has no failure record in this clone."),
+            "A failure record is what the merge job writes when its verdict fails, at \
+             `refs/jtac/failed/`; a commit without one has none to replay.",
+            format!(
+                "Run `jtac replay {commit}` for its root, `jtac audit {commit}` to see what \
+                 covers it, or `git fetch origin +refs/jtac/*:refs/jtac/*` if the record was \
+                 written elsewhere."
+            ),
+        )
+    }
+
+    /// `replay` on a root or a failure record (`noun`) whose nodes this clone never wrote.
+    pub fn not_local(noun: &str, commit: &str, what: &str) -> Self {
+        ask(
+            format!("the {noun} for {commit} verifies, but {what}."),
+            "Only roots, failure records and signatures travel; the nodes stay on the machine \
+             that wrote the document, so replay there is the only full recomputation.",
+            format!(
+                "Run `jtac verify {commit}` here, or `jtac replay {commit}` on the machine that \
+                 wrote it."
+            ),
+        )
+    }
+
+    /// `replay` could not rebuild the facts: the policy the root names is not here.
+    pub fn policy_differs(noun: &str, commit: &str, hash: &str) -> Self {
+        ask(
+            format!(
+                "the {noun} for {commit} names policy {hash}, which this clone cannot rebuild: \
+                 the policy file at its tree resolves to another hash under this build."
+            ),
+            "The verdict is a function of the resolved policy; recomputing it under a policy \
+             that differs would compare two different questions.",
+            format!(
+                "Run `jtac replay {commit}` on the machine that wrote the root, where the \
+                 resolved policy is stored, or with the jtac release that wrote it."
+            ),
+        )
+    }
+}
+
 /// Whether `root.observed` is the checks read from CI among `nodes`, each embedded once
 /// (`replay_holds_a_merge_root_s_observed_to_the_checks_read_from_ci_among_its_nodes`).
 fn embeds(root: &jtac_core::Root, nodes: &[Node]) -> bool {
@@ -414,6 +482,30 @@ fn same(yes: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_replay_refusal_has_three_parts_and_names_the_next_command() {
+        let rows = [
+            Refusal::no_root("abc", false),
+            Refusal::no_root("abc", true),
+            Refusal::no_record("abc"),
+            Refusal::not_local("root", "abc", "its nodes are not in this clone's store"),
+            Refusal::policy_differs("failure record", "abc", "sha256:0"),
+        ];
+        for r in &rows {
+            assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");
+            assert!(r.how.contains("`jtac replay abc") || r.how.contains("`jtac audit abc`"));
+            assert!(r.text().starts_with("jtac: "), "{r:?}");
+            assert!(r.text().contains("\nnegotiation: "), "{r:?}");
+            assert_eq!(r.text().lines().count(), 3, "{r:?}");
+        }
+        assert!(rows[1].how.starts_with("Run `jtac replay abc --record`"));
+        assert!(
+            rows[4]
+                .what
+                .starts_with("the failure record for abc names policy")
+        );
+    }
 
     #[test]
     fn a_reason_is_one_short_line_naming_its_check_or_rule() {
