@@ -177,8 +177,8 @@ fn render(o: &AuditOut) -> String {
 }
 
 /// The failure record that reaches the commit (DESIGN.md section 15.2): the `failed`
-/// reading with what failed, or, beside a reading that outranks it, the note that an
-/// earlier verdict failed.
+/// reading with what failed, or, beside a reading that outranks it, the note that another
+/// verdict failed.
 fn record_line(r: &RowOut) -> Option<String> {
     let record = r.ci_record.as_ref()?;
     let whose = match record.commit == r.commit {
@@ -187,7 +187,7 @@ fn record_line(r: &RowOut) -> Option<String> {
     };
     let lead = match r.ci {
         Some("failed") => "ci failed",
-        _ => "ci note: an earlier verdict failed",
+        _ => "ci note: another verdict failed",
     };
     Some(format!("{lead}: {whose}: {}", record.line()))
 }

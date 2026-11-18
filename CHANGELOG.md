@@ -27,6 +27,27 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
+- (0.2.31) A failed merge verdict is recorded (`DESIGN.md` section 15.2, M20, decision 66;
+  issue 161 note 13). `jtac check --from` whose verdict fails writes a failure record, the
+  root it would have written with the state `failed`, signed by the CI key at
+  `refs/jtac/failed/<xx>/<commit>` and sent by `--push` as a merge root is. It covers
+  nothing. `--json` gains `record`. **Changed reading:** a merge CI failed, and every
+  first-parent commit back to its old tip, reads CI `failed` where it read absent.
+  - `jtac audit` prints `ci failed:` with the check, the forge's word and the run, and
+    `ci note:` beside a reading that outranks the record; `--json` rows gain `ci_record`.
+    `jtac release` lists such a commit under `failed`. `jtac waive <merge> --ci` ships over
+    it.
+  - A re-run that passes writes the merge root and leaves the record; a re-run that fails
+    after a root stands writes the record beside it.
+  - A record on the tip that is not CI's own for this head is exit 2 with the ref named,
+    from a job whose verdict failed and no other command. The remote's own, when it refuses
+    the push, gets the same test.
+  - `jtac check --from` refuses a head on HEAD's first-parent line, a merge pushed with the
+    pull request as its first parent, and names `jtac ci`; the action routes that push to
+    `jtac ci` as it does a fast-forward.
+  - A ref on the tip that holds no root is refused as a standing root is, with the ref to
+    delete; it was a store error.
+  - `jtac show` and `jtac replay` do not read a record yet (issue 177).
 - (0.2.30) The merge job reads a check from CI (`DESIGN.md` section 15.2, M20, decision 65;
   issue 161). `jtac check --from` takes `--results <file>`, the results file a forge adapter
   writes for the commit, and with it `--branch <name>`, the branch's short name as the forge

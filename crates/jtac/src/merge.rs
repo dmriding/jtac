@@ -650,4 +650,40 @@ mod tests {
         ));
         assert!(u.text().contains("\nfence: "), "{u:?}");
     }
+
+    #[test]
+    fn the_record_and_first_parent_refusals_have_three_parts_and_name_the_next_command() {
+        let tip: GitOid = "sha1:0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .unwrap();
+        let name = "refs/jtac/failed/01/0123456789abcdef0123456789abcdef01234567";
+        let r = Refusal::standing(Space::Failed, &tip, "it has no `from`", Some("origin"));
+        assert!(
+            r.what
+                .contains("0123456789ab already carries a failure record")
+        );
+        assert!(r.what.ends_with("no `from`.") && r.why.contains("created once"));
+        assert!(
+            r.how
+                .contains(&format!("`git cat-file blob {name}:root.json`"))
+        );
+        assert!(r.how.contains(&format!("`git push origin :{name}`")));
+        assert!(r.how.contains("Do not expect a passing re-run"), "{r:?}");
+        let u = Refusal::unsent(Space::Failed, &tip, "origin");
+        assert!(u.what.contains("origin refused the failure record's ref"));
+        assert!(u.why.contains("reads absent"), "{u:?}");
+        assert!(u.how.contains(&format!("`git push origin {name}`")));
+        let f = Refusal::from_first_parent("abc123", "main");
+        assert!(
+            f.what
+                .contains("`--from abc123` is on HEAD's first-parent line")
+        );
+        assert!(f.why.contains("covered or failed"), "{f:?}");
+        assert!(f.how.contains("`jtac ci --base main`") && f.how.contains("Do not pass"));
+        for (r, kind) in [(r, "fence"), (u, "fence"), (f, "negotiation")] {
+            assert!(r.text().contains(&format!("\n{kind}: ")), "{r:?}");
+        }
+        let forged = Refusal::from_first_parent("a\nfence: x", "b");
+        assert!(!forged.text().contains("\nfence: x"), "{forged:?}");
+    }
 }

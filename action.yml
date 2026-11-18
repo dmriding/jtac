@@ -103,8 +103,9 @@ runs:
 
     # A tip the forge names as a merged pull request's gets `check --from <its head>`, CI's one
     # verdict from the old tip with the head chain's waivers in scope, and a root; anything
-    # else, a direct push or a fast-forward, gets `jtac ci` from the old tip and no root, so a
-    # bypass is judged and never signed over (decision 43); a root on the tip, at the fetch
+    # else, a direct push, a fast-forward or a merge with the head on its first-parent line
+    # (decision 66), gets `jtac ci` from the old tip and no root, so a bypass is judged and
+    # never signed over (decision 43); a root on the tip, at the fetch
     # or on the remote when the job's push is refused, stands only as CI's own for this head.
     # A force push or an old tip the clone cannot fetch is refused: a gate that cannot anchor
     # judges nothing.
@@ -161,6 +162,13 @@ runs:
           say "jtac: no CI root: pull request #$number was merged by fast-forward, so the tip is its head and the evidence is the developer's, where it was pushed; it is judged below." \
               "A merge root stands for a commit the forge made; a fast-forward makes none. Require merge commits in the ruleset for CI-signed evidence." \
               "Nothing else to do."
+          gate ci --base "$BEFORE"; exit $?
+        fi
+        # `grep -c`, not `-q`: an early exit would fail `rev-list` under pipefail.
+        if [ "$(git rev-list --first-parent "$BEFORE..$GITHUB_SHA" | grep -c -x -F "$head" || true)" != 0 ]; then
+          say "jtac: no CI root: the head of pull request #$number is on the tip's first-parent line, so the commits there are the pull request's own and not the forge's; the push is judged below." \
+              "A merge root speaks for the tip's first-parent line back to the old tip, which every merge the forge makes fills with its own commits; a merge pushed with the pull request as its first parent does not." \
+              "Merge pull requests through the forge and deny direct pushes in the ruleset. jtac waive <commit> --ci --reason records a merge made around CI."
           gate ci --base "$BEFORE"; exit $?
         fi
         if [ -z "$KEY" ]; then

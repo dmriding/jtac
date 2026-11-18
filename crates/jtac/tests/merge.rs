@@ -1655,7 +1655,7 @@ fn a_failed_merge_reads_covered_with_the_failure_noted_once_a_later_attempt_pass
     assert_eq!(row(&v, &r.b)["state"], "covered", "{v}");
     let second = r.f.second();
     let text = ok(&second, &["audit", "main"]);
-    let line = "ci note: an earlier verdict failed: its own failure record: check `e2e` fail, CI \
+    let line = "ci note: another verdict failed: its own failure record: check `e2e` fail, CI \
                 concluded `failure`";
     assert!(text.contains(line), "{text}");
     assert!(

@@ -40,8 +40,8 @@ operator's.
 | Event | Command | Result |
 | --- | --- | --- |
 | `pull_request` | `jtac ci --base origin/<base>` on the pull request head, full history, roots fetched from the repository the head lives in | Exit 0 pass, 1 fail (three parts in the log and the step summary), 2 could not answer |
-| `push` to the default branch, the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the roots of the pull request's own commits fetched from its repository where the base holds none, runs queued per branch | CI's one verdict from the old tip with the head chain's waivers in scope; a root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike; a root on the tip, found at the job's fetch or on the remote when its push is refused, stands only as CI's own for this head (a re-run or a concurrent run); any other is refused with the ref to delete |
-| `push` to the default branch, no pull request or a fast-forward | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
+| `push` to the default branch, the forge names the tip as a merged pull request's | `jtac check --from <pull request head> --base <old tip> --push origin` under the CI key, the roots of the pull request's own commits fetched from its repository where the base holds none, runs queued per branch | CI's one verdict from the old tip with the head chain's waivers in scope; a root on the tip signed in `jtac-ci-root-v1`, pushed to `refs/jtac/*`; a merge commit, a squash or a rebase alike; a root on the tip, found at the job's fetch or on the remote when its push is refused, stands only as CI's own for this head (a re-run or a concurrent run); any other is refused with the ref to delete. A verdict that fails exits 1 and writes a failure record at `refs/jtac/failed/` in place of the root, pushed the same way: the merge reads `failed` |
+| `push` to the default branch: no pull request, a fast-forward, or a merge whose first parent is the pull request | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
 | `push` that rewrote the branch, or whose old tip the clone cannot fetch | refused, exit 2 | A gate that cannot anchor at the old tip judges nothing, and says so |
 | `push` that created the branch | nothing judged, exit 0 | There is no old tip to diff from; the next push is judged |
 | any other event | refused, exit 2 | `pull_request_target` would hand the pull request head the secrets |
@@ -65,7 +65,8 @@ Policy version 2 lets a check name the workflow and job that already run it,
 - The root job reads each `ci` check from a results file:
   `jtac check --from <head> --base <old tip> --results <file> --branch <name>`. With every
   result in, the merge root holds them and the merge and the pull request's commits read
-  covered. A result that is missing or pending exits 2 and writes nothing.
+  covered. A result that is missing or pending exits 2 and writes nothing. A check CI
+  concluded failed fails the verdict, and the failure record names the job and the run.
 - The action passes no `--results` yet: the adapter that writes the file from the forge's
   runs is not shipped. Under such a policy the action's root job exits 2 and writes no
   merge root.
@@ -121,10 +122,24 @@ jtac check --push origin
 The commit then reads CI `declared_off` in `jtac audit`: not covered, explained. The CI key
 cannot sign that waiver, so a job never explains its own absence.
 
+## A merge CI failed
+
+A merge job whose verdict fails writes a failure record, signed by the CI key, at
+`refs/jtac/failed/`. `jtac audit` reads the merge, and each commit of a rebase, as CI
+`failed` with what failed; `jtac release` refuses it and says it failed. A re-run that
+passes writes the merge root, which outranks the record, and the record stays as a note.
+Shipping over a failure takes the waiver above, once for each commit of a rebase.
+
+A record on the tip that the CI key did not sign stops a job whose verdict failed, with
+the ref to inspect and delete. It stops nothing else: a passing job and every reader note
+it and count nothing by it.
+
 ## What reads as the developer's
 
 A fast-forward merge makes no commit of its own and a direct push bypassed the gate: neither
-gets a CI root. Both are judged by `jtac ci` on the push; a direct push that fails the gate
+gets a CI root. Nor does a merge pushed with the pull request as its first parent, which
+leaves the pull request's commits where the forge's own would be; `jtac check --from`
+refuses that shape. All three are judged by `jtac ci` on the push; one that fails the gate
 fails the job. Require pull requests in the ruleset.
 
 ## A leaked key
