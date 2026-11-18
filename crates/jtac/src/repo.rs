@@ -373,13 +373,54 @@ fn origin_default(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
     Ok(Some((full, shown)))
 }
 
-/// Whether this clone holds branches of `origin` and names none as its default, so `landed`
-/// has nothing to read and the base falls back. A remote that holds nothing yet has no
-/// default branch to name. Names alone are listed: the default format reads each object.
-pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
+/// Why `landed` has nothing to read, where a note can say what to run. Nothing is said of a
+/// clone with no remote, or of an `origin` that holds no branch yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unnamed {
+    /// `origin` holds branches and `origin/HEAD` names none of them.
+    Head,
+    /// The same in a clone whose fetch lines name single branches (`clone --single-branch`),
+    /// where `set-head --auto` fails until the default branch is fetched.
+    Narrow,
+    /// No remote is named `origin`; the only remote, when there is one.
+    Remote(Option<String>),
+}
+
+/// `Unnamed` for this clone, `None` where the default branch is named. A remote is one the
+/// clone's own config gives a URL: `git remote` also lists a name any other scope sets a key
+/// for, which no `git remote rename` finds. Refs are listed by name: the default
+/// `for-each-ref` format reads each object.
+pub fn unnamed(repo: &Path) -> Result<Option<Unnamed>, RepoError> {
+    if origin_default(repo)?.is_some() {
+        return Ok(None);
+    }
+    let urls = ["config", "--local", "--name-only", "--get-regexp"];
+    let listed =
+        probe(repo, &[&urls[..], &[r"^remote\..*\.url$"]].concat(), 1)?.unwrap_or_default();
+    let named = |key: &str| {
+        Some(
+            key.strip_prefix("remote.")?
+                .strip_suffix(".url")?
+                .to_owned(),
+        )
+    };
+    let mut remotes: Vec<String> = listed.lines().filter_map(named).collect();
+    remotes.sort_unstable();
+    remotes.dedup();
+    match &remotes[..] {
+        [] => return Ok(None),
+        _ if remotes.iter().any(|name| name == "origin") => {}
+        [only] => return Ok(Some(Unnamed::Remote(Some(only.clone())))),
+        _ => return Ok(Some(Unnamed::Remote(None))),
+    }
     let names = ["for-each-ref", "--count=1", "--format=%(refname)"];
     let held = git(repo, &[&names[..], &["refs/remotes/origin/"]].concat())?;
-    Ok(!text(&held).is_empty() && origin_default(repo)?.is_none())
+    if text(&held).is_empty() {
+        return Ok(None);
+    }
+    let fetch = ["config", "--get-all", "remote.origin.fetch"];
+    let wide = probe(repo, &fetch, 1)?.is_none_or(|lines| lines.contains("refs/heads/*"));
+    Ok(Some(if wide { Unnamed::Head } else { Unnamed::Narrow }))
 }
 
 /// The base the rules diff from (DESIGN.md section 10.3): the merge base of HEAD with

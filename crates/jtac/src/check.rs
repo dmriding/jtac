@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use jtac_checks::Cache;
+use jtac_checks::git::quoted;
 use jtac_core::{Body, FromHead, GateRef, Root, Scope, Sha256Digest, Ts};
 use jtac_policy::Checks;
 use jtac_sign::Identity;
@@ -64,13 +65,9 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         Some(rev) => Refusal::base(rev, &e),
         None => Refusal::repository(&e),
     })?;
-    if a.base.is_none() && repo::default_unnamed(&repo).map_err(|e| Refusal::repository(&e))? {
-        notes.push(
-            "this clone does not name origin's default branch (`origin/HEAD` names no branch \
-             it holds), so the base ignores what that branch already holds; run `git remote \
-             set-head origin --auto`"
-                .to_owned(),
-        );
+    if a.base.is_none() {
+        let unnamed = repo::unnamed(&repo).map_err(|e| Refusal::repository(&e))?;
+        notes.extend(unnamed.as_ref().map(default_note));
     }
     let now = Ts::from_timestamp(jiff::Timestamp::now()).map_err(Refusal::internal)?;
     let mut file_cache = store.cache();
@@ -152,6 +149,39 @@ fn withheld(landed: &repo::Landed, j: &Judged, rooted: bool) -> bool {
         |l| matches!(&l.node.body, Body::Lever(b) if matches!(b.scope, Some(Scope::Commit { .. }))),
     );
     landed.commit == j.head.commit.hex() && j.verdict.pass && !rooted && !waived
+}
+
+/// The note for a clone that names no default branch for decision 69 to read: the state,
+/// what the base loses, and the command for that state
+/// (`each_clone_that_names_no_default_branch_is_told_the_command_that_works_there`).
+fn default_note(unnamed: &repo::Unnamed) -> String {
+    const PLACE: &str = "<remote>";
+    const LOST: &str = "so the base ignores what that branch already holds";
+    const HEAD: &str = "this clone does not name origin's default branch (`origin/HEAD` names \
+                        no branch it holds)";
+    match unnamed {
+        repo::Unnamed::Head => format!("{HEAD}, {LOST}; run `git remote set-head origin --auto`"),
+        repo::Unnamed::Narrow => format!(
+            "{HEAD} and fetches single branches of origin, {LOST}; `git ls-remote --symref \
+             origin HEAD` names the branch: run `git remote set-branches --add origin <branch>` \
+             where the clone does not hold it, then `git fetch origin`, then `git remote \
+             set-head origin --auto`"
+        ),
+        repo::Unnamed::Remote(only) => {
+            let named = only.as_deref().map(|name| quoted(name, PLACE));
+            let known = named.as_deref().filter(|name| *name != PLACE);
+            format!(
+                "no remote of this clone is named `origin`, the one name the default branch is \
+                 read under, {LOST} and a commit it holds still gets a root; run `git remote \
+                 rename {} origin`{}",
+                known.unwrap_or(PLACE),
+                match known {
+                    Some(_) => "",
+                    None => " on the remote that holds the default branch",
+                }
+            )
+        }
+    }
 }
 
 /// The note a withheld root leaves: what, why, and the three ways on.

@@ -733,6 +733,89 @@ fn a_real_push_is_refused_before_check_and_carries_its_root_after() {
     );
 }
 
+/// `jtac init`'s fetch refspec makes `refs/jtac/*` a destination git prunes, so a pruning
+/// fetch deletes a root the remote does not hold yet (issue 187). It fails closed: the hook
+/// refuses, its refusal names the cause, and `check` writes the root again.
+#[test]
+fn a_pruning_fetch_deletes_an_unpushed_root_and_the_refusal_names_the_cause() {
+    let origin = Repo::bare(&[]);
+    let repo = Repo::clone_of(&origin);
+    with_policy(&repo, "");
+    repo.commit("base");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    keyed(&repo);
+    install_hook(&repo);
+    let evidence = "+refs/jtac/*:refs/jtac/*";
+    repo.git(&["config", "--add", "remote.origin.fetch", evidence]);
+    repo.write("a.txt", b"a\n");
+    let tip = repo.commit("tip");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["fetch", "-q", "--prune", "origin"]);
+    let held = ["rev-parse", "--verify", "--quiet", &root_ref(&tip)];
+    assert!(!repo.command("git", &held).status.success(), "pruned");
+    let refused = Ran::of(repo.command("git", &["push", "origin", "main"]));
+    assert_ne!(refused.code, 0, "{}", refused.stderr);
+    for cause in ["`git fetch --prune`", "`fetch.prune`", "Run `jtac check`"] {
+        assert!(refused.stderr.contains(cause), "{}", refused.stderr);
+    }
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    let pushed = Ran::of(repo.command("git", &["push", "origin", "main"]));
+    assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+    assert!(origin.command("git", &held).status.success(), "sent");
+}
+
+/// What the no-root refusal says of `--no-verify`, held to `audit`: a commit pushed around
+/// the hook reads absent unless a later root reaches it, and the base decides that, not the
+/// bypass. The next root stops at a commit the branch's upstream holds where no ancestor
+/// is covered, and at one the default branch holds though an ancestor is (section 10.3,
+/// decision 69); it walks over one on a branch cut from a covered commit.
+#[test]
+fn a_bypassed_commit_is_absent_unless_a_later_root_reaches_it_and_the_base_decides_that() {
+    let origin = Repo::bare(&[]);
+    let repo = Repo::clone_of(&origin);
+    with_policy(&repo, "");
+    repo.commit("base");
+    repo.git(&["push", "-q", "-u", "origin", "main"]);
+    repo.git(&["remote", "set-head", "origin", "main"]);
+    keyed(&repo);
+    install_hook(&repo);
+    let around = |file: &str, branch: &str| {
+        repo.write(file, b"around\n");
+        let bypassed = repo.commit("pushed around the hook");
+        repo.git(&["push", "-q", "--no-verify", "-u", "origin", branch]);
+        repo.write(&format!("next-{file}"), b"next\n");
+        repo.commit("next");
+        assert_eq!(jtac(&repo, &["check"]).code, 0);
+        let out = jtac(&repo, &["audit", "--json", &format!("{bypassed}~1..HEAD")]);
+        let v: Value = serde_json::from_str(&out.stdout).unwrap();
+        let rows = v["rows"].as_array().unwrap().clone();
+        let of = |r: &Value| r["commit"] == format!("sha1:{bypassed}");
+        rows.into_iter().find(of).unwrap()["state"].clone()
+    };
+    repo.git(&["switch", "-q", "-c", "unrooted"]);
+    assert_eq!(
+        around("u.txt", "unrooted"),
+        "absent",
+        "its upstream holds it"
+    );
+    repo.git(&["switch", "-q", "main"]);
+    repo.write("rooted.txt", b"rooted\n");
+    repo.commit("a covered ancestor below the bypass");
+    assert_eq!(jtac(&repo, &["check"]).code, 0);
+    repo.git(&["push", "-q", "origin", "main"]);
+    assert_eq!(
+        around("d.txt", "main"),
+        "absent",
+        "the default branch holds it"
+    );
+    repo.git(&["switch", "-q", "-c", "rooted"]);
+    assert_eq!(
+        around("r.txt", "rooted"),
+        "covered",
+        "walked from main's root"
+    );
+}
+
 /// Section 15.2: the hook and `status` ask what the local gate judged, which a partial
 /// root says in full, so a root that lists a `ci` check unread carries the push as any
 /// developer root does, and the remote holds it as written.

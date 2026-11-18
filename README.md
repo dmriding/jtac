@@ -17,8 +17,8 @@ can verify it, and can see which commits have none.
   blocks by default, with the reason and the fix.
 - **It records what happened, including what did not.** A pass is a signed
   record for that exact tree. A push around the gate still lands, but with no
-  record of its own: its commits read as absent until a later pass covers
-  them, judging their changes in its own diff.
+  record of its own: its commits read as absent unless another pass covers
+  them, which nothing promises.
 - **CI checks it again.** The same binary re-runs the gate on pull requests.
   [CI gate](#ci-gate) says what a merge gets.
 
@@ -100,7 +100,8 @@ What it is not yet:
 jtac gates this repository. Every commit on `main` since v0.2.7 is covered
 (`jtac audit v0.2.7..main`), and each release since v0.2.9 carries a release
 attestation the CI key signed (`jtac release v0.2.18 --verify`). Older commits read `absent` where
-they predate the gate or skipped it; nothing backfills them.
+no root reaches them: they predate the first root, or went around the gate where no later root
+covers them.
 
 ## Where it is going
 
@@ -233,6 +234,10 @@ jtac verify main                               # exit 1 on a bad root
 jtac audit main                                # the coverage table
 jtac release v0.2.18 --verify                  # the release attestation against the roots
 ```
+
+That refspec makes `refs/jtac/*` a namespace a pruning fetch prunes: `git fetch --prune`, or
+`fetch.prune` or `remote.<name>.prune` set, deletes a root `jtac check` wrote and the remote
+does not hold yet. The hook then refuses the push and names the cause; run `jtac check` again.
 
 ```
 AUDIT main: 2 commits, 1 covered, 0 declared off, 1 absent (50% covered); 0 roots invalid, 0 signed by unknown keys
