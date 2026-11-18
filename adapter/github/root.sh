@@ -113,11 +113,12 @@ judge() {
 
 # The forge's listing of `commit`'s runs and of each run's jobs, as the results file.
 results() {
-  local commit=$1 out=$2 id
+  local commit=$1 out=$2 id ids
   "$GH" api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$commit&per_page=100" \
     --jq '.workflow_runs[]' > "$tmp/runs.json"
   : > "$tmp/jobs.json"
-  for id in $(jq -r '.id' "$tmp/runs.json"); do
+  ids=$(jq -r '.id' "$tmp/runs.json")
+  for id in $ids; do
     "$GH" api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" \
       --jq '.jobs[]' >> "$tmp/jobs.json"
   done
@@ -130,8 +131,11 @@ results() {
 reading() { "$JTAC_BIN" audit "$1^!" --json | jq -r '.rows[0].ci // "none"'; }
 
 drain() {
-  local tip before after kind ci i floor=false seen=false worst=0 todo=()
-  if [ -n "$(git ls-remote "$REMOTE" "refs/tags/$BRANCH")" ]; then
+  local tip tags before after kind ci i floor=false seen=false worst=0 todo=()
+  # An assignment, so a remote that does not answer stops the job: in a condition it
+  # would read as no tag.
+  tags=$(git ls-remote "$REMOTE" "refs/tags/$BRANCH")
+  if [ -n "$tags" ]; then
     say "jtac: refused: $REMOTE holds a tag named $BRANCH, so no results file is written." \
         "The forge lists a run by its ref's short name: a run for a push to that tag reads as the branch's, and a file can conclude otherwise for a tag than for the branch." \
         "Delete the tag (git push $REMOTE :refs/tags/$BRANCH), add the tag rule jtac init --ci github names, then re-run this job."
@@ -142,17 +146,18 @@ drain() {
   git rev-list --first-parent "$tip" > "$tmp/line"
   "$GH" api "repos/$GITHUB_REPOSITORY/activity?ref=refs/heads/$BRANCH&direction=desc&per_page=$WINDOW" \
     --jq '.[] | "\(.before) \(.after) \(.activity_type)"' > "$tmp/pushes"
-  # Newest first. The commit whose workflow completed is judged unless the CI gate reads it
-  # covered or declared off: a failed one may be a re-run's result. Above the floor, the
-  # newest tip the gate reads or the first with no policy, so is every merge the forge
-  # made and the gate does not read yet; a plain push there bears no root and was judged
-  # at its own completion, and skipping it is what bounds the walk on a branch of them.
+  # Newest first. The commit whose workflow completed is judged whatever the CI gate reads
+  # for it: the completion may be a re-run's, and a failing one writes its record beside a
+  # standing root (decision 66). Above the floor, the newest tip the gate reads or the
+  # first with no policy, so is every merge the forge made that the gate does not read
+  # yet; a plain push there bears no root and was judged at its own completion, and
+  # skipping it is what bounds the walk on a branch of them.
   while read -r before after kind <&3; do
     grep -qxF -- "$after" "$tmp/line" || continue
     if [ "$after" = "$RUN_SHA" ]; then
       seen=true
+      todo+=("$before $after $kind")
       ci=$(reading "$after")
-      if [ "$ci" = none ] || [ "$ci" = failed ]; then todo+=("$before $after $kind"); fi
       if [ "$ci" != none ]; then floor=true; fi
       continue
     fi
@@ -167,12 +172,6 @@ drain() {
         "The gate anchors every verdict at the old tip the forge reports; a guessed one would judge another diff under another trust." \
         "Re-run this job; for a push older than that, run jtac check --from <head> --base <old tip> --results <file> --branch $BRANCH --push $REMOTE by hand."
     exit 2
-  fi
-  if [ "${#todo[@]}" -eq 0 ]; then
-    say "jtac: nothing judged: the CI gate already reads the completed commit and every merge above the newest it reads." \
-        "A merge root is written once; a completion for a tip that has one changes nothing." \
-        "Nothing to do."
-    exit 0
   fi
   for ((i = ${#todo[@]} - 1; i >= 0; i--)); do
     read -r before after kind <<< "${todo[i]}"

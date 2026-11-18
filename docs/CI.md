@@ -44,7 +44,7 @@ operator's.
 | `push` to the default branch: no pull request, a fast-forward, or a tip with the pull request's own commits on its first-parent line | `jtac ci --base <old tip>` on the tip | A forged root or failing code pushed straight to the branch fails the job; nothing signs over a direct push |
 | `push` that rewrote the branch, or whose old tip the clone cannot fetch | refused, exit 2 | A gate that cannot anchor at the old tip judges nothing, and says so |
 | `push` that created the branch | nothing judged, exit 0 | There is no old tip to diff from; the next push is judged |
-| `workflow_run`: a workflow the policy reads completed | the push rows' commands, each with `--results <file> --branch <name>`, for the completed commit and every merge above the newest the CI gate reads, oldest first | A doorbell: rings only for a push run of the default branch whose commit is on its first-parent line. A result still running is a wait, exit 0, and later merges wait behind it; a result that is missing fails the job. Needs `actions: read` |
+| `workflow_run`: a workflow the policy reads completed | the push rows' commands, `check --from` with `--results <file> --branch <name>`, for the completed commit and every merge above the newest the CI gate reads, oldest first | A doorbell: rings only for a push run of the default branch whose commit is on its first-parent line. A result still running is a wait, exit 0, and later merges wait behind it; a result that is missing fails the job. Needs `actions: read` |
 | any other event | refused, exit 2 | `pull_request_target` would hand the pull request head the secrets |
 | either job | `actions/upload-artifact` of `.git/jtac` as `jtac-store-<job>` | `jtac replay` on a downloaded store |
 

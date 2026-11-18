@@ -17,6 +17,10 @@ quiet() {
 if [ "$RUN_EVENT" != push ] || [ "$RUN_BRANCH" != "$BRANCH" ]; then
   quiet "jtac: nothing judged: the completed run was not for a push to $BRANCH."
 fi
+# One name of one commit: grep reads each line of a pattern as a pattern of its own.
+case "$RUN_SHA" in
+  "" | *[!0-9a-f]*) quiet "jtac: nothing judged: the completed run names no commit." ;;
+esac
 git fetch -q "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
 line="$RUNNER_TEMP/jtac-line"
 git rev-list --first-parent "refs/remotes/$REMOTE/$BRANCH" > "$line"

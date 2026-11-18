@@ -1,5 +1,5 @@
 //! What the CLI refuses and how it says so: what, why, how (DESIGN.md section 12), on stderr
-//! with exit 2, or 3 when a result the forge still runs is all that is missing (`not_yet`).
+//! with exit 2, or 3 while the forge still runs a result the command waits for (`not_yet`).
 //! A refusal is never a verdict: the gate could not answer. Every refusal here is a
 //! negotiation; the hooks build the fences with `fence`.
 

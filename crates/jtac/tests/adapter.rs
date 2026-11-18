@@ -151,12 +151,21 @@ impl Forge {
     /// Pull request `number`: a branch of one commit off `origin/main` with the developer's
     /// root, merged by the forge with a merge commit. Returns the head and the merge.
     fn merged(&self, number: u32) -> (String, String) {
+        self.land(number, true, &|dev| {
+            dev.write(&format!("pr{number}.txt"), b"x\n");
+        })
+    }
+
+    /// `merged` with the head's change given, and no root for it unless `rooted`.
+    fn land(&self, number: u32, rooted: bool, change: &dyn Fn(&Repo)) -> (String, String) {
         let name = format!("pr{number}");
         self.dev.git(&["fetch", "-q", "origin"]);
         self.dev.git(&["switch", "-q", "-c", &name, "origin/main"]);
-        self.dev.write(&format!("{name}.txt"), b"x\n");
+        change(&self.dev);
         let head = self.dev.commit(&name);
-        ok(&self.dev, &["check", "--base", "origin/main"]);
+        if rooted {
+            ok(&self.dev, &["check", "--base", "origin/main"]);
+        }
         let pull = format!("{head}:refs/pull/{number}/head");
         self.dev.git(&["push", "-q", "origin", &name, &pull, ROOTS]);
         self.ci.git(&["fetch", "-q", "origin"]);
@@ -302,12 +311,16 @@ impl Forge {
 /// Decision 67's fence: the step that holds the key starts for a push run of the branch
 /// whose commit is on the fetched branch's first-parent line. A pull request's run, a run
 /// for another branch, and a push run named like the branch for a pull request's own
-/// commit, which a fork's branch or a tag of that name leaves, ring nothing.
+/// commit, which a fork's branch or a tag of that name leaves, ring nothing; nor does a
+/// name that is not one commit's, since grep reads each line of it as a pattern.
 #[test]
 fn the_doorbell_rings_only_for_a_push_run_on_the_branch_s_first_parent_line() {
     let f = forge();
     let (head, tip) = f.merged(1);
+    let two = format!("deadbeef\n{tip}");
     let rows = [
+        ("push", "main", two.as_str(), false),
+        ("push", "main", &tip[..7], false),
         ("push", "main", tip.as_str(), true),
         ("push", "main", f.main.as_str(), true),
         ("pull_request", "main", tip.as_str(), false),
@@ -403,7 +416,8 @@ fn the_results_filter_writes_a_file_the_strict_reader_takes() {
 
 /// Decision 67's order: a merge whose workflow finished first waits behind an older merge
 /// the forge still runs, so each root names its parent; the older merge's completion
-/// writes both, oldest first; and a completion for a tip the gate reads judges nothing.
+/// writes both, oldest first. A completion for a tip the gate reads is a re-run's: one
+/// that passes keeps the root, and one that fails writes its record beside it (decision 66).
 #[test]
 fn the_drain_writes_roots_oldest_first_and_waits_behind_a_result_still_running() {
     let f = forge();
@@ -436,7 +450,78 @@ fn the_drain_writes_roots_oldest_first_and_waits_behind_a_result_still_running()
 
     let ran = f.drain(&second);
     assert_eq!(ran.code, 0, "{}", ran.text);
-    assert!(ran.text.contains("jtac: nothing judged"), "{}", ran.text);
+    assert_eq!(f.reads(&second), ("covered".into(), first.clone()));
+    f.runs(&second, &[Run::of(Some("failure"))]);
+    let ran = f.drain(&second);
+    assert_eq!(ran.code, 1, "{}", ran.text);
+    let records = f.origin.git(&["for-each-ref", "refs/jtac/failed"]);
+    assert!(
+        records.contains(&second) && !records.contains(&first),
+        "{records}"
+    );
+    assert_eq!(f.reads(&second).0, "covered");
+}
+
+/// Decision 67's fences inside the job that holds the key. A push the forge lists is
+/// judged only when the fetched branch holds its tip on the first-parent line: not a merge
+/// a force push took off the branch, and not a pull request's own commit. The tip a force
+/// push left is refused, never judged. And the walk ends at a merge whose tree holds no
+/// policy, which no gate can judge, so nothing at or below it is judged either.
+#[test]
+fn the_drain_judges_no_tip_off_the_branch_s_line_or_below_a_merge_with_no_policy() {
+    let f = forge();
+    let (_, gone) = f.merged(1);
+    f.dev
+        .git(&["push", "-q", "-f", "origin", &format!("{}:main", f.main)]);
+    let (head, second) = f.merged(2);
+    f.runs(&gone, &[Run::of(Some("success"))]);
+    f.runs(&second, &[Run::of(Some("success"))]);
+    f.fixture(&format!("{SLUG}/commits/{head}/pulls"), &json!([]));
+    let rewritten = [
+        (f.main.as_str(), head.as_str(), "pr_merge"),
+        (f.main.as_str(), second.as_str(), "pr_merge"),
+        (gone.as_str(), f.main.as_str(), "force_push"),
+        (f.main.as_str(), gone.as_str(), "pr_merge"),
+    ];
+    f.pushes(&rewritten);
+    let ran = f.drain(&second);
+    assert_eq!(ran.code, 0, "{}", ran.text);
+    let judged = |ran: &Ran, commit: &str| ran.text.contains(&format!("judging {}", &commit[..7]));
+    assert!(!judged(&ran, &gone) && !judged(&ran, &head), "{}", ran.text);
+    assert_eq!(f.reads(&gone).0, "none");
+    assert_eq!(f.reads(&second).0, "covered");
+    f.runs(&f.main, &[Run::of(Some("success"))]);
+    let ran = f.drain(&f.main);
+    assert_eq!(ran.code, 2, "{}", ran.text);
+    assert!(
+        ran.text.contains("this push rewrote the branch"),
+        "{}",
+        ran.text
+    );
+
+    let (_, bare) = f.land(3, false, &|dev| dev.remove(".jtac/policy.toml"));
+    let (_, third) = f.land(4, false, &|dev| {
+        dev.git(&["checkout", &f.main, "--", ".jtac/policy.toml"]);
+    });
+    f.land(5, false, &|dev| {
+        dev.write("pr5.txt", b"x\n");
+    });
+    let tip = f.ci.git(&["rev-parse", "HEAD"]);
+    f.runs(&tip, &[Run::of(Some("success"))]);
+    f.runs(&third, &[Run::of(Some("success"))]);
+    f.pushes(&[
+        (&third, &tip, "pr_merge"),
+        (&bare, &third, "pr_merge"),
+        (&second, &bare, "pr_merge"),
+        (&f.main, &second, "pr_merge"),
+    ]);
+    let ran = f.drain(&tip);
+    assert!(judged(&ran, &tip) && judged(&ran, &third), "{}", ran.text);
+    assert!(
+        !judged(&ran, &bare) && !judged(&ran, &second),
+        "{}",
+        ran.text
+    );
 }
 
 /// Decision 67's other answers. A merge with no run of the file its policy reads fails the
