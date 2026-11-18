@@ -865,13 +865,35 @@ fn a_commit_the_default_branch_holds_gets_no_root_unless_a_waiver_names_it() {
     assert_eq!(code, 0, "{v}");
     assert!(v["root"].is_string(), "{v}");
     assert_eq!(v["base"]["commit"], a.base);
+    repo.git(&["push", "-q", "origin", "main"]);
+    let (code, again) = json(repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["root"], v["root"], "a root that stands is reported");
+    assert!(
+        !again["notes"].to_string().contains("no root was written"),
+        "{again}"
+    );
 
-    repo.write("src/c.rs", b"fn c() {}\n");
+    repo.write(".jtac/signers", a.signers.as_bytes());
     repo.commit("pushed around the gate");
     repo.git(&["push", "-q", "origin", "main"]);
+    let rule = [
+        "--rule",
+        "JT-PROT-001",
+        "--path",
+        ".jtac/",
+        "--expires",
+        "14d",
+    ];
+    let ran = jtac(
+        repo,
+        &[&["waive"], &rule[..], &["--reason", "signers"]].concat(),
+    );
+    assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
     let (code, v) = json(repo, &["check", "--json"]);
     assert_eq!(code, 0, "{v}");
-    assert!(v["root"].is_null(), "{v}");
+    assert_eq!(v["waivers"][0]["scope"]["rule"], "JT-PROT-001");
+    assert!(v["root"].is_null(), "a rule waiver names no commit: {v}");
     let ran = jtac(
         repo,
         &["waive", "HEAD", "--reason", "pushed around the gate"],

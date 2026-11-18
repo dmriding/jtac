@@ -66,8 +66,9 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     })?;
     if a.base.is_none() && repo::default_unnamed(&repo).map_err(|e| Refusal::repository(&e))? {
         notes.push(
-            "this clone does not name origin's default branch, so the base ignores what that \
-             branch already holds; run `git remote set-head origin --auto`"
+            "this clone does not name origin's default branch (`origin/HEAD` is missing or \
+             names a branch that is gone), so the base ignores what that branch already holds; \
+             run `git remote set-head origin --auto`"
                 .to_owned(),
         );
     }

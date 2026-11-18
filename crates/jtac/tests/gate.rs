@@ -704,6 +704,43 @@ fn a_branch_cut_from_a_merge_with_no_root_is_judged_on_its_own_commits() {
     );
 }
 
+/// Decision 69 reads origin's default branch on every run, so each state of that read has
+/// to answer: a remote that renamed the branch leaves `origin/HEAD` naming one that is gone,
+/// which is no name and a note, never git's failure under every `check`; a remote that
+/// holds nothing yet has no default branch, and the note's command would fail there.
+#[test]
+fn a_dangling_origin_head_reads_as_no_default_branch() {
+    let upstream = passing();
+    let repo = Repo::clone_of(&upstream);
+    keyed(&repo);
+    let gone = "refs/remotes/origin/renamed";
+    repo.git(&["symbolic-ref", "refs/remotes/origin/HEAD", gone]);
+    repo.git(&["switch", "-q", "-c", "feature"]);
+    repo.write("own.txt", b"own\n");
+    repo.commit("own");
+    let (code, v) = json(&repo, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["base"]["from"], "merge base with main");
+    assert!(v["root"].is_string(), "{v}");
+    let notes = v["notes"].to_string();
+    assert!(
+        notes.contains("git remote set-head origin --auto"),
+        "{notes}"
+    );
+    let (code, v) = json(&repo, &["check", "--preview", "--json", "--base", "HEAD~1"]);
+    assert_eq!(code, 0, "{v}");
+
+    let empty = Repo::bare(&[]);
+    let first = Repo::clone_of(&empty);
+    with_policy(&first, "");
+    first.write("src/lib.rs", b"fn a() {}\n");
+    first.commit("base");
+    keyed(&first);
+    let (code, v) = json(&first, &["check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!v["notes"].to_string().contains("set-head"), "{v}");
+}
+
 #[test]
 fn past_the_bound_covers_is_a_range_and_a_lost_state_file_only_warns() {
     let repo = passing();

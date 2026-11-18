@@ -332,10 +332,10 @@ pub fn on_disk_matches(repo: &Path, path: &str, sha: &str) -> Result<bool, RepoE
 }
 
 /// What the remote's default branch holds of HEAD's history (DESIGN.md section 10.3,
-/// decision 69): the merge base of HEAD with `refs/remotes/origin/HEAD`, and that ref's short
-/// name. Never the upstream, which for a pushed branch is the branch itself, nor a local
-/// branch, whose unpushed commits no gate has seen. `None` without the ref or a common
-/// ancestor; nothing is fetched, and a stale ref only makes the base older.
+/// decision 69): the merge base of HEAD with `origin_default`, and that ref's short name.
+/// Never the upstream, which for a pushed branch is the branch itself, nor a local branch,
+/// whose unpushed commits no gate has seen. `None` without the ref or a common ancestor.
+/// Nothing is fetched: the ref is the clone's, as stale or as moved as the clone left it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landed {
     /// The merge base, hex.
@@ -346,23 +346,39 @@ pub struct Landed {
 
 /// `Landed` for `head`, read from this clone alone.
 pub fn landed(repo: &Path, head: &Head) -> Result<Option<Landed>, RepoError> {
-    let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
-    let Some(full) = probe(repo, &name, 1)? else {
+    let Some((full, shown)) = origin_default(repo)? else {
         return Ok(None);
     };
-    let shown = full
-        .strip_prefix("refs/remotes/")
-        .unwrap_or(&full)
-        .to_owned();
     let found = probe(repo, &["merge-base", &full, &head.commit.hex()], 1)?;
     Ok(found.map(|commit| Landed { commit, shown }))
 }
 
-/// Whether `origin` is a remote whose default branch this clone does not name, so `landed`
-/// has nothing to read and the base falls back without saying why.
-pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
+/// The branch `refs/remotes/origin/HEAD` names, full and short, when that branch is a ref
+/// of this clone: the one read of origin's default branch. A symref left pointing at a
+/// branch the remote renamed is no name, never a git failure
+/// (`a_dangling_origin_head_reads_as_no_default_branch`); a ref whose object is missing
+/// stays one (`a_candidate_pointing_at_a_missing_object_refuses_instead_of_falling_back`).
+fn origin_default(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
     let name = ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"];
-    Ok(config(repo, "remote.origin.url")?.is_some() && probe(repo, &name, 1)?.is_none())
+    let Some(full) = probe(repo, &name, 1)? else {
+        return Ok(None);
+    };
+    if probe(repo, &["rev-parse", "--verify", "--quiet", &full], 1)?.is_none() {
+        return Ok(None);
+    }
+    let shown = full
+        .strip_prefix("refs/remotes/")
+        .unwrap_or(&full)
+        .to_owned();
+    Ok(Some((full, shown)))
+}
+
+/// Whether this clone holds branches of `origin` and names none as its default, so `landed`
+/// has nothing to read and the base falls back. A remote that holds nothing yet has no
+/// default branch to name.
+pub fn default_unnamed(repo: &Path) -> Result<bool, RepoError> {
+    let held = git(repo, &["for-each-ref", "--count=1", "refs/remotes/origin/"])?;
+    Ok(!text(&held).is_empty() && origin_default(repo)?.is_none())
 }
 
 /// The base the rules diff from (DESIGN.md section 10.3): the merge base of HEAD with
@@ -484,12 +500,8 @@ fn candidate(repo: &Path) -> Result<Option<(String, String)>, RepoError> {
     )? {
         return Ok(Some(remote(full)));
     }
-    if let Some(full) = probe(
-        repo,
-        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-        1,
-    )? {
-        return Ok(Some(remote(full)));
+    if let Some(named) = origin_default(repo)? {
+        return Ok(Some(named));
     }
     for name in ["main", "master"] {
         let full = format!("refs/heads/{name}");
