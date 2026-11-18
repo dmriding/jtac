@@ -4,15 +4,16 @@
 
 use std::path::Path;
 
-use jtac_core::{GitOid, Sha256Digest, Signer, State};
+use jtac_core::{Body, Counts, GitOid, ObservedCheck, Outcome, Sha256Digest, Signer, State};
 use jtac_gate::{Ci, CommitFact, PolicyKind, Reading, Row, Trust, Via};
 use jtac_store::Store;
 use serde::Serialize;
 
 use crate::headof::{self, HeadOut};
 use crate::ledger::{self, Ledger};
-use crate::output::WaiverOut;
+use crate::output::{WaiverOut, plain};
 use crate::range;
+use crate::reason::source;
 use crate::refuse::Refusal;
 use crate::trust::Signers;
 use crate::{coverage, repo};
@@ -34,8 +35,7 @@ pub struct Survey {
 }
 
 /// Gather for `command`. An empty `range` is `HEAD`; trust is HEAD's tree, or `at`'s, shown
-/// by its name, when a command stands on another commit (a release reads the tag's). No
-/// failure record is read yet: they are gathered with their writer (section 15.2). A commit
+/// by its name, when a command stands on another commit (a release reads the tag's). A commit
 /// whose policy the ledger did not ask is given `NotHeld`: no reading consults it, and one
 /// that did would refuse, never pass.
 pub fn survey(
@@ -64,7 +64,16 @@ pub fn survey(
         range.to_vec()
     };
     let commits = range::commits(&repo, &format, command, &range)?;
-    let ledger = ledger::gather(&repo, &store, &tool, &signers, command, &format, &commits)?;
+    let site = ledger::Site {
+        repo: &repo,
+        store: &store,
+        tool: &tool,
+        signers: &signers,
+        command,
+        format: &format,
+    };
+    let mut ledger = ledger::gather(&site, &commits)?;
+    ledger.read_records(&site, &commits)?;
     let facts: Vec<CommitFact> = commits
         .iter()
         .map(|c| CommitFact {
@@ -73,7 +82,7 @@ pub fn survey(
             policy: (ledger.policies.get(&c.tree)).map_or(PolicyKind::NotHeld, |p| p.kind()),
         })
         .collect();
-    let rows = jtac_gate::rows(&facts, &ledger.roots, &[]);
+    let rows = jtac_gate::rows(&facts, &ledger.roots, &ledger.records);
     let mut heads = Vec::new();
     for (fact, stored) in ledger.roots.iter().zip(&ledger.stored) {
         let from = stored
@@ -132,6 +141,41 @@ pub struct RowOut {
     /// Beside a CI waiver: the commit whose CI root reaches this one from a later tip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_note: Option<GitOid>,
+    /// The failure record that reaches the commit (DESIGN.md section 15.2): what `failed`
+    /// was read from, or the note beside a reading that outranks it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci_record: Option<RecordOut>,
+}
+
+/// A failure record as a row shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RecordOut {
+    /// The commit whose verdict failed: the row's own, or a later tip's that reaches it.
+    pub commit: GitOid,
+    /// The record's id.
+    pub record: Sha256Digest,
+    /// Each check read from CI that did not pass, with the forge's word.
+    pub observed: Vec<ObservedCheck>,
+    /// What the failed verdict counted.
+    pub counts: Counts,
+}
+
+impl RecordOut {
+    /// What failed, every stored word plain: the checks read from CI that did not pass,
+    /// then the counts, which is all a record holds of a check the job ran.
+    pub fn line(&self) -> String {
+        let mut s = String::new();
+        for c in &self.observed {
+            s.push_str(&format!(
+                "check `{}` {}, CI concluded `{}` ({}); ",
+                plain(&c.id),
+                c.outcome,
+                plain(&c.observed.conclusion),
+                source(&c.observed)
+            ));
+        }
+        s + &crate::ci::out::counts(&self.counts)
+    }
 }
 
 /// One waiver a valid root in the range applies, as shown.
@@ -243,9 +287,25 @@ impl Survey {
                         Ci::DeclaredOff { note, .. } => note.map(|i| self.ledger.roots[i].commit),
                         _ => None,
                     },
+                    ci_record: r.record.and_then(|i| self.record_out(i)),
                 }
             })
             .collect()
+    }
+
+    /// The failure record at `index` as shown; `None` only for a record with no id.
+    fn record_out(&self, index: usize) -> Option<RecordOut> {
+        let root = &self.ledger.failed[index].root;
+        let failing = |n: &jtac_core::Node| match &n.body {
+            Body::Observed(c) if c.outcome != Outcome::Pass => Some(c.clone()),
+            _ => None,
+        };
+        Some(RecordOut {
+            commit: root.commit,
+            record: root.id().ok()?,
+            observed: root.observed.iter().filter_map(failing).collect(),
+            counts: root.counts.clone(),
+        })
     }
 
     /// The root the CI gate read `row` through, when it read one.

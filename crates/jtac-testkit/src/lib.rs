@@ -152,6 +152,19 @@ impl Repo {
         self.put_signed(key, namespace, &root_ref, "root", json, sig);
     }
 
+    /// Plant `json` as `commit`'s failure record at its ref, as `put_root` plants a root.
+    pub fn put_record(
+        &self,
+        key: &Path,
+        namespace: &str,
+        commit: &str,
+        json: &str,
+        sig: Option<&str>,
+    ) {
+        let name = format!("refs/jtac/failed/{}/{commit}", &commit[..2]);
+        self.put_signed(key, namespace, &name, "root", json, sig);
+    }
+
     /// Plant `json` as `tag`'s attestation at its ref, signed with `key` in `namespace`
     /// unless `sig` is given verbatim. Replaces what the ref held.
     pub fn put_release(

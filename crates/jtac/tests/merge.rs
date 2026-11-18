@@ -66,17 +66,28 @@ fn root_ref(commit: &str) -> String {
     format!("refs/jtac/roots/{}/{commit}", &commit[..2])
 }
 
-fn read_root(repo: &Repo, commit: &str) -> Root {
-    let out = repo.command(
-        "git",
-        &[
-            "cat-file",
-            "blob",
-            &format!("{}:root.json", root_ref(commit)),
-        ],
-    );
-    assert!(out.status.success(), "{commit} has no root");
+fn failed_ref(commit: &str) -> String {
+    format!("refs/jtac/failed/{}/{commit}", &commit[..2])
+}
+
+fn read_at(repo: &Repo, name: &str) -> Root {
+    let out = repo.command("git", &["cat-file", "blob", &format!("{name}:root.json")]);
+    assert!(out.status.success(), "{name} holds no document");
     serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn read_root(repo: &Repo, commit: &str) -> Root {
+    read_at(repo, &root_ref(commit))
+}
+
+fn read_record(repo: &Repo, commit: &str) -> Root {
+    read_at(repo, &failed_ref(commit))
+}
+
+/// Replace `commit`'s failure record ref with `record`, signed by `key` in the CI namespace.
+fn put_record(repo: &Repo, key: &Path, commit: &str, record: &Root) {
+    let json = String::from_utf8(record.canonical_bytes().unwrap()).unwrap();
+    repo.put_record(key, "jtac-ci-root-v1", commit, &json, None);
 }
 
 /// Replace `commit`'s root ref with `root`, freshly signed by `key` in the namespace its
@@ -1030,11 +1041,16 @@ struct Reading {
 const WORKFLOW: &str = ".github/workflows/ci.yml";
 
 fn reading() -> Reading {
+    reading_with("")
+}
+
+/// `pin` is the rest of the `ci` table: the job, where a test names one.
+fn reading_with(pin: &str) -> Reading {
     let f = forge();
     f.dev.git(&["switch", "-q", "-c", "a", "main"]);
     let read = format!(
         "version = 2\n[checks.ok]\nrun = [\"{}\", \"--version\"]\n\
-         [checks.e2e]\nci = {{ workflow = \"{WORKFLOW}\" }}\n",
+         [checks.e2e]\nci = {{ workflow = \"{WORKFLOW}\"{pin} }}\n",
         me()
     );
     f.dev.write(".jtac/policy.toml", read.as_bytes());
@@ -1096,12 +1112,23 @@ fn reading() -> Reading {
 /// relative to the clone, so a refusal prints it the same on every platform: a temp dir's
 /// `~` or `:` would print quoted.
 fn results(repo: &Repo, commit: &str, branch: &str, concluded: Option<&str>) -> String {
+    results_of(repo, commit, branch, concluded, "")
+}
+
+/// `jobs` is the run's job list as the file holds it.
+fn results_of(
+    repo: &Repo,
+    commit: &str,
+    branch: &str,
+    concluded: Option<&str>,
+    jobs: &str,
+) -> String {
     let end = match concluded {
         Some(word) => format!(r#""status":"completed","conclusion":"{word}""#),
         None => r#""status":"in_progress""#.to_owned(),
     };
     let text = format!(
-        r#"{{"v":1,"forge":"github","runs":[{{"workflow":"{WORKFLOW}","commit":"sha1:{commit}","event":"push","ref":"{branch}","id":1234,"attempt":2,{end},"jobs":[]}}]}}"#
+        r#"{{"v":1,"forge":"github","runs":[{{"workflow":"{WORKFLOW}","commit":"sha1:{commit}","event":"push","ref":"{branch}","id":1234,"attempt":2,{end},"jobs":[{jobs}]}}]}}"#
     );
     let word = concluded.unwrap_or("going");
     let name = format!(".git/runs-{}-{branch}-{word}.json", &commit[..7]);
@@ -1198,10 +1225,7 @@ fn a_result_missing_or_pending_answers_2_and_writes_nothing() {
         assert!(ran.stderr.contains(&again), "{want}: {}", ran.stderr);
     }
     let refs = r.f.second().git(&["for-each-ref", "refs/jtac"]);
-    assert!(
-        !refs.contains(&r.second) && !refs.contains("refs/jtac/failed"),
-        "{refs}"
-    );
+    assert!(!refs.contains(&r.second), "{refs}");
     assert_eq!(r.state(&r.second), ("absent".into(), "none".into()));
     assert_eq!(r.state(&r.b).0, "partial");
 
@@ -1307,7 +1331,7 @@ fn the_merge_job_reads_each_ci_check_from_the_results_file_and_the_merge_reads_c
     assert!(ran.stdout.contains(&what), "{}", ran.stdout);
     let waive = format!("`jtac waive {third} --ci --reason <why>`");
     assert!(ran.stdout.contains(&waive), "{}", ran.stdout);
-    assert_eq!(r.state(&third), ("absent".into(), "none".into()));
+    assert_eq!(r.state(&third), ("absent".into(), "failed".into()));
 }
 
 /// Decision 65: a head that is itself a forge's merge holds a CI root with results read
@@ -1497,4 +1521,440 @@ fn replay_holds_a_merge_root_s_observed_to_the_checks_read_from_ci_among_its_nod
     }
     let want = "the root's `observed` is not the checks read from CI among its nodes";
     assert_eq!(v["mismatches"], serde_json::json!([want]), "{v}");
+}
+
+const E2E_JOB: &str = r#"{"name":"e2e","conclusion":"failure"}"#;
+
+impl Reading {
+    /// The merge job on `second` with a results file that concluded `word`, as JSON.
+    fn concluded(&self, word: &str, jobs: &str, push: bool) -> (i32, Value, String) {
+        let file = results_of(&self.f.ci, &self.second, "main", Some(word), jobs);
+        let flags = ["check", "--from", &self.b, "--base", &self.first];
+        let read = ["--results", file.as_str(), "--branch", "main", "--json"];
+        let push = match push {
+            true => &["--push", "origin"][..],
+            false => &[],
+        };
+        json(&self.f.ci, &[&flags[..], &read[..], push].concat())
+    }
+}
+
+/// DESIGN.md section 15.2, M20's done-when: a merge whose listed job failed gets a failure
+/// record, the root the job would have written with the state `failed`, and a second clone
+/// reads the merge `failed` with the job and the forge's word, though its tree is its
+/// head's and the head holds a developer root. `release` refuses it with and without
+/// `--require-ci` and says it failed. A re-run that fails again keeps the record.
+#[test]
+fn a_merge_whose_listed_job_failed_reads_failed_with_the_job_named_and_release_refuses_it() {
+    let r = reading_with(", job = \"e2e\"");
+    let ci = &r.f.ci;
+    let (code, v, err) = r.concluded("failure", E2E_JOB, true);
+    assert_eq!(code, 1, "{v}{err}");
+    assert_eq!(v["verdict"]["root"], Value::Null, "{v}");
+    assert_eq!(v["from"]["compared"], "agreed", "{v}");
+    let name = failed_ref(&r.second);
+    assert!(v["pushed"].to_string().contains(&name), "{v}");
+    assert!(err.contains("sent 1 failure record(s) to origin"), "{err}");
+    let record = read_record(ci, &r.second);
+    assert_eq!(v["record"], record.id().unwrap().to_string(), "{v}");
+    assert_eq!(serde_json::to_value(record.v).unwrap(), 3);
+    assert_eq!(serde_json::to_value(record.state).unwrap(), "failed");
+    assert_eq!(record.covers, Covers::List(vec![g(&r.b), g(&r.second)]));
+    assert_eq!(record.from.as_ref().unwrap().head, g(&r.b));
+    assert_eq!(record.signer.principal, "ci@example.com");
+    assert_eq!((record.observed.len(), record.counts.pass), (1, 2));
+    assert_eq!(ci.git(&["for-each-ref", &root_ref(&r.second)]), "");
+
+    let second = r.f.second();
+    let (code, v, err) = json(&second, &["audit", "main", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    let merge = row(&v, &r.second);
+    assert_eq!(
+        (&merge["state"], &merge["ci"]),
+        (&"absent".into(), &"failed".into()),
+        "{v}"
+    );
+    let shown = &merge["ci_record"];
+    assert_eq!(shown["commit"], sha(&r.second), "{v}");
+    assert_eq!(shown["observed"][0]["observed"]["job"], "e2e", "{v}");
+    assert_eq!(
+        shown["observed"][0]["observed"]["conclusion"], "failure",
+        "{v}"
+    );
+    assert_eq!(row(&v, &r.b)["state"], "partial", "{v}");
+    assert_eq!(row(&v, &r.b)["ci"], Value::Null, "{v}");
+    assert_eq!(row(&v, &r.first)["ci"], "failed", "{v}");
+    let text = ok(&second, &["audit", "main"]);
+    let line = format!(
+        "ci failed: its own failure record: check `e2e` fail, CI concluded `failure` (job e2e \
+         of {WORKFLOW}, run 1234 attempt 2); checks 2/3 pass, findings 0 blocker"
+    );
+    assert!(text.contains(&line), "{text}");
+    assert!(
+        text.contains("its own failure record: checks 2/2 pass, findings 0 blocker 2 major"),
+        "{text}"
+    );
+
+    second.git(&["tag", "-a", "-m", "t1", "t1", &r.second]);
+    for flag in [None, Some("--require-ci")] {
+        let args = ["release", "t1", "--from", &r.f.main, "--json"];
+        let args: Vec<&str> = args.into_iter().chain(flag).collect();
+        let (code, v, err) = json(&second, &args);
+        assert_eq!(code, 1, "{v}{err}");
+        let failed = v["failed"].to_string();
+        assert!(
+            failed.contains(&r.second) && failed.contains(&r.first),
+            "{v}"
+        );
+        assert!(!v["absent"].to_string().contains(&r.second), "{v}");
+    }
+    let text = jtac(&second, &["release", "t1", "--from", &r.f.main]).stdout;
+    let line = format!("  failed    {} CI's verdict on its merge failed", r.second);
+    assert!(text.contains(&line), "{text}");
+
+    let held = ci.git(&["rev-parse", &name]);
+    let (code, v, err) = r.concluded("failure", E2E_JOB, true);
+    assert_eq!(code, 1, "{v}{err}");
+    let notes = v["verdict"]["notes"].to_string();
+    assert!(
+        notes.contains("already holds CI's own failure record"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("this run wrote no failure record"),
+        "{notes}"
+    );
+    assert_eq!(v["record"], record.id().unwrap().to_string(), "{v}");
+    assert_eq!(ci.git(&["rev-parse", &name]), held);
+}
+
+/// DESIGN.md section 15.2 and decision 66: a later attempt that passes writes the root as
+/// usual, the record stays beside it, and the merge reads covered with the failure noted;
+/// a re-run that fails after a root stands writes its record beside that root, and the
+/// reading does not move.
+#[test]
+fn a_failed_merge_reads_covered_with_the_failure_noted_once_a_later_attempt_passes() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let (code, v, err) = r.concluded("failure", "", true);
+    assert_eq!(code, 1, "{v}{err}");
+    assert_eq!(r.state(&r.second), ("absent".into(), "failed".into()));
+    let (code, v, err) = r.concluded("success", "", true);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["record"], Value::Null, "{v}");
+    let pushed = v["pushed"].to_string();
+    assert!(pushed.contains(&root_ref(&r.second)), "{v}");
+    let v = r.f.audit();
+    let merge = row(&v, &r.second);
+    assert_eq!(
+        (&merge["state"], &merge["ci"]),
+        (&"covered".into(), &"covered".into()),
+        "{v}"
+    );
+    assert_eq!(merge["ci_record"]["commit"], sha(&r.second), "{v}");
+    assert_eq!(row(&v, &r.b)["state"], "covered", "{v}");
+    let second = r.f.second();
+    let text = ok(&second, &["audit", "main"]);
+    let line = "ci note: another verdict failed: its own failure record: check `e2e` fail, CI \
+                concluded `failure`";
+    assert!(text.contains(line), "{text}");
+    assert!(
+        second
+            .git(&["for-each-ref", "refs/jtac"])
+            .contains(&failed_ref(&r.second))
+    );
+
+    r.f.dev.git(&["fetch", "-q", "origin"]);
+    r.f.dev.git(&["switch", "-q", "-c", "c", "origin/main"]);
+    r.f.dev.write("c.txt", b"c\n");
+    let c = r.f.dev.commit("c");
+    ok(&r.f.dev, &["check", "--base", "origin/main"]);
+    r.f.push("origin", "c", true);
+    r.f.fetch("origin");
+    let third = r.f.merge("origin/c");
+    ci.git(&["push", "-q", "origin", "main"]);
+    let attempt = |word: &str| {
+        let file = results(ci, &third, "main", Some(word));
+        let flags = [
+            "check", "--from", &c, "--base", &r.second, "--push", "origin",
+        ];
+        let read = ["--results", file.as_str(), "--branch", "main", "--json"];
+        json(ci, &[&flags[..], &read[..]].concat())
+    };
+    let (code, v, err) = attempt("success");
+    assert_eq!(code, 0, "{v}{err}");
+    let root = read_root(ci, &third);
+    let (code, v, err) = attempt("failure");
+    assert_eq!(code, 1, "{v}{err}");
+    assert!(v["pushed"].to_string().contains(&failed_ref(&third)), "{v}");
+    assert_eq!(
+        read_root(ci, &third),
+        root,
+        "the root that stood still stands"
+    );
+    let record = read_record(ci, &third);
+    assert_eq!(record.parents, root.parents);
+    let v = r.f.audit();
+    let merge = row(&v, &third);
+    assert_eq!(
+        (&merge["state"], &merge["ci"]),
+        (&"covered".into(), &"covered".into()),
+        "{v}"
+    );
+    assert_eq!(
+        merge["ci_record"]["record"],
+        record.id().unwrap().to_string(),
+        "{v}"
+    );
+}
+
+/// DESIGN.md section 9.5: the verdict that failed judged the whole diff from the old tip,
+/// so every commit of a failed rebase reads `failed` to the CI gate, the earlier ones by
+/// the tip's record, and none reads absent to it.
+#[test]
+fn every_commit_of_a_failed_rebase_reads_failed() {
+    let f = forge();
+    f.dev.git(&["switch", "-q", "-c", "a", "main"]);
+    f.dev.write("a.txt", b"a\n");
+    f.dev.commit("a");
+    let mut policy = std::fs::read(f.dev.path().join(".jtac/policy.toml")).unwrap();
+    policy.extend_from_slice(b"# a change to a protected path\n");
+    f.dev.write(".jtac/policy.toml", &policy);
+    let head = f.dev.commit("touch the policy");
+    f.push("origin", "a", false);
+    let z = f.feature("z", 1);
+    f.push("origin", "z", true);
+    f.fetch("origin");
+    let old = f.merge("origin/z");
+    let (code, v, err) = f.job(&z[0], &f.main);
+    assert_eq!(code, 0, "{v}{err}");
+    f.fetch("origin");
+    let tip = f.rebase("origin/a");
+    let earlier = f.ci.git(&["rev-parse", "HEAD~1"]);
+    assert_eq!(f.ci.git(&["rev-parse", "HEAD~2"]), old);
+    let (code, v, err) = f.job(&head, &old);
+    assert_eq!(code, 1, "{v}{err}");
+    assert!(
+        v["verdict"]["reasons"].to_string().contains("JT-PROT-001"),
+        "{v}"
+    );
+    assert!(v["pushed"].to_string().contains(&failed_ref(&tip)), "{v}");
+    let record = read_record(&f.ci, &tip);
+    assert_eq!(
+        serde_json::to_value(record.v).unwrap(),
+        3,
+        "version 3 under a version 1 policy"
+    );
+    assert!(record.observed.is_empty());
+    let second = f.second();
+    let (code, v, err) = json(&second, &["audit", "main", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    for commit in [&earlier, &tip] {
+        let r = row(&v, commit);
+        assert_eq!(
+            (&r["state"], &r["ci"]),
+            (&"absent".into(), &"failed".into()),
+            "{v}"
+        );
+        assert_eq!(r["ci_record"]["commit"], sha(&tip), "{v}");
+    }
+    assert_eq!(row(&v, &old)["ci"], "covered", "{v}");
+    let (code, v, err) = json(&second, &["audit", "main~1", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    let below = row(&v, &earlier);
+    assert_eq!(
+        (&below["ci"], &below["ci_record"]["commit"]),
+        (&"failed".into(), &sha(&tip).into()),
+        "a range below the record's own commit: {v}"
+    );
+    let text = ok(&second, &["audit", "main"]);
+    let reaches = format!(
+        "ci failed: {}'s failure record reaches it: checks",
+        &tip[..12]
+    );
+    assert!(text.contains(&reaches), "{text}");
+}
+
+/// Decision 66: the job looks at a record on the tip only when its own verdict failed, and
+/// then keeps it only as CI's own for this head. One a developer's key signed, one for
+/// another head and a ref that holds no record each stop the job with the ref to delete;
+/// a verdict that passes writes its root beside any of them; and no reader stops on one:
+/// `audit` and `release` answer as they did, the record a note and the merge not `failed`.
+#[test]
+fn a_record_that_is_not_ci_s_own_stops_the_job_on_a_failed_verdict_and_no_other_command() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let name = failed_ref(&r.second);
+    let (code, v, err) = r.concluded("failure", "", false);
+    assert_eq!(code, 1, "{v}{err}");
+    let own = read_record(ci, &r.second);
+    let mut dev = own.clone();
+    dev.signer = read_root(ci, &r.b).signer;
+    let mut other = own.clone();
+    other.from.as_mut().unwrap().head = g(&r.a);
+
+    put_record(ci, &r.f.dev_key, &r.second, &dev);
+    ci.git(&["tag", "-a", "-m", "t1", "t1", &r.second]);
+    let readers = |note: &str| {
+        let (code, v, err) = json(ci, &["audit", "main", "--json"]);
+        assert_eq!(code, 0, "{note}: {v}{err}");
+        assert_eq!(row(&v, &r.second)["ci"], Value::Null, "{note}: {v}");
+        assert!(v["notes"].to_string().contains(note), "{note}: {v}");
+        let (code, v, err) = json(ci, &["release", "t1", "--from", &r.first, "--json"]);
+        assert_eq!(code, 1, "{note}: {v}{err}");
+        assert!(!v["failed"].to_string().contains(&r.second), "{note}: {v}");
+    };
+    readers("failure record counts for nothing");
+    ci.git(&["update-ref", &name, &r.second]);
+    readers("holds no failure record and is not read");
+
+    let refused = |why: &str| {
+        let file = results(ci, &r.second, "main", Some("failure"));
+        let ran = r.job(&["--results", &file, "--branch", "main"]);
+        assert_eq!(
+            (ran.code, ran.stdout.as_str()),
+            (2, ""),
+            "{why}: {}",
+            ran.stderr
+        );
+        let what = "already carries a failure record this job did not write";
+        assert!(ran.stderr.contains(what), "{why}: {}", ran.stderr);
+        assert!(ran.stderr.contains(why), "{why}: {}", ran.stderr);
+        let delete = format!("`git push origin :{name}`");
+        assert!(ran.stderr.contains(&delete), "{why}: {}", ran.stderr);
+        assert!(ran.stderr.contains("\nfence: "), "{why}: {}", ran.stderr);
+        assert_eq!(ran.stderr.lines().count(), 3, "{why}: {}", ran.stderr);
+    };
+    refused("its ref does not read");
+    put_record(ci, &r.f.dev_key, &r.second, &dev);
+    refused("not named for namespace jtac-ci-root-v1");
+    put_record(ci, &r.f.ci_key, &r.second, &other);
+    refused("its `from` names head");
+    assert_eq!(
+        r.f.second()
+            .git(&["for-each-ref", "refs/jtac/failed"])
+            .matches(&r.second)
+            .count(),
+        0
+    );
+
+    let (code, v, err) = r.concluded("success", "", false);
+    assert_eq!(code, 0, "a verdict that passes reads no record: {v}{err}");
+    assert_eq!(
+        read_record(ci, &r.second),
+        other,
+        "and leaves the ref as it found it"
+    );
+    refused("its `from` names head");
+    put_record(ci, &r.f.ci_key, &r.second, &own);
+    let (code, v, err) = r.concluded("failure", "", false);
+    assert_eq!(code, 1, "{v}{err}");
+    let notes = v["verdict"]["notes"].to_string();
+    assert!(
+        notes.contains("already holds CI's own failure record"),
+        "{notes}"
+    );
+}
+
+/// A record pushed onto the forge's commit between the job's fetch and its push is judged
+/// as a root there is (`a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing`):
+/// a developer's is the fence, with the ref to delete, and a concurrent run's own is kept.
+#[test]
+fn a_record_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let name = failed_ref(&r.second);
+    let (code, v, err) = r.concluded("failure", "", false);
+    assert_eq!(code, 1, "{v}{err}");
+    let mut forged = read_record(ci, &r.second);
+    forged.signer = read_root(ci, &r.b).signer;
+    r.f.dev.git(&["fetch", "-q", "origin"]);
+    put_record(&r.f.dev, &r.f.dev_key, &r.second, &forged);
+    let spec = format!("{name}:{name}");
+    r.f.dev.git(&["push", "-q", "origin", &spec]);
+    ci.git(&["update-ref", "-d", &name]);
+    let file = results(ci, &r.second, "main", Some("failure"));
+    let ran = r.job(&["--results", &file, "--branch", "main"]);
+    assert_eq!(ran.code, 2, "{}{}", ran.stdout, ran.stderr);
+    assert!(
+        ran.stderr
+            .contains("not named for namespace jtac-ci-root-v1")
+            && ran
+                .stderr
+                .contains("origin holds it, pushed after this run fetched")
+            && ran.stderr.contains(&format!("`git push origin :{name}`")),
+        "{}",
+        ran.stderr
+    );
+    r.f.dev.git(&["push", "-q", "origin", &format!(":{name}")]);
+    ci.git(&["update-ref", "-d", &name]);
+    let (code, v, err) = r.concluded("failure", "", true);
+    assert_eq!(code, 1, "{v}{err}");
+    assert!(v["pushed"].to_string().contains(&name), "{v}");
+    let first = read_record(ci, &r.second);
+    ci.git(&["update-ref", "-d", &name]);
+    let (code, v, err) = r.concluded("failure", "", true);
+    assert_eq!(code, 1, "{v}{err}");
+    let notes = v["verdict"]["notes"].to_string();
+    let kept = "origin already holds CI's own failure record for this head";
+    assert!(notes.contains(kept), "{notes}");
+    assert!(
+        err.contains("WARNING: the failure record did not reach origin")
+            && !err.contains("the roots did not reach"),
+        "{err}"
+    );
+    assert!(!v["pushed"].to_string().contains(&name), "{v}");
+    assert_eq!(read_record(&r.f.second(), &r.second), first);
+}
+
+/// Decision 66, issue 161 note 13: a tip whose first-parent line holds a commit of the pull
+/// request's own, where a document with `from` would reach it. Three shapes: the head as
+/// the first parent, an earlier commit of the pull request as the first parent with the
+/// head second, and that commit as the only parent. The job refuses each for every head
+/// that holds the line's first commit, names `jtac ci`, which judges the push and writes
+/// nothing, and leaves no ref behind. A head ahead of HEAD holds HEAD itself, the line's
+/// first commit when the old tip is HEAD's parent, and is refused the same way.
+#[test]
+fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
+    let f = forge();
+    let a = f.feature("a", 2);
+    f.push("origin", "a", true);
+    f.fetch("origin");
+    f.at_main();
+    let tree = f.ci.git(&["rev-parse", &format!("{}^{{tree}}", a[1])]);
+    let made = ["commit-tree", "--no-gpg-sign", "-m", "merge", tree.as_str()];
+    let (head, first, main) = (a[1].as_str(), a[0].as_str(), f.main.as_str());
+    let shapes: [(&[&str], &[&str]); 3] = [
+        (&["-p", head, "-p", main], &[first, head]),
+        (&["-p", first, "-p", head], &[head]),
+        (&["-p", first], &[head]),
+    ];
+    for (parents, heads) in shapes {
+        let tip = f.ci.git(&[&made[..], parents].concat());
+        f.ci.git(&["reset", "-q", "--hard", &tip]);
+        for from in heads {
+            let flags = ["check", "--from", from, "--base", main, "--push", "origin"];
+            let ran = jtac(&f.ci, &flags);
+            assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+            let what = format!(
+                "jtac: `--from {from}` holds {}, the first commit above the old tip on HEAD's \
+                 first-parent line",
+                &first[..12]
+            );
+            assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+            let how = format!("negotiation: Run `jtac ci --base {main}` on the tip instead");
+            assert!(ran.stderr.contains(&how), "{}", ran.stderr);
+            assert_eq!(ran.stderr.lines().count(), 3, "{}", ran.stderr);
+        }
+        let ran = jtac(&f.ci, &["ci", "--base", main]);
+        assert_eq!(ran.code, 0, "{}{}", ran.stdout, ran.stderr);
+        assert!(!f.ci.git(&["for-each-ref", "refs/jtac"]).contains(&tip));
+    }
+    let tip = f.ci.git(&[&made[..], &["-p", main]].concat());
+    f.ci.git(&["reset", "-q", "--hard", &tip]);
+    let ahead = f.ci.git(&[&made[..], &["-p", tip.as_str()]].concat());
+    let ran = jtac(&f.ci, &["check", "--from", &ahead, "--base", main]);
+    let what = format!("jtac: `--from {ahead}` holds {}, the first", &tip[..12]);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
 }

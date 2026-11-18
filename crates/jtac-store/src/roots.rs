@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use jtac_core::{GitOid, Root, Sha256Digest, V1, canonical_bytes, from_canonical};
 use serde::{Deserialize, Serialize};
 
+use crate::refs::Space;
 use crate::{Store, StoreError, fs, refs};
 
 /// The leaves of one root's Merkle tree. Never leaves the machine.
@@ -35,13 +36,34 @@ impl Store {
         sig: &[u8],
         nodes: &[Sha256Digest],
     ) -> Result<Sha256Digest, StoreError> {
+        self.put(Space::Roots, root, sig, nodes)
+    }
+
+    /// A failure record, kept as `put_root` keeps a root, its ref under `refs/jtac/failed/`
+    /// (DESIGN.md section 15.2).
+    pub fn put_record(
+        &self,
+        root: &Root,
+        sig: &[u8],
+        nodes: &[Sha256Digest],
+    ) -> Result<Sha256Digest, StoreError> {
+        self.put(Space::Failed, root, sig, nodes)
+    }
+
+    fn put(
+        &self,
+        space: Space,
+        root: &Root,
+        sig: &[u8],
+        nodes: &[Sha256Digest],
+    ) -> Result<Sha256Digest, StoreError> {
         let id = root.id()?;
         let dir = self.root_dir(&id);
         let manifest = Manifest {
             v: V1,
             nodes: nodes.to_vec(),
         };
-        refs::write(self, root, sig)?;
+        refs::write(self, space, root, sig)?;
         fs::write(&dir.join("root.json"), &root.canonical_bytes()?)?;
         fs::write(&dir.join("root.sig"), sig)?;
         fs::write(&dir.join("nodes.json"), &canonical_bytes(&manifest)?)?;
@@ -51,7 +73,12 @@ impl Store {
     /// The root for `commit` from its ref, or `None` when the ref does not exist. The root
     /// is refused unless its bytes are canonical, its shape validates, and it names `commit`.
     pub fn root(&self, commit: &GitOid) -> Result<Option<StoredRoot>, StoreError> {
-        refs::read(self, commit)
+        refs::read(self, Space::Roots, commit)
+    }
+
+    /// The failure record for `commit` from its ref, read as `root` reads a root.
+    pub fn record(&self, commit: &GitOid) -> Result<Option<StoredRoot>, StoreError> {
+        refs::read(self, Space::Failed, commit)
     }
 
     /// The local copy of the root with `id`, or `None`. A fetched root has no local copy.

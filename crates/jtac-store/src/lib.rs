@@ -22,7 +22,7 @@ use jtac_core::{CanonicalError, ReadError};
 
 pub use batch::{Object, Read, git_objects};
 pub use cache::FileCache;
-pub use refs::{Listed, PushOutcome, Pushed, Roots, ref_name};
+pub use refs::{Listed, PushOutcome, Pushed, Roots, Space, ref_name};
 pub use releases::{StoredRelease, release_ref};
 pub use roots::StoredRoot;
 

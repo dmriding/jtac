@@ -9,11 +9,13 @@
 //! is held to the policy in the tree it names (section 15.2, decision 57); one with `from`
 //! gets its reach, what the CI gate reads it for (section 9.5).
 
+mod records;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use jtac_core::{Body, Covers, GitOid, RootVersion, Sha256Digest, State};
-use jtac_gate::{PolicyKind, RootFact, Trust};
+use jtac_core::{Body, Covers, GitOid, Root, RootVersion, Sha256Digest, State};
+use jtac_gate::{PolicyKind, RecordFact, RootFact, Trust};
 use jtac_sign::{Namespace, Tool, Verified};
 use jtac_store::{Store, StoredRoot};
 
@@ -35,6 +37,47 @@ pub struct Ledger {
     /// root lists in `covers`, since it covers only a commit whose own policy holds no `ci`
     /// check. No other tree is asked: one git child per tree is the cost.
     pub policies: BTreeMap<GitOid, TreePolicy>,
+    /// The failure records that reach the range and hold as documents (section 15.2).
+    /// Empty until `read_records`, which only a reader of the CI gate's table calls.
+    pub records: Vec<RecordFact>,
+    /// The stored form of each, in `records` order.
+    pub failed: Vec<StoredRoot>,
+    /// Each readable root's id by its commit, what a parent link is held to.
+    ids: BTreeMap<GitOid, Sha256Digest>,
+}
+
+/// What a gather reads with.
+#[derive(Clone, Copy)]
+pub struct Site<'a> {
+    /// The repository.
+    pub repo: &'a Path,
+    /// Its store.
+    pub store: &'a Store,
+    /// The signature verifier.
+    pub tool: &'a Tool,
+    /// The trust in force.
+    pub signers: &'a Signers,
+    /// The command, for a refusal's next step.
+    pub command: &'a str,
+    /// `sha1` or `sha256`.
+    pub format: &'a str,
+}
+
+/// What a root's `covers` names, the range form expanded: a root with `from` by what its
+/// tip reaches past its base, a pair git cannot walk vouching for nothing.
+fn covered(repo: &Path, format: &str, root: &Root) -> Result<Vec<GitOid>, Refusal> {
+    Ok(match (&root.covers, &root.from) {
+        (Covers::List(list), _) => list.clone(),
+        (Covers::Range { base, tip }, Some(_)) => {
+            match range::kinds(repo, &[*base])?[0].as_deref() {
+                Some("commit") => range::reachable(repo, format, tip, &[*base])?
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+        (Covers::Range { base, tip }, None) => range::between(repo, format, base, tip)?,
+    })
 }
 
 impl Ledger {
@@ -53,18 +96,18 @@ impl Ledger {
 }
 
 /// Read the namespace and judge the roots that bear on `commits`.
-pub fn gather(
-    repo: &Path,
-    store: &Store,
-    tool: &Tool,
-    signers: &Signers,
-    command: &str,
-    format: &str,
-    commits: &[Listed],
-) -> Result<Ledger, Refusal> {
+pub fn gather(site: &Site, commits: &[Listed]) -> Result<Ledger, Refusal> {
+    let Site {
+        repo,
+        store,
+        tool,
+        signers,
+        command,
+        format,
+    } = *site;
     let roots = store.roots().map_err(Refusal::store)?;
     let mut notes: Vec<String> = roots.notes().collect();
-    let reads = store.read_all(&roots.listed).map_err(Refusal::store)?;
+    let reads = store.read_all(&roots).map_err(Refusal::store)?;
     let in_range: BTreeSet<GitOid> = commits.iter().map(|c| c.commit).collect();
     let range_trees: BTreeSet<GitOid> = commits.iter().map(|c| c.tree).collect();
     let tree_of: BTreeMap<GitOid, GitOid> = commits.iter().map(|c| (c.commit, c.tree)).collect();
@@ -76,18 +119,7 @@ pub fn gather(
             continue;
         };
         ids.insert(r.listed.commit, s.root.id().map_err(Refusal::internal)?);
-        covers.push(match (&s.root.covers, &s.root.from) {
-            (Covers::List(list), _) => list.clone(),
-            (Covers::Range { base, tip }, Some(_)) => {
-                match range::kinds(repo, &[*base])?[0].as_deref() {
-                    Some("commit") => range::reachable(repo, format, tip, &[*base])?
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
-                }
-            }
-            (Covers::Range { base, tip }, None) => range::between(repo, format, base, tip)?,
-        });
+        covers.push(covered(repo, format, &s.root)?);
     }
     let touched: Vec<usize> = (0..reads.len())
         .filter(|&i| {
@@ -114,6 +146,9 @@ pub fn gather(
         stored: Vec::new(),
         notes: Vec::new(),
         policies: treepolicy::read(repo, &asked)?,
+        records: Vec::new(),
+        failed: Vec::new(),
+        ids,
     };
     for (k, &i) in touched.iter().enumerate() {
         let (fact, stored) = match &reads[i].stored {
@@ -127,7 +162,8 @@ pub fn gather(
                     format,
                     shallow,
                     based: false,
-                    ids: &ids,
+                    noun: "root",
+                    ids: &ledger.ids,
                     policies: &ledger.policies,
                     notes: &mut notes,
                 };
@@ -171,6 +207,8 @@ struct Judge<'a> {
     shallow: bool,
     /// Set by `base`: the root's base is a commit this clone holds.
     based: bool,
+    /// What a note calls the document: a root, or a failure record.
+    noun: &'static str,
     ids: &'a BTreeMap<GitOid, Sha256Digest>,
     policies: &'a BTreeMap<GitOid, TreePolicy>,
     notes: &'a mut Vec<String>,
@@ -202,9 +240,14 @@ impl Judge<'_> {
             None => {
                 covers.clear();
                 self.notes.push(format!(
-                    "{}'s root names a base this shallow clone does not hold; its covers are \
-                     not judged, and it counts for its own commit and a tree match only",
-                    root.commit.hex()
+                    "{}'s {} names a base this shallow clone does not hold; its covers are \
+                     not judged, and it counts for its own commit{} only",
+                    root.commit.hex(),
+                    self.noun,
+                    match root.state {
+                        State::Failed => "",
+                        _ => " and a tree match",
+                    }
                 ));
                 None
             }
@@ -247,9 +290,10 @@ impl Judge<'_> {
                     Some(reach) => reach,
                     None => {
                         self.notes.push(format!(
-                            "{}'s root names a base that is not on its first-parent line; the \
+                            "{}'s {} names a base that is not on its first-parent line; the \
                              CI gate reads it for its own commit alone",
-                            root.commit.hex()
+                            root.commit.hex(),
+                            self.noun
                         ));
                         vec![root.commit]
                     }
@@ -293,8 +337,9 @@ impl Judge<'_> {
             });
             if let Some(marker) = &body.agent {
                 self.notes.push(format!(
-                    "{}'s root applies a waiver written under an agent session ({})",
+                    "{}'s {} applies a waiver written under an agent session ({})",
                     root.commit.hex(),
+                    self.noun,
                     output::plain(marker)
                 ));
             }
@@ -421,8 +466,9 @@ impl Judge<'_> {
                 }
                 Some(_) => {}
                 None => self.notes.push(format!(
-                    "{}'s root links to a root for {} that this clone does not hold",
+                    "{}'s {} links to a root for {} that this clone does not hold",
                     root.commit.hex(),
+                    self.noun,
                     p.commit.hex()
                 )),
             }

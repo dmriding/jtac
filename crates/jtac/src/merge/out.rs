@@ -4,7 +4,8 @@
 
 use std::fmt::Write;
 
-use jtac_core::FromHead;
+use jtac_core::{FromHead, Sha256Digest};
+use jtac_store::Space;
 use serde::Serialize;
 
 use crate::ci::head::HeadRoot;
@@ -35,11 +36,16 @@ pub struct MergeOut {
     pub waivable: u64,
     /// CI's own verdict, with the root written.
     pub verdict: Output,
+    /// On a failed verdict: the failure record this run wrote or found on the tip (DESIGN.md
+    /// section 15.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record: Option<Sha256Digest>,
     /// Waivers on the head's chain that were offered nowhere, with why.
     pub withheld_waivers: Vec<Withheld>,
     /// The head's root, when it has one.
     pub head_root: Option<HeadRoot>,
-    /// Root refs sent to `--push`'s remote; the head's only when it agreed.
+    /// Refs sent to `--push`'s remote: the root's or the failure record's, and the head's
+    /// root only when it agreed.
     pub pushed: Vec<String>,
 }
 
@@ -70,6 +76,10 @@ pub fn render(o: &MergeOut) -> String {
     );
     if let Some(h) = &o.head_root {
         s.push_str(&crate::ci::out::head_lines(h));
+    }
+    if let Some(id) = &o.record {
+        let name = Space::Failed.ref_name(&o.verdict.commit);
+        let _ = writeln!(s, "  record  {id} at {name}");
     }
     for r in &o.pushed {
         let _ = writeln!(s, "  pushed  {r}");

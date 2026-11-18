@@ -1,33 +1,88 @@
 //! The ref layer: one parentless commit per root at `refs/jtac/roots/<xx>/<commit>`, its tree
-//! `root.json` and `root.sig`. Written with plumbing so no commit hook, template, or editor
+//! `root.json` and `root.sig`; a failure record the same way under `refs/jtac/failed/`
+//! (DESIGN.md section 15.2). Written with plumbing so no commit hook, template, or editor
 //! runs (`update-ref` still fires `reference-transaction`); `--no-gpg-sign` because
 //! `commit-tree` honours `commit.gpgsign` and a gpg prompt would hang every root write;
 //! `i18n.commitEncoding` pinned because an `encoding` header would change the commit id.
 
 use jtac_checks::git::{GitError, git, git_output, git_with, quoted};
-use jtac_core::{GitOid, Root, from_canonical};
+use jtac_core::{GitOid, Root, RootError, from_canonical};
 
 use crate::roots::StoredRoot;
 use crate::{Store, StoreError};
 
-const NAMESPACE: &str = "refs/jtac/roots/";
 const AUTHOR: &str = "jtac";
+
+/// Which document a ref holds. Each namespace admits its own alone, so neither passes for
+/// the other (`a_namespace_holds_its_own_document_and_refuses_the_other_s`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Space {
+    /// `refs/jtac/roots/`: a root, never the state `failed`.
+    #[default]
+    Roots,
+    /// `refs/jtac/failed/`: a failure record, the state `failed` alone.
+    Failed,
+}
+
+/// Why a document does not read, on one line: a parse error quotes the document, and a
+/// reader prints the reason in a note or a refusal
+/// (`a_reason_that_quotes_the_document_is_one_line`).
+pub(crate) fn one_line(e: impl std::fmt::Display) -> String {
+    let flat = |c: char| if c.is_control() { ' ' } else { c };
+    e.to_string().chars().map(flat).collect()
+}
+
+impl Space {
+    /// The namespace, with its trailing slash.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Self::Roots => "refs/jtac/roots/",
+            Self::Failed => "refs/jtac/failed/",
+        }
+    }
+
+    /// The ref that holds this namespace's document for `commit`.
+    pub fn ref_name(self, commit: &GitOid) -> String {
+        let hex = commit.hex();
+        format!("{}{}/{hex}", self.prefix(), &hex[..2])
+    }
+
+    /// What a ref's content is called in a refusal.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Roots => "root",
+            Self::Failed => "failure record",
+        }
+    }
+
+    /// The document's own rules for this namespace.
+    pub(crate) fn admits(self, root: &Root) -> Result<(), RootError> {
+        match self {
+            Self::Roots => root.validate(),
+            Self::Failed => root.validate_record(),
+        }
+    }
+}
 
 /// The ref that holds the root for `commit`.
 pub fn ref_name(commit: &GitOid) -> String {
-    let hex = commit.hex();
-    format!("{NAMESPACE}{}/{hex}", &hex[..2])
+    Space::Roots.ref_name(commit)
 }
 
 /// Write the root commit and create the ref. Returns the root commit's hex. The commit is a
 /// function of the root and the signature alone: fixed author, dated the root's `ts`. The
-/// ref is created, never replaced: a ref that already holds a root is `Exists`
+/// ref is created, never replaced: a ref that already holds its document is `Exists`
 /// (`a_root_ref_is_created_never_replaced`). Refuses a root that would not read back: one
-/// that fails `validate`, names a commit this repository does not have, or is dated before
-/// 1970, which git cannot write.
-pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, StoreError> {
+/// `space` does not admit, that names a commit this repository does not have, or is dated
+/// before 1970, which git cannot write.
+pub(crate) fn write(
+    store: &Store,
+    space: Space,
+    root: &Root,
+    sig: &[u8],
+) -> Result<String, StoreError> {
     let invalid = |what: String| StoreError::Invalid { what };
-    root.validate().map_err(|e| invalid(e.to_string()))?;
+    space.admits(root).map_err(|e| invalid(e.to_string()))?;
     if kind_of(store, &root.commit.hex())?.as_deref() != Some("commit") {
         return Err(invalid(format!(
             "{} is not a commit in this repository",
@@ -45,10 +100,10 @@ pub(crate) fn write(store: &Store, root: &Root, sig: &[u8]) -> Result<String, St
         root.ts,
         &root.id()?.to_string(),
     )?;
-    let name = ref_name(&root.commit);
+    let name = space.ref_name(&root.commit);
     match git(store.repo(), &["update-ref", &name, &commit, ""]) {
         Ok(_) => Ok(commit),
-        Err(GitError::Failed { .. }) if read(store, &root.commit)?.is_some() => {
+        Err(GitError::Failed { .. }) if read(store, space, &root.commit)?.is_some() => {
             Err(StoreError::Exists { name })
         }
         Err(e) => Err(e.into()),
@@ -115,25 +170,40 @@ pub(crate) fn commit_files(
     )?)
 }
 
-/// The root at `commit`'s ref, or `None` when there is no such ref. A ref that exists but
-/// does not hold a root for `commit` is refused, never a miss.
-pub(crate) fn read(store: &Store, commit: &GitOid) -> Result<Option<StoredRoot>, StoreError> {
-    read_at(store, commit, &ref_name(commit))
+/// The document at `commit`'s ref in `space`, or `None` when there is no such ref. A ref
+/// that exists but does not hold that namespace's document for `commit` is refused, never a
+/// miss.
+pub(crate) fn read(
+    store: &Store,
+    space: Space,
+    commit: &GitOid,
+) -> Result<Option<StoredRoot>, StoreError> {
+    read_at(store, space, commit, &space.ref_name(commit))
 }
 
-/// `commit`'s root as the ref `name` holds it: its own ref, or `FETCH_HEAD` for a remote's.
-fn read_at(store: &Store, commit: &GitOid, name: &str) -> Result<Option<StoredRoot>, StoreError> {
-    let Some(doc) = document(store, name, "root")? else {
+/// `commit`'s document as the ref `name` holds it: its own ref, or `FETCH_HEAD` for a
+/// remote's.
+fn read_at(
+    store: &Store,
+    space: Space,
+    commit: &GitOid,
+    name: &str,
+) -> Result<Option<StoredRoot>, StoreError> {
+    let Some(doc) = document(store, name, space.noun())? else {
         return Ok(None);
     };
     let refuse = |what: String| StoreError::Ref {
         name: name.to_owned(),
         what,
     };
-    let root: Root = from_canonical(&doc.blob("root.json")?).map_err(|e| refuse(e.to_string()))?;
-    root.validate().map_err(|e| refuse(e.to_string()))?;
+    let root: Root = from_canonical(&doc.blob("root.json")?).map_err(|e| refuse(one_line(e)))?;
+    space.admits(&root).map_err(|e| refuse(one_line(e)))?;
     if root.commit != *commit {
-        return Err(refuse(format!("the root is for {}", root.commit)));
+        return Err(refuse(format!(
+            "the {} is for {}",
+            space.noun(),
+            root.commit
+        )));
     }
     let sig = doc.blob("root.sig")?;
     Ok(Some(StoredRoot { root, sig }))
@@ -212,6 +282,8 @@ pub struct Listed {
 /// (`roots_skips_a_ref_the_writer_would_not_write_with_a_note`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roots {
+    /// The namespace listed.
+    pub space: Space,
     /// In ref order.
     pub listed: Vec<Listed>,
     /// Full ref names as git printed them, in ref order.
@@ -221,17 +293,19 @@ pub struct Roots {
 impl Roots {
     /// One note per skipped ref, for whichever command prints notes.
     pub fn notes(&self) -> impl Iterator<Item = String> + '_ {
+        let under = self.space.prefix();
         self.skipped
             .iter()
-            .map(|raw| match std::str::from_utf8(raw) {
+            .map(move |raw| match std::str::from_utf8(raw) {
                 Ok(name) if quoted(name, "") == name => format!(
-                    "skipped {name}: not <xx>/<commit> under refs/jtac/roots/; `git update-ref -d \
+                    "skipped {name}: not <xx>/<commit> under {under}; `git update-ref -d \
                  {name}` removes it here and `git push <remote> :{name}` on the remote"
                 ),
-                _ => "skipped a ref under refs/jtac/roots/ whose name this note cannot show; `git \
-                  for-each-ref refs/jtac/roots/` prints it, `git update-ref -d <ref>` removes \
-                  it here and `git push <remote> :<ref>` on the remote"
-                    .to_owned(),
+                _ => format!(
+                    "skipped a ref under {under} whose name this note cannot show; `git \
+                     for-each-ref {under}` prints it, `git update-ref -d <ref>` removes it here \
+                     and `git push <remote> :<ref>` on the remote"
+                ),
             })
     }
 }
@@ -239,6 +313,15 @@ impl Roots {
 impl Store {
     /// Every root ref in this clone, in ref order, and every name skipped.
     pub fn roots(&self) -> Result<Roots, StoreError> {
+        self.listed(Space::Roots)
+    }
+
+    /// Every failure record ref in this clone, as `roots` lists a root's.
+    pub fn records(&self) -> Result<Roots, StoreError> {
+        self.listed(Space::Failed)
+    }
+
+    fn listed(&self, space: Space) -> Result<Roots, StoreError> {
         let repo = self.repo();
         let format = trimmed(git(repo, &["rev-parse", "--show-object-format"])?)?;
         let out = git(
@@ -246,7 +329,7 @@ impl Store {
             &[
                 "for-each-ref",
                 "--format=%(refname) %(objectname)",
-                NAMESPACE,
+                space.prefix(),
             ],
         )?;
         let oid = |hex: &str| -> Result<GitOid, StoreError> {
@@ -256,7 +339,10 @@ impl Store {
                     what: format!("{hex} is not a {format} object id"),
                 })
         };
-        let mut roots = Roots::default();
+        let mut roots = Roots {
+            space,
+            ..Roots::default()
+        };
         for raw in out.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let Ok(line) = std::str::from_utf8(raw) else {
                 let name = raw.split(|b| *b == b' ').next().unwrap_or_default();
@@ -267,7 +353,7 @@ impl Store {
                 what: format!("for-each-ref line {line:?}"),
             })?;
             let commit = name
-                .strip_prefix(NAMESPACE)
+                .strip_prefix(space.prefix())
                 .and_then(|tail| tail.split_once('/'))
                 .filter(|(shard, hex)| {
                     shard.len() == 2 && hex.starts_with(shard) && !hex.contains('/')
@@ -284,15 +370,17 @@ impl Store {
         Ok(roots)
     }
 
-    /// The root `remote` holds for `commit`, or `None` when it holds no ref for it: fetched
-    /// into `FETCH_HEAD` alone, `--refmap=` keeping a configured `refs/jtac/*` refspec from
-    /// replacing the local ref on the way, and read as the local ref is.
-    pub fn remote_root(
+    /// The document `remote` holds for `commit` in `space`, or `None` when it holds no ref
+    /// for it: fetched into `FETCH_HEAD` alone, `--refmap=` keeping a configured
+    /// `refs/jtac/*` refspec from replacing the local ref on the way, and read as the local
+    /// ref is.
+    pub fn remote(
         &self,
+        space: Space,
         remote: &str,
         commit: &GitOid,
     ) -> Result<Option<StoredRoot>, StoreError> {
-        let name = ref_name(commit);
+        let name = space.ref_name(commit);
         match git(
             self.repo(),
             &["ls-remote", "--exit-code", "--", remote, &name],
@@ -315,7 +403,7 @@ impl Store {
                 &name,
             ],
         )?;
-        read_at(self, commit, "FETCH_HEAD")
+        read_at(self, space, commit, "FETCH_HEAD")
     }
 
     /// Push the root refs for `commits` to `remote`, never forced, with `env` on the child git
@@ -341,8 +429,8 @@ impl Store {
         self.push_refs(remote, &names, env)
     }
 
-    /// Push `names` to `remote` as themselves, never forced.
-    pub(crate) fn push_refs(
+    /// Push `names` to `remote` as themselves, never forced, with `env` on the child git.
+    pub fn push_refs(
         &self,
         remote: &str,
         names: &[String],

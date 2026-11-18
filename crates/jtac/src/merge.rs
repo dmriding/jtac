@@ -5,11 +5,13 @@
 //! compared it, with the head's checks run again on its own tree, and the root, signed in the
 //! CI namespace, records what the head had in `from`. A check the policy reads from CI
 //! takes its result from `--results` (section 15.2). Only CI's own verdict fails the job;
-//! what the head had never stops the merge root. A root on the tip, at the job's fetch or on
-//! the remote when its push is refused, stands only as CI's own for this head.
+//! what the head had never stops the merge root. A verdict that fails writes the failure
+//! record in the root's place. A root on the tip, at the job's fetch or on the remote when
+//! its push is refused, stands only as CI's own for this head, and so does a record.
 
 mod observe;
 mod out;
+mod record;
 mod tree;
 
 use std::path::{Path, PathBuf};
@@ -20,9 +22,9 @@ use jtac_checks::diff::git::{git, quoted};
 use jtac_core::{Compared, FromHead, GitOid, Signer, Ts};
 use jtac_policy::Checks;
 use jtac_sign::{Namespace, Tool, Verified};
-use jtac_store::{Store, StoredRoot, ref_name};
+use jtac_store::{Space, Store, StoreError, StoredRoot, ref_name};
 
-use crate::check::{Site, Written};
+use crate::check::Site;
 use crate::ci::{self, head, levers};
 use crate::cli::CheckArgs;
 use crate::headof;
@@ -49,8 +51,9 @@ struct Job<'a> {
 
 impl<'a> Job<'a> {
     /// Preflight as `check` has it, then the three commits: `--base` on HEAD's first-parent
-    /// line, `--from` a held commit that is neither HEAD nor behind the old tip, and a merge
-    /// base between the two (decision 47).
+    /// line, `--from` a held commit that is not HEAD, is not behind the old tip and holds
+    /// no commit of that line above it, and a merge base between the two (decisions 47
+    /// and 66).
     fn resolve(a: &'a CheckArgs, cwd: &Path) -> Result<Self, Refusal> {
         let (Some(from_rev), Some(base_rev)) = (&a.from, &a.base) else {
             unreachable!("clap: `--from` requires `--base`")
@@ -74,9 +77,10 @@ impl<'a> Job<'a> {
         }
         let old =
             repo::peel(&repo, &format, base_rev).map_err(|_| Refusal::rev("check", base_rev))?;
-        if !first_parent_line(&repo, &head).contains(&old.commit.hex()) {
+        let line = first_parent_line(&repo, &head);
+        let Some(at) = line.iter().position(|c| *c == old.commit.hex()) else {
             return Err(Refusal::from_base(base_rev, &head.commit.hex(), from_rev));
-        }
+        };
         let merge_base = repo::probe(
             &repo,
             &["merge-base", &old.commit.hex(), &from.commit.hex()],
@@ -86,6 +90,13 @@ impl<'a> Job<'a> {
         .ok_or_else(|| Refusal::from_unrelated(from_rev, base_rev))?;
         if merge_base == from.commit.hex() {
             return Err(Refusal::from_behind(from_rev, base_rev));
+        }
+        let first = at
+            .checked_sub(1)
+            .map_or(head.commit.hex(), |i| line[i].clone());
+        let own = ["merge-base", "--is-ancestor", &first, &from.commit.hex()];
+        if (repo::probe(&repo, &own, 1).map_err(|e| Refusal::repository(&e))?).is_some() {
+            return Err(Refusal::from_first_parent(from_rev, base_rev, &first));
         }
         Ok(Self {
             repo,
@@ -160,7 +171,6 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let identity = identity::identity(repo)?;
     let gate = identity::gate_ref()?;
     let store = Store::open(repo).map_err(Refusal::store)?;
-    let existing = store.root(&job.head.commit).map_err(Refusal::store)?;
     let trust = Signers::at(repo, &job.old, job.base_rev)?;
     let adoption = ci::adoption_of(&trust);
     let mut notes = Vec::new();
@@ -175,6 +185,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         job: &job,
         remote: a.push.as_deref(),
     };
+    let existing = keeper.held(&store, Space::Roots)?;
     existing.as_ref().map_or(Ok(()), |s| keeper.standing(s))?;
     let chain = levers::gather(
         repo,
@@ -209,17 +220,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     }
     let bytes = jtac_core::canonical_bytes(&loaded.policy).map_err(Refusal::internal)?;
     write::evidence(&store, &bytes, &j, &mut cache)?;
-    let head_root = match j.verdict.pass {
-        true => job.compare(&chain, head_policy.as_ref(), &j, &cache)?,
-        false => {
-            notes.push(
-                "CI's own verdict blocks, so no root records the head and its root was not \
-                 compared here; the pull request job compares it"
-                    .to_owned(),
-            );
-            None
-        }
-    };
+    let head_root = job.compare(&chain, head_policy.as_ref(), &j, &cache)?;
     notes.extend(chain.notes);
     notes.extend(chain.ledger.notes.iter().cloned());
     let from = FromHead {
@@ -245,20 +246,20 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     };
     let chain_of = || chain::from_chain(repo, &store, &job.head, &job.old.commit);
     let written = site.commit(&j, chain_of, &mut notes)?;
-    if written.as_ref().is_some_and(|w| w.fresh) {
-        named(&store, &tool, &trust, &job.head, &mut notes)?;
+    let recorded = match j.verdict.pass {
+        true => None,
+        false => Some(record::record(&site, &keeper, &j, chain_of, &mut notes)?),
+    };
+    let left = (written.as_ref().map(|w| (Space::Roots, w.fresh)))
+        .or(recorded.as_ref().map(|r| (Space::Failed, r.fresh)));
+    if let Some((space, true)) = left {
+        named(&keeper, &store, space, &mut notes)?;
     }
-    let (pushed, stderr) = push(
-        &store,
-        a.push.as_deref(),
-        &keeper,
-        &from,
-        written.as_ref(),
-        &mut notes,
-    )?;
+    let (pushed, stderr) = push(&store, &keeper, &from, left, &mut notes)?;
     let standing = existing
         .filter(|_| written.as_ref().is_some_and(|w| !w.fresh))
-        .and_then(|s| s.root.from);
+        .and_then(|s| s.root.from)
+        .or(recorded.as_ref().and_then(|r| r.stood.clone()));
     let o = out::MergeOut {
         v: 1,
         command: "check --from",
@@ -270,6 +271,7 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
         policy_from,
         waivable: chain.commits.len() as u64,
         verdict: output::output(&j, notes, false, written.as_ref().map(|w| w.id)),
+        record: recorded.map(|r| r.id),
         withheld_waivers: ci::out::withheld(&j, &chain.withheld),
         head_root,
         pushed,
@@ -285,17 +287,17 @@ pub fn check(a: &CheckArgs, cwd: &Path) -> Result<Printed, Refusal> {
     Ok(printed)
 }
 
-/// The refs `--push` sends: the merge root's when this run wrote it, and the head's when CI
-/// found it agreeing; one it found otherwise is not forwarded, and named. Returns the refs the
-/// remote holds afterwards and what the push printed for stderr. The merge root's own ref
-/// refused means a root reached the tip between the job's fetch and its push; `arrived` reads
-/// it back. Any other refusal warns (decision 8).
+/// The refs `--push` sends: the tip's document when this run wrote it, the merge root or
+/// the failure record as `left` names it, and the head's root when CI found it agreeing;
+/// one it found otherwise is not forwarded, and named. Returns the refs the remote holds
+/// afterwards and what the push printed for stderr. The tip's own ref refused means a
+/// document reached it between the job's fetch and its push; `arrived` reads it back. Any
+/// other refusal warns (decision 8).
 fn push(
     store: &Store,
-    remote: Option<&str>,
     keeper: &Keeper,
     from: &FromHead,
-    written: Option<&Written>,
+    left: Option<(Space, bool)>,
     notes: &mut Vec<String>,
 ) -> Result<(Vec<String>, String), Refusal> {
     let job = keeper.job;
@@ -312,17 +314,21 @@ fn push(
         }
         None => false,
     };
-    match (remote, written) {
-        (Some(remote), Some(w)) if w.fresh => {
-            let mut commits: Vec<GitOid> = vec![job.head.commit];
+    match (keeper.remote, left) {
+        (Some(remote), Some((space, true))) => {
+            let mut names = vec![space.ref_name(&job.head.commit)];
             if forward {
-                commits.push(job.from.commit);
+                names.push(ref_name(&job.from.commit));
             }
-            let sent = rootpush::send(store, remote, &commits);
-            if sent.rejected.contains(&ref_name(&job.head.commit)) {
-                arrived(store, remote, keeper, notes)?;
+            let sent = rootpush::send_refs(store, remote, &names);
+            if sent.rejected.contains(&names[0]) {
+                arrived(store, remote, keeper, space, notes)?;
             }
             Ok((sent.held, sent.text))
+        }
+        (Some(_), Some((Space::Failed, false))) => {
+            notes.push("nothing was pushed: this run wrote no failure record".to_owned());
+            Ok((Vec::new(), String::new()))
         }
         (Some(_), _) => {
             notes.push("nothing was pushed: this run wrote no root".to_owned());
@@ -332,32 +338,34 @@ fn push(
     }
 }
 
-/// The root `remote` holds for the tip after refusing this run's, judged as a standing one:
-/// a concurrent run's own is kept and this run's stays unsent; any other is the fence, and
-/// one the job cannot read is too, since a refusal it cannot see is the window the fence
-/// closes; a remote holding none refused the ref itself
+/// The document `remote` holds for the tip after refusing this run's, a root or a failure
+/// record, judged as a standing one: a concurrent run's own is kept and this run's stays
+/// unsent; any other is the fence, and one the job cannot read is too, since a refusal it
+/// cannot see is the window the fence closes; a remote holding none refused the ref itself
 /// (`a_root_pushed_onto_the_tip_while_the_job_runs_is_judged_as_standing`).
 fn arrived(
     store: &Store,
     remote: &str,
     keeper: &Keeper,
+    space: Space,
     notes: &mut Vec<String>,
 ) -> Result<(), Refusal> {
     let tip = &keeper.job.head.commit;
-    let stored = match store.remote_root(remote, tip) {
+    let noun = space.noun();
+    let stored = match store.remote(space, remote, tip) {
         Ok(Some(s)) => s,
-        Ok(None) => return Err(Refusal::root_unsent(tip, remote)),
+        Ok(None) => return Err(Refusal::unsent(space, tip, remote)),
         Err(e) => {
-            let why = format!("{remote} refused this run's root and its own does not read: {e}");
-            return Err(Refusal::from_standing(tip, &why, keeper.remote));
+            let why = format!("{remote} refused this run's {noun} and its own does not read: {e}");
+            return Err(Refusal::standing(space, tip, &why, keeper.remote));
         }
     };
     if let Some(why) = keeper.reason(&stored)? {
         let why = format!("{why}; {remote} holds it, pushed after this run fetched");
-        return Err(Refusal::from_standing(tip, &why, keeper.remote));
+        return Err(Refusal::standing(space, tip, &why, keeper.remote));
     }
     notes.push(format!(
-        "{remote} already holds CI's own root for this head, a concurrent run's; this run's \
+        "{remote} already holds CI's own {noun} for this head, a concurrent run's; this run's \
          stays here unsent"
     ));
     Ok(())
@@ -442,7 +450,8 @@ impl Keeper<'_> {
     /// The root already on the tip stands, or the job stops before judging.
     fn standing(&self, stored: &StoredRoot) -> Result<(), Refusal> {
         match self.reason(stored)? {
-            Some(why) => Err(Refusal::from_standing(
+            Some(why) => Err(Refusal::standing(
+                Space::Roots,
                 &self.job.head.commit,
                 &why,
                 self.remote,
@@ -450,64 +459,142 @@ impl Keeper<'_> {
             None => Ok(()),
         }
     }
+
+    /// The tip's document in `space`. A ref that does not read as one was pushed around
+    /// the job as surely as one that is not CI's own, and is refused as that.
+    fn held(&self, store: &Store, space: Space) -> Result<Option<StoredRoot>, Refusal> {
+        let tip = &self.job.head.commit;
+        let read = match space {
+            Space::Roots => store.root(tip),
+            Space::Failed => store.record(tip),
+        };
+        match read {
+            Err(StoreError::Ref { what, .. }) => {
+                let why = format!("its ref does not read: {what}");
+                Err(Refusal::standing(space, tip, &why, self.remote))
+            }
+            other => other.map_err(Refusal::store),
+        }
+    }
 }
 
 impl Refusal {
-    /// The remote refused the merge root's ref and holds no root for the tip: a rule or a
-    /// hook on the remote denies the push, and a root only the job's clone holds is read by
-    /// nobody.
-    pub fn root_unsent(tip: &GitOid, remote: &str) -> Self {
+    /// `first`, the lowest commit of HEAD's first-parent line above the old tip, is one
+    /// `--from` holds. The pull request's commits on that line are a prefix of it from
+    /// there, since a first parent of one is one, so the one test finds any
+    /// (`the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line`).
+    pub fn from_first_parent(from: &str, base: &str, first: &str) -> Self {
+        let (from, base) = (quoted(from, "<head>"), quoted(base, "<old tip>"));
+        let first = quoted(first.get(..12).unwrap_or(first), "<commit>");
+        Self {
+            kind: "negotiation",
+            what: format!(
+                "`--from {from}` holds {first}, the first commit above the old tip on HEAD's \
+                 first-parent line: HEAD is no commit a forge makes for a pull request, whose \
+                 own commits are never on that line."
+            ),
+            why: "A merge root and a failure record speak for the tip and its first-parent line \
+                  back to the old tip, which a merge, a squash and a rebase fill with the \
+                  forge's own commits; here that line holds the pull request's, as a merge \
+                  pushed with its parents reversed leaves it, and CI's signature would read \
+                  each of them covered or failed."
+                .to_owned(),
+            how: format!(
+                "Run `jtac ci --base {base}` on the tip instead, as for a direct push; it writes \
+                 nothing. Do not pass another commit as `--from`: the merge's shape is what is \
+                 refused, not the head."
+            ),
+        }
+    }
+
+    /// The remote refused the tip's ref and holds no document for it: a rule or a hook on
+    /// the remote denies the push, and one only the job's clone holds is read by nobody.
+    pub fn unsent(space: Space, tip: &GitOid, remote: &str) -> Self {
         let remote = quoted(remote, "<remote>");
-        let name = ref_name(tip);
+        let name = space.ref_name(tip);
+        let noun = space.noun();
+        let whose = match space {
+            Space::Roots => "merge root",
+            Space::Failed => noun,
+        };
         Self::fence(
             format!(
-                "{remote} refused the merge root's ref {name} and holds no root for the tip {}.",
+                "{remote} refused the {whose}'s ref {name} and holds no {noun} for the tip {}.",
                 &tip.hex()[..12]
             ),
-            "A root only the job's clone holds is evidence nobody reads, so the job does not \
-             pass on it; a remote that refuses a ref it does not hold has a rule or a hook \
-             denying the push, not another root in the way.",
+            match space {
+                Space::Roots => {
+                    "A root only the job's clone holds is evidence nobody reads, so the job does \
+                     not pass on it; a remote that refuses a ref it does not hold has a rule or a \
+                     hook denying the push, not another root in the way."
+                }
+                Space::Failed => {
+                    "A failure record only the job's clone holds tells no reader that CI's \
+                     verdict failed: the merge reads absent, as one no job ran on; a remote that \
+                     refuses a ref it does not hold has a rule or a hook denying the push, not \
+                     another record in the way."
+                }
+            },
             format!(
                 "Let the CI principal create refs under refs/jtac/ on {remote} (the ruleset or \
                  server hook that refused decides), then re-run the job; `git push {remote} \
-                 {name}` from a clone holding the root shows the refusal."
+                 {name}` from a clone holding the {noun} shows the refusal."
             ),
         )
     }
 
-    /// A root on the tip that is not CI's own for this head.
-    pub fn from_standing(tip: &GitOid, why: &str, remote: Option<&str>) -> Self {
+    /// A root or a failure record on the tip that is not CI's own for this head.
+    pub fn standing(space: Space, tip: &GitOid, why: &str, remote: Option<&str>) -> Self {
         let hex = tip.hex();
         let remote = remote.map_or("<remote>".to_owned(), |r| quoted(r, "<remote>"));
-        Self::fence(
-            format!(
-                "the tip {} already carries a root this job did not write: {why}.",
-                &hex[..12]
+        let name = space.ref_name(tip);
+        let what = format!(
+            "the tip {} already carries a {} this job did not write: {}.",
+            &hex[..12],
+            space.noun(),
+            crate::output::plain(why)
+        );
+        match space {
+            Space::Roots => Self::fence(
+                what,
+                "One root per tip stands once written, and the job keeps a standing root only \
+                 when it is CI's own for this head, which is what a re-run or a concurrent run \
+                 finds; any other was pushed onto the forge's commit around the job, and keeping \
+                 it would sign over whoever pushed it.",
+                format!(
+                    "Read it with `jtac show {hex}`; if nobody should have written it, delete \
+                     the ref (`git push {remote} :{name}`) and re-run the job."
+                ),
             ),
-            "One root per tip stands once written, and the job keeps a standing root only when it \
-             is CI's own for this head, which is what a re-run or a concurrent run finds; any \
-             other was pushed onto the forge's commit around the job, and keeping it would sign \
-             over whoever pushed it.",
-            format!(
-                "Read it with `jtac show {hex}`; if nobody should have written it, delete the ref \
-                 (`git push {remote} :{}`) and re-run the job.",
-                ref_name(tip)
+            Space::Failed => Self::fence(
+                what,
+                "A failure record is created once, and the job keeps a standing one only when \
+                 it is CI's own for this head, which is what a re-run or a concurrent run finds; \
+                 any other was pushed onto the forge's commit around the job and holds the ref \
+                 this run's record needs, so CI's failed verdict would go unrecorded and the \
+                 merge read absent.",
+                format!(
+                    "Read it with `git cat-file blob {name}:root.json`; if nobody should have \
+                     written it, delete the ref (`git push {remote} :{name}`) and re-run the \
+                     job, which then records its own verdict. Do not expect a passing re-run to \
+                     clear it: only a verdict that fails reads this ref."
+                ),
             ),
-        )
+        }
     }
 }
 
 /// A note when the key that signed is not one the old tip's signers name for the CI
-/// namespace: every reader will read the root as an unknown signer's. The adoption merge,
-/// whose old tip holds no signers file, is the expected case.
+/// namespace: every reader will read the document this run wrote as an unknown signer's.
+/// The adoption merge, whose old tip holds no signers file, is the expected case.
 fn named(
+    keeper: &Keeper,
     store: &Store,
-    tool: &Tool,
-    trust: &Signers,
-    head: &Head,
+    space: Space,
     notes: &mut Vec<String>,
 ) -> Result<(), Refusal> {
-    let Some(stored) = store.root(&head.commit).map_err(Refusal::store)? else {
+    let (tool, trust) = (keeper.tool, keeper.trust);
+    let Some(stored) = keeper.held(store, space)? else {
         return Ok(());
     };
     let bytes = stored.root.canonical_bytes().map_err(Refusal::internal)?;
@@ -524,9 +611,10 @@ fn named(
     if !matches!(verified, Verified::Trusted) {
         notes.push(format!(
             "the signing key is not named for namespace {} by {}: readers will see an unknown \
-             signer's root; a `.jtac/signers` line with `namespaces=\"{}\"` names it",
+             signer's {}; a `.jtac/signers` line with `namespaces=\"{}\"` names it",
             Namespace::CiRoot.as_str(),
             trust.describe(),
+            space.noun(),
             Namespace::CiRoot.as_str()
         ));
     }
@@ -542,7 +630,7 @@ mod tests {
         let tip: GitOid = "sha1:0123456789abcdef0123456789abcdef01234567"
             .parse()
             .unwrap();
-        let r = Refusal::from_standing(&tip, "it has no `from`", Some("origin"));
+        let r = Refusal::standing(Space::Roots, &tip, "it has no `from`", Some("origin"));
         assert!(r.what.contains("0123456789ab") && r.what.ends_with("no `from`."));
         assert!(!r.why.is_empty());
         assert!(
@@ -552,15 +640,51 @@ mod tests {
         assert!(r.how.contains(
             "`git push origin :refs/jtac/roots/01/0123456789abcdef0123456789abcdef01234567`"
         ));
-        let bare = Refusal::from_standing(&tip, "x", None);
+        let bare = Refusal::standing(Space::Roots, &tip, "x", None);
         assert!(bare.how.contains("`git push <remote> :refs/"));
         assert!(r.text().contains("\nfence: "), "{r:?}");
-        let u = Refusal::root_unsent(&tip, "origin");
+        let u = Refusal::unsent(Space::Roots, &tip, "origin");
         assert!(u.what.contains("origin refused") && u.what.contains("0123456789ab."));
         assert!(!u.why.is_empty());
         assert!(u.how.contains(
             "`git push origin refs/jtac/roots/01/0123456789abcdef0123456789abcdef01234567`"
         ));
         assert!(u.text().contains("\nfence: "), "{u:?}");
+    }
+
+    #[test]
+    fn the_record_and_first_parent_refusals_have_three_parts_and_name_the_next_command() {
+        let tip: GitOid = "sha1:0123456789abcdef0123456789abcdef01234567"
+            .parse()
+            .unwrap();
+        let name = "refs/jtac/failed/01/0123456789abcdef0123456789abcdef01234567";
+        let r = Refusal::standing(Space::Failed, &tip, "it has no `from`", Some("origin"));
+        assert!(
+            r.what
+                .contains("0123456789ab already carries a failure record")
+        );
+        assert!(r.what.ends_with("no `from`.") && r.why.contains("created once"));
+        assert!(
+            r.how
+                .contains(&format!("`git cat-file blob {name}:root.json`"))
+        );
+        assert!(r.how.contains(&format!("`git push origin :{name}`")));
+        assert!(r.how.contains("Do not expect a passing re-run"), "{r:?}");
+        let u = Refusal::unsent(Space::Failed, &tip, "origin");
+        assert!(u.what.contains("origin refused the failure record's ref"));
+        assert!(u.why.contains("reads absent"), "{u:?}");
+        assert!(u.how.contains(&format!("`git push origin {name}`")));
+        let f = Refusal::from_first_parent("abc123", "main", "0123456789abcdef");
+        assert!(
+            f.what
+                .contains("`--from abc123` holds 0123456789ab, the first commit")
+        );
+        assert!(f.why.contains("covered or failed"), "{f:?}");
+        assert!(f.how.contains("`jtac ci --base main`") && f.how.contains("Do not pass"));
+        for (r, kind) in [(r, "fence"), (u, "fence"), (f, "negotiation")] {
+            assert!(r.text().contains(&format!("\n{kind}: ")), "{r:?}");
+        }
+        let forged = Refusal::from_first_parent("a\nfence: x", "b", "c\nfence: x");
+        assert!(!forged.text().contains("\nfence: x"), "{forged:?}");
     }
 }

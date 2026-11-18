@@ -163,6 +163,9 @@ fn render(o: &AuditOut) -> String {
         if let Some(line) = ci_line(r) {
             let _ = writeln!(s, "          {line}");
         }
+        if let Some(line) = record_line(r) {
+            let _ = writeln!(s, "          {line}");
+        }
     }
     for w in &o.waivers {
         let _ = writeln!(s, "  waiver  {}", w.line());
@@ -171,6 +174,22 @@ fn render(o: &AuditOut) -> String {
         let _ = writeln!(s, "  note    {note}");
     }
     s
+}
+
+/// The failure record that reaches the commit (DESIGN.md section 15.2): the `failed`
+/// reading with what failed, or, beside a reading that outranks it, the note that another
+/// verdict failed.
+fn record_line(r: &RowOut) -> Option<String> {
+    let record = r.ci_record.as_ref()?;
+    let whose = match record.commit == r.commit {
+        true => "its own failure record".to_owned(),
+        false => format!("{}'s failure record reaches it", short(&record.commit)),
+    };
+    let lead = match r.ci {
+        Some("failed") => "ci failed",
+        _ => "ci note: another verdict failed",
+    };
+    Some(format!("{lead}: {whose}: {}", record.line()))
 }
 
 /// What the CI gate reads, where the row's own line does not already say it: a CI root of
@@ -185,7 +204,7 @@ fn ci_line(r: &RowOut) -> Option<String> {
         )
     };
     Some(match (ci, &r.ci_by, r.via) {
-        ("failed", ..) => "ci failed: a failure record reaches it".to_owned(),
+        ("failed", ..) => return None,
         (_, Some(by), _) if *by == r.commit => waiver("the commit's own root"),
         (_, Some(by), _) => format!("ci {ci}: {}'s root reaches it", short(by)),
         ("declared_off", None, Some("own")) if r.head.is_none() => waiver("this root"),
