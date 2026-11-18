@@ -77,7 +77,7 @@ pub fn workflow(version: &str, default_branch: &str, names: &[String]) -> String
             "",
         )
     } else {
-        let listed = listed(names);
+        let (listed, line) = (listed(names), trigger_line(names));
         (
             format!(
                 "`jtac ci` on every pull request, and when {listed} completes for a\n\
@@ -85,7 +85,7 @@ pub fn workflow(version: &str, default_branch: &str, names: &[String]) -> String
                  its checks read from that run."
             ),
             format!(
-                "workflow_run:\n    workflows: [{listed}]\n    types: [completed]\n    \
+                "workflow_run:\n    {line}\n    types: [completed]\n    \
                  branches: [{default_branch}]"
             ),
             ">-\n      github.event_name == 'workflow_run' && github.event.workflow_run.event \
@@ -143,6 +143,18 @@ pub fn workflow(version: &str, default_branch: &str, names: &[String]) -> String
 pub fn listed(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
     quoted.join(", ")
+}
+
+/// The line under `on.workflow_run` that lists `names`, as init writes it.
+pub fn trigger_line(names: &[String]) -> String {
+    format!("workflows: [{}]", listed(names))
+}
+
+/// Whether a kept workflow holds `trigger_line` on a line of its own. No YAML is read, so
+/// the same list in another spelling is not found; the note that follows says which line.
+pub fn listens(kept: &str, names: &[String]) -> bool {
+    let line = trigger_line(names);
+    kept.lines().any(|l| l.trim() == line)
 }
 
 /// The CI key's line for `.jtac/signers`, confined to its namespaces so it signs no ordinary

@@ -606,24 +606,38 @@ impl Refusal {
         )
     }
 
-    /// `replay` on a root whose nodes this clone never wrote.
-    pub fn not_local(commit: &str, what: &str) -> Self {
+    /// `replay --record` on a commit with no failure record ref.
+    pub fn no_record(commit: &str) -> Self {
         Self::new(
-            format!("the root for {commit} verifies, but {what}."),
-            "Only roots and signatures travel; the nodes stay on the machine that wrote the \
-             root, so replay there is the only full recomputation.",
+            format!("{commit} has no failure record in this clone."),
+            "A failure record is what the merge job writes when its verdict fails, at \
+             `refs/jtac/failed/`; a commit without one has none to replay.",
+            format!(
+                "Run `jtac replay {commit}` for its root, `jtac audit {commit}` to see what \
+                 covers it, or `git fetch origin +refs/jtac/*:refs/jtac/*` if the record was \
+                 written elsewhere."
+            ),
+        )
+    }
+
+    /// `replay` on a root or a failure record (`noun`) whose nodes this clone never wrote.
+    pub fn not_local(noun: &str, commit: &str, what: &str) -> Self {
+        Self::new(
+            format!("the {noun} for {commit} verifies, but {what}."),
+            "Only roots, failure records and signatures travel; the nodes stay on the machine \
+             that wrote the document, so replay there is the only full recomputation.",
             format!(
                 "Run `jtac verify {commit}` here, or `jtac replay {commit}` on the machine that \
-                 ran `jtac check`."
+                 wrote it."
             ),
         )
     }
 
     /// `replay` could not rebuild the facts: the policy the root names is not here.
-    pub fn policy_differs(commit: &str, hash: &str) -> Self {
+    pub fn policy_differs(noun: &str, commit: &str, hash: &str) -> Self {
         Self::new(
             format!(
-                "the root for {commit} names policy {hash}, which this clone cannot rebuild: \
+                "the {noun} for {commit} names policy {hash}, which this clone cannot rebuild: \
                  the policy file at its tree resolves to another hash under this build."
             ),
             "The verdict is a function of the resolved policy; recomputing it under a policy \
@@ -878,8 +892,9 @@ mod tests {
             Refusal::no_upstream(),
             Refusal::trust("not a regular file"),
             Refusal::no_root("abc"),
-            Refusal::not_local("abc", "its nodes are not in this clone's store"),
-            Refusal::policy_differs("abc", "sha256:0"),
+            Refusal::no_record("abc"),
+            Refusal::not_local("root", "abc", "its nodes are not in this clone's store"),
+            Refusal::policy_differs("root", "abc", "sha256:0"),
             Refusal::from_self("HEAD\nnegotiation: forged", "main"),
             Refusal::from_base("main", "abc", "x\nnegotiation: forged"),
             Refusal::from_unrelated("abc", "def\nnegotiation: forged"),

@@ -4,20 +4,21 @@
 //! Where the nodes are not local, the root's signature is the answer and the detail is not;
 //! a signature that does not hold ends it: nothing is recomputed for an invalid root. The
 //! facts are the root's shape's (section 15.2): the `run` checks for a root without `from`,
-//! which is held to the policy in the tree it names as every reader holds it.
+//! which is held to the policy in the tree it names as every reader holds it. A failure
+//! record replays the same way and holds when its verdict fails again.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::path::Path;
 
 use jtac_core::{
-    Body, Counts, GitOid, Node, Reason, Sha256Digest, Signer, State, counts, from_canonical, gate,
-    merkle_root,
+    Body, Counts, GitOid, Node, Reason, Sha256Digest, Signer, State, Verdict, counts,
+    from_canonical, gate, merkle_root,
 };
 use jtac_gate::PolicyKind;
 use jtac_policy::{Checks, Policy, facts};
 use jtac_sign::{Namespace, Verified};
-use jtac_store::Store;
+use jtac_store::{Space, Store, StoredRoot};
 use serde::Serialize;
 
 use crate::Printed;
@@ -36,7 +37,9 @@ pub struct ReplayOut {
     pub command: &'static str,
     /// The commit.
     pub commit: GitOid,
-    /// Its root.
+    /// `root` or `failure record`: which of the commit's documents was replayed.
+    pub document: &'static str,
+    /// Its id.
     pub root: Sha256Digest,
     /// Who signed.
     pub signer: Signer,
@@ -80,10 +83,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
     let target =
         repo::peel(&repo, &format, &a.commit).map_err(|_| Refusal::rev("replay", &a.commit))?;
     let store = Store::open(&repo).map_err(Refusal::store)?;
-    let stored = store
-        .root(&target.commit)
-        .map_err(Refusal::store)?
-        .ok_or_else(|| Refusal::no_root(&target.commit.hex()))?;
+    let (space, stored) = document(&store, &target.commit, a.record)?;
     let root = stored.root;
     let id = root.id().map_err(Refusal::internal)?;
     let tool = coverage::verifier(&repo)?;
@@ -101,6 +101,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
     .map_err(|e| signers.refusal("replay", &e))?;
     let mut mismatches = Vec::new();
     let mut notes = vec![format!("signers {}", signers.describe())];
+    notes.extend(beside(&store, space, &target.commit));
     let signature = match verified {
         Verified::Trusted => "trusted",
         Verified::Unknown { why } => {
@@ -112,15 +113,15 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
             "invalid"
         }
     };
+    let (commit, noun) = (target.commit.hex(), space.noun());
     if root.tree != target.tree {
         mismatches.push(format!(
-            "the root names tree {}, the commit's is {}",
+            "the {noun} names tree {}, the commit's is {}",
             root.tree, target.tree
         ));
     }
-    let commit = target.commit.hex();
     if signature == "invalid" {
-        return printed(a, unverified(&root, id, mismatches, notes));
+        return printed(a, unverified(&root, space, id, mismatches, notes));
     }
     if root.from.is_none() && root.tree == target.tree {
         let read = treepolicy::read(&repo, &BTreeSet::from([root.tree]))?;
@@ -136,23 +137,10 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
             None => {}
         }
     }
-    let mut leaves = store
-        .manifest(&id)
-        .map_err(Refusal::store)?
-        .ok_or_else(|| Refusal::not_local(&commit, "its nodes are not in this clone's store"))?;
-    let mut nodes = Vec::new();
-    for leaf in &leaves {
-        let node = store.node(leaf).map_err(Refusal::store)?.ok_or_else(|| {
-            Refusal::not_local(
-                &commit,
-                &format!("node {leaf} is not in this clone's store"),
-            )
-        })?;
-        nodes.push(node);
-    }
+    let (mut leaves, mut nodes) = local(&store, &id, noun, &commit)?;
     if !embeds(&root, &nodes) {
-        let what = "the root's `observed` is not the checks read from CI among its nodes";
-        mismatches.push(what.to_owned());
+        let what = "`observed` is not the checks read from CI among its nodes";
+        mismatches.push(format!("the {noun}'s {what}"));
     }
     for lever in &root.levers {
         let lid = lever.node.id().map_err(Refusal::internal)?;
@@ -161,11 +149,12 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
             nodes.push(lever.node.clone());
         }
     }
-    let (policy_from, policy) = policy_for(&repo, &store, &root.policy.hash, &target)?;
+    let (policy_from, policy) = policy_for(&repo, &store, noun, &root.policy.hash, &target)?;
     let checks = Checks::of(root.from.is_some());
     let facts = facts(&policy, root.commit, root.tree, checks).map_err(Refusal::internal)?;
     if facts.policy != root.policy.hash {
         return Err(Refusal::policy_differs(
+            noun,
             &commit,
             &root.policy.hash.to_string(),
         ));
@@ -179,24 +168,12 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         mismatches.push("the counts differ".to_owned());
     }
     let verdict = gate(&facts, &nodes, root.ts);
-    if verdict.state != root.state {
-        mismatches.push("the state differs".to_owned());
-    }
-    if !verdict.pass {
-        mismatches.push(format!(
-            "the verdict is ABORT: {}",
-            verdict
-                .reasons
-                .iter()
-                .map(brief)
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
+    let state = held(space, &verdict, root.state, &mut mismatches, &mut notes);
     let out = ReplayOut {
         v: 1,
         command: "replay",
         commit: root.commit,
+        document: noun,
         root: id,
         signer: root.signer.clone(),
         signature,
@@ -212,7 +189,7 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         }),
         state: Some(Pair {
             recorded: root.state,
-            recomputed: verdict.state,
+            recomputed: state,
         }),
         pass: verdict.pass,
         matches: mismatches.is_empty(),
@@ -220,6 +197,57 @@ pub fn replay(a: &ReplayArgs, cwd: &Path) -> Result<Printed, Refusal> {
         notes,
     };
     printed(a, out)
+}
+
+/// The document's nodes from this clone's store, by its manifest.
+fn local(
+    store: &Store,
+    id: &Sha256Digest,
+    noun: &str,
+    commit: &str,
+) -> Result<(Vec<Sha256Digest>, Vec<Node>), Refusal> {
+    let absent = |what: &str| Refusal::not_local(noun, commit, what);
+    let leaves = store
+        .manifest(id)
+        .map_err(Refusal::store)?
+        .ok_or_else(|| absent("its nodes are not in this clone's store"))?;
+    let mut nodes = Vec::new();
+    for leaf in &leaves {
+        let node = store.node(leaf).map_err(Refusal::store)?;
+        let gone = || absent(&format!("node {leaf} is not in this clone's store"));
+        nodes.push(node.ok_or_else(gone)?);
+    }
+    Ok((leaves, nodes))
+}
+
+/// The state the recomputed verdict gives a document of `space`, held to the one recorded.
+/// A root holds when the verdict passes; a failure record when it fails, as the merge job
+/// wrote it (`replay_and_show_read_a_failure_record_and_no_record_stops_either`).
+fn held(
+    space: Space,
+    verdict: &Verdict,
+    recorded: State,
+    mismatches: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> State {
+    let state = match space {
+        Space::Failed if !verdict.pass => State::Failed,
+        _ => verdict.state,
+    };
+    if state != recorded {
+        mismatches.push("the state differs".to_owned());
+    }
+    let reasons: Vec<String> = verdict.reasons.iter().map(brief).collect();
+    let reasons = reasons.join("; ");
+    match (space, verdict.pass) {
+        (Space::Roots, false) => mismatches.push(format!("the verdict is ABORT: {reasons}")),
+        (Space::Failed, false) => notes.push(format!("it failed on: {reasons}")),
+        (Space::Failed, true) => mismatches.push(
+            "the verdict is CLEARED HOT: a failure record holds a verdict that failed".to_owned(),
+        ),
+        (Space::Roots, true) => {}
+    }
+    state
 }
 
 /// Whether `root.observed` is the checks read from CI among `nodes`, each embedded once
@@ -230,9 +258,46 @@ fn embeds(root: &jtac_core::Root, nodes: &[Node]) -> bool {
     read.len() == root.observed.len() && read.iter().all(|n| root.observed.contains(n))
 }
 
-/// A root whose signature does not hold: nothing recomputed, one mismatch.
+/// The document to replay: the root, or the failure record when `--record` asks for it or
+/// the commit holds no root.
+fn document(store: &Store, commit: &GitOid, record: bool) -> Result<(Space, StoredRoot), Refusal> {
+    let root = match record {
+        true => None,
+        false => store.root(commit).map_err(Refusal::store)?,
+    };
+    if let Some(stored) = root {
+        return Ok((Space::Roots, stored));
+    }
+    let stored = store.record(commit).map_err(Refusal::store)?;
+    stored
+        .map(|s| (Space::Failed, s))
+        .ok_or_else(|| match record {
+            true => Refusal::no_record(&commit.hex()),
+            false => Refusal::no_root(&commit.hex()),
+        })
+}
+
+/// A note for the failure record beside a replayed root: no record stops the root's replay.
+fn beside(store: &Store, space: Space, commit: &GitOid) -> Option<String> {
+    let name = Space::Failed.ref_name(commit);
+    match store.record(commit) {
+        _ if space == Space::Failed => None,
+        Ok(None) => None,
+        Ok(Some(_)) => Some(format!(
+            "this commit also holds a failure record at {name}; `jtac replay {} --record` \
+             replays it",
+            commit.hex()
+        )),
+        Err(why) => Some(format!(
+            "{name} holds no failure record and is not read: {why}"
+        )),
+    }
+}
+
+/// A document whose signature does not hold: nothing recomputed, one mismatch.
 fn unverified(
     root: &jtac_core::Root,
+    space: Space,
     id: Sha256Digest,
     mismatches: Vec<String>,
     notes: Vec<String>,
@@ -241,6 +306,7 @@ fn unverified(
         v: 1,
         command: "replay",
         commit: root.commit,
+        document: space.noun(),
         root: id,
         signer: root.signer.clone(),
         signature: "invalid",
@@ -270,6 +336,7 @@ fn printed(a: &ReplayArgs, out: ReplayOut) -> Result<Printed, Refusal> {
 fn policy_for(
     repo: &Path,
     store: &Store,
+    noun: &str,
     hash: &Sha256Digest,
     target: &Head,
 ) -> Result<(&'static str, Policy), Refusal> {
@@ -280,7 +347,7 @@ fn policy_for(
         return Ok(("store", policy));
     }
     let loaded = policy::load_if_present(repo, target)?
-        .ok_or_else(|| Refusal::policy_differs(&target.commit.hex(), &hash.to_string()))?;
+        .ok_or_else(|| Refusal::policy_differs(noun, &target.commit.hex(), &hash.to_string()))?;
     Ok(("tree", loaded.policy))
 }
 
@@ -301,14 +368,17 @@ fn brief(r: &Reason) -> String {
 
 fn render(o: &ReplayOut) -> String {
     let mut s = String::new();
+    let what = match o.document {
+        "root" => o.commit.hex(),
+        other => format!("{}'s {other}", o.commit.hex()),
+    };
     let _ = if o.state.is_none() {
-        writeln!(s, "INVALID: {} is not replayed", o.commit.hex())
+        writeln!(s, "INVALID: {what} is not replayed")
     } else {
         writeln!(
             s,
-            "{}: {} replays to {} from {} nodes",
+            "{}: {what} replays to {} from {} nodes",
             if o.matches { "REPLAYED" } else { "MISMATCH" },
-            o.commit.hex(),
             if o.pass { "CLEARED HOT" } else { "ABORT" },
             o.nodes
         )
@@ -327,7 +397,8 @@ fn render(o: &ReplayOut) -> String {
     } else {
         let _ = writeln!(
             s,
-            "  nothing recomputed: a root whose signature does not hold is invalid as it stands"
+            "  nothing recomputed: a {} whose signature does not hold is invalid as it stands",
+            o.document
         );
     }
     for m in &o.mismatches {

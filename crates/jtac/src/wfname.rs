@@ -5,7 +5,7 @@
 //! (`only_a_plainly_spelled_name_is_read_and_every_other_file_is_unreadable`). The form:
 //! every line break is a line feed, alone or after a carriage return, so these lines are
 //! any YAML reader's; the first line that is not spaces or a comment is `name:` with its
-//! value whole on it; the next such line starts at the margin; every other margin line
+//! value whole on it, or the document marker `---` with that `name:` line next; the next such line starts at the margin; every other margin line
 //! is a plain `key:` that is not `name`, so no line names the workflow again or starts a
 //! document. Whitespace is the space character alone.
 
@@ -64,6 +64,14 @@ fn skipped(line: &str) -> bool {
     rest.is_empty() || rest.starts_with('#')
 }
 
+/// The document marker alone on its line, or with a comment after a space.
+fn marker(line: &str) -> bool {
+    line.strip_prefix("---").is_some_and(|rest| {
+        let comment = rest.trim_start_matches(' ');
+        comment.is_empty() || (comment.starts_with('#') && comment.len() < rest.len())
+    })
+}
+
 /// A margin line that is a top-level key and not `name`: one bare or quoted word, a
 /// colon, then a space or the line's end. A tag, an anchor, `?`, a merge key, an escape, a
 /// document marker and a flow collection all fall outside it.
@@ -88,7 +96,11 @@ pub fn name(text: &str) -> Result<String, Unreadable> {
         return Err(Unreadable::Breaks);
     }
     let mut content = text.lines().enumerate().filter(|(_, l)| !skipped(l));
-    let (at, first) = content.next().ok_or(Unreadable::NotFirst)?;
+    let lead = content.next().ok_or(Unreadable::NotFirst)?;
+    let (opened, (at, first)) = match marker(lead.1) {
+        true => (Some(lead.0), content.next().ok_or(Unreadable::NotFirst)?),
+        false => (None, lead),
+    };
     let rest = first
         .strip_prefix("name:")
         .filter(|rest| rest.is_empty() || rest.starts_with(' '))
@@ -102,7 +114,8 @@ pub fn name(text: &str) -> Result<String, Unreadable> {
         return Err(Unreadable::Continued);
     }
     let margin = |l: &str| !skipped(l) && !l.starts_with(' ');
-    let mut others = text.lines().enumerate().filter(|(i, _)| *i != at);
+    let named = |i: usize| i == at || Some(i) == opened;
+    let mut others = text.lines().enumerate().filter(|(i, _)| !named(*i));
     if others.any(|(_, l)| margin(l) && !other_key(l)) {
         return Err(Unreadable::Again);
     }
@@ -192,6 +205,9 @@ mod tests {
                 "name: ci\n# caf\u{e9} \u{a0} in a comment\non: push\n",
                 "ci",
             ),
+            ("---\nname: ci\non: push\n", "ci"),
+            ("# header\n\n---   \r\n\n# c\nname: \"ci\"\r\n", "ci"),
+            ("--- # yamllint asks for it\nname: ci\n", "ci"),
         ] {
             assert_eq!(name(text).as_deref(), Ok(want), "{text:?}");
         }
@@ -206,7 +222,18 @@ mod tests {
             "{name: ci, on: push}\n",
             " name: ci\n",
             "\u{feff}name: ci\n",
-            "---\nname: ci\n",
+            "---\n",
+            "---\n---\nname: ci\n",
+            "---#c\nname: ci\n",
+            "----\nname: ci\n",
+            "--- name: ci\n",
+            "---\t# c\nname: ci\n",
+            "--- |\nname: ci\n",
+            " ---\nname: ci\n",
+            "%YAML 1.2\n---\nname: ci\n",
+            "...\n---\nname: ci\n",
+            "---\n name: ci\n",
+            "---\non: push\nname: ci\n",
             "run-name: \"Deploy\nname: ci\"\n",
             "env: {\nname: ci\n}\n",
             "\u{a0}\nname: ci\n",

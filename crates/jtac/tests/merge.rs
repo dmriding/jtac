@@ -1960,3 +1960,104 @@ fn the_merge_job_refuses_a_head_on_its_tip_s_first_parent_line() {
     assert_eq!(ran.code, 2, "{}", ran.stderr);
     assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
 }
+
+/// Issue 177: `replay` recomputes a failure record as it does a root and holds it when the
+/// verdict fails again; a commit with no root replays its record, and one with both replays
+/// the root and names `--record`. `show` prints the record apart from what a push sends. No
+/// record stops either: a second clone is told the nodes are not local, a record signed
+/// over a verdict that passes is a mismatch, and a ref that holds none is a note.
+#[test]
+fn replay_and_show_read_a_failure_record_and_no_record_stops_either() {
+    let r = reading();
+    let ci = &r.f.ci;
+    let name = failed_ref(&r.second);
+    let (code, v, err) = r.concluded("failure", "", true);
+    assert_eq!(code, 1, "{v}{err}");
+    let record = read_record(ci, &r.second);
+    for more in [&[][..], &["--record"]] {
+        let (code, v, err) = json(ci, &[&["replay", &r.second, "--json"][..], more].concat());
+        assert_eq!(code, 0, "{v}{err}");
+        assert_eq!(v["document"], "failure record", "{v}");
+        assert_eq!(v["root"], record.id().unwrap().to_string(), "{v}");
+        assert_eq!(v["state"]["recorded"], "failed", "{v}");
+        assert_eq!(v["state"]["recomputed"], "failed", "{v}");
+        assert_eq!((&v["pass"], &v["matches"]), (&false.into(), &true.into()));
+        let notes = v["notes"].to_string();
+        assert!(notes.contains("it failed on: check `e2e` is Fail"), "{v}");
+    }
+    let text = ok(ci, &["replay", &r.second]);
+    let line = format!("REPLAYED: {}'s failure record replays to ABORT ", r.second);
+    assert!(text.starts_with(&line), "{text}");
+
+    let span = format!("{}..{}", r.first, r.second);
+    let (code, v, err) = json(ci, &["show", "--json", &span]);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["records"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["records"][0]["name"], name.as_str(), "{v}");
+    let bytes = ci.git(&["cat-file", "blob", &format!("{name}:root.json")]);
+    assert_eq!(v["records"][0]["root_json"], bytes.as_str(), "{v}");
+    assert!(!v["roots"].to_string().contains(&name), "{v}");
+    let text = ok(ci, &["show", &span]);
+    let first = text.lines().next().unwrap();
+    assert!(
+        first.ends_with("; 1 failure records are held and not sent"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("\nrecord {name} ")), "{text}");
+
+    let ran = jtac(&r.f.second(), &["replay", &r.second]);
+    let what = format!(
+        "jtac: the failure record for {} verifies, but its nodes are not in this clone's store.",
+        r.second
+    );
+    assert_eq!((ran.code, ran.stdout.as_str()), (2, ""), "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+    let ran = jtac(ci, &["replay", &r.b, "--record"]);
+    let what = format!("jtac: {} has no failure record in this clone.", r.b);
+    assert_eq!(ran.code, 2, "{}", ran.stderr);
+    assert!(ran.stderr.starts_with(&what), "{}", ran.stderr);
+
+    let (code, v, err) = r.concluded("success", "", true);
+    assert_eq!(code, 0, "{v}{err}");
+    let (code, v, err) = json(ci, &["replay", &r.second, "--json"]);
+    assert_eq!((code, &v["document"]), (0, &"root".into()), "{v}{err}");
+    let also = format!(
+        "also holds a failure record at {name}; `jtac replay {} --record` replays it",
+        r.second
+    );
+    assert!(v["notes"].to_string().contains(&also), "{v}");
+    let (code, v, err) = json(ci, &["replay", &r.second, "--record", "--json"]);
+    assert_eq!(code, 0, "{v}{err}");
+    assert_eq!(v["document"], "failure record", "{v}");
+
+    let real = read_root(ci, &r.second);
+    let hex = |root: &Root| root.id().unwrap().to_string().replace("sha256:", "");
+    let store = ci.path().join(".git/jtac/roots");
+    let nodes = std::fs::read(store.join(hex(&real)).join("nodes.json")).unwrap();
+    let forged = Root {
+        state: serde_json::from_value("failed".into()).unwrap(),
+        ..real
+    };
+    put_record(ci, &r.f.ci_key, &r.second, &forged);
+    std::fs::create_dir_all(store.join(hex(&forged))).unwrap();
+    std::fs::write(store.join(hex(&forged)).join("nodes.json"), nodes).unwrap();
+    let (code, v, err) = json(ci, &["replay", &r.second, "--record", "--json"]);
+    assert_eq!(code, 1, "{v}{err}");
+    let want = [
+        "the state differs",
+        "the verdict is CLEARED HOT: a failure record holds a verdict that failed",
+    ];
+    assert_eq!(v["mismatches"], serde_json::json!(want), "{v}");
+
+    ci.git(&["update-ref", &name, &r.second]);
+    let (code, v, err) = json(ci, &["replay", &r.second, "--json"]);
+    assert_eq!((code, &v["document"]), (0, &"root".into()), "{v}{err}");
+    let junk = format!("{name} holds no failure record and is not read");
+    assert!(v["notes"].to_string().contains(&junk), "{v}");
+    let (code, v, err) = json(ci, &["show", "--json", &span]);
+    assert_eq!(code, 0, "{v}{err}");
+    let shown = &v["records"][0];
+    assert_eq!(shown["root_json"], "", "{v}");
+    let note = shown["note"].as_str().unwrap_or_default();
+    assert!(note.starts_with("it does not hold a failure record"), "{v}");
+}

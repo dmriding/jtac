@@ -251,6 +251,9 @@ pub struct ReplayArgs {
     /// The commit whose root to replay
     #[arg(value_name = "COMMIT")]
     pub commit: String,
+    /// Replay the commit's failure record, which is also what a commit with no root replays
+    #[arg(long)]
+    pub record: bool,
     /// An allowed-signers file instead of `.jtac/signers` at HEAD
     #[arg(long, value_name = "FILE")]
     pub signers: Option<PathBuf>,
@@ -481,11 +484,12 @@ mod tests {
             }))
         );
         assert!(Cli::try_parse_from(["jtac", "ci"]).is_err());
-        let cli = Cli::try_parse_from(["jtac", "replay", "HEAD", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["jtac", "replay", "HEAD", "--record", "--json"]).unwrap();
         assert_eq!(
             cli.command,
             Some(Command::Replay(ReplayArgs {
                 commit: "HEAD".into(),
+                record: true,
                 signers: None,
                 json: true,
             }))

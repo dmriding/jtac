@@ -51,7 +51,7 @@ runs:
     - name: jtac binary
       shell: bash
       env:
-        VERSION: v0.2.35
+        VERSION: v0.2.36
         BINARY: ${{ inputs.binary }}
       run: |
         set -euo pipefail

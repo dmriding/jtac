@@ -575,8 +575,7 @@ impl Refusal {
                  this run's record needs, so CI's failed verdict would go unrecorded and the \
                  merge read absent.",
                 format!(
-                    "Read it with `git cat-file blob {name}:root.json`; if nobody should have \
-                     written it, delete the ref (`git push {remote} :{name}`) and re-run the \
+                    "Read it with `jtac show {hex}`; if nobody should have written it, delete the ref (`git push {remote} :{name}`) and re-run the \
                      job, which then records its own verdict. Do not expect a passing re-run to \
                      clear it: only a verdict that fails reads this ref."
                 ),
@@ -665,10 +664,7 @@ mod tests {
                 .contains("0123456789ab already carries a failure record")
         );
         assert!(r.what.ends_with("no `from`.") && r.why.contains("created once"));
-        assert!(
-            r.how
-                .contains(&format!("`git cat-file blob {name}:root.json`"))
-        );
+        assert!(r.how.contains(&format!("`jtac show {}`", tip.hex())));
         assert!(r.how.contains(&format!("`git push origin :{name}`")));
         assert!(r.how.contains("Do not expect a passing re-run"), "{r:?}");
         let u = Refusal::unsent(Space::Failed, &tip, "origin");

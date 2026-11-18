@@ -1162,18 +1162,36 @@ fn a_kept_policy_decides_the_trigger_and_a_read_it_lacks_is_refused_with_the_lin
     );
     let text = std::fs::read_to_string(&jtac_yml).unwrap();
     assert!(text.contains("    workflows: [\"ci\"]\n"), "{text}");
-    assert!(
-        !ran.stdout.contains("no `workflow_run` trigger"),
-        "{}",
-        ran.stdout
-    );
+    let note = "`.github/workflows/jtac.yml` was kept and holds no line `workflows: [\"ci\"]`";
+    assert!(!ran.stdout.contains(note), "{}", ran.stdout);
+    let ran = env.init(&["--ci", "github"]);
+    assert!(!ran.stdout.contains(note), "{}", ran.stdout);
 
-    std::fs::write(&jtac_yml, "name: jtac\non:\n  push:\n").unwrap();
+    let run = |list: &str| format!("name: jtac\non:\n  workflow_run:\n    {list}\n");
+    for kept in [
+        "name: jtac\non:\n  push:\n".to_owned(),
+        run("workflows: [\"deploy\"]"),
+        run("workflows: [\"ci\", \"deploy\"]"),
+        run("# workflows: [\"ci\"]"),
+        "name: jtac\non:\n  push:\n# workflow_run: later\n".to_owned(),
+    ] {
+        std::fs::write(&jtac_yml, &kept).unwrap();
+        let ran = env.init(&["--ci", "github"]);
+        assert!(ran.stdout.contains(note), "{kept}: {}", ran.stdout);
+        let spelled = "A file that lists them in another spelling needs nothing";
+        assert!(ran.stdout.contains(spelled), "{}", ran.stdout);
+    }
+    std::fs::write(&jtac_yml, run("workflows: [\"ci\"]  \r")).unwrap();
+    let ran = env.init(&["--ci", "github"]);
+    assert!(!ran.stdout.contains(note), "{}", ran.stdout);
+
+    env.repo
+        .write(CI_YML, b"--- # yamllint\nname: ci\non: push\n");
+    std::fs::remove_file(&jtac_yml).unwrap();
     let ran = env.init(&["--ci", "github"]);
     assert!(
         ran.stdout
-            .contains("`.github/workflows/jtac.yml` was kept and has no `workflow_run` trigger")
-            && ran.stdout.contains("written for \"ci\""),
+            .contains("its root job starts when \"ci\" completes)"),
         "{}",
         ran.stdout
     );
