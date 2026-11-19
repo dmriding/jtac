@@ -38,7 +38,7 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
         return Err(Refusal::backtest_rows_exist(path, a));
     }
     let format = repo::format(&repo).map_err(git)?;
-    let line = range::first_parent_line(&repo, &format, "backtest", &a.range)?;
+    let line = range::first_parent_line(&repo, &format, &refuse::command(a), &a.range)?;
     let (units, skipped) = paired(&repo, &line, a)?;
     let chosen = policy::choose(&repo, &format, a, line.first())?;
     let (policy, matchers) = (&chosen.policy, &chosen.matchers);

@@ -55,7 +55,7 @@ impl Plan {
 /// Set the repository up, or say what would be.
 pub fn init(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if a.print_policy {
-        return print_policy(a, cwd);
+        return print_policy(cwd);
     }
     let plan = gather(a, cwd)?;
     let out = apply(&plan, a.dry_run)?;
@@ -68,11 +68,15 @@ pub fn init(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
 }
 
 /// Detection alone: no key, hook, remote or store is read, so it runs in any clone, and a
-/// policy the tree already holds changes nothing it prints.
-fn print_policy(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
-    let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
-    let new = detect::policy_text(&detect::detect(&repo)?, &ciread::parse(&a.read)?)?;
-    Ok(Printed::verdict(new.text, true))
+/// policy the tree already holds changes nothing it prints. Its refusals name this run,
+/// never the one that writes (`a_print_policy_refusal_names_the_run_that_writes_nothing`).
+fn print_policy(cwd: &Path) -> Result<Printed, Refusal> {
+    let repo = repo::root(cwd).map_err(|e| Refusal::print_policy_repository(&e))?;
+    let found = detect::detect(&repo, detect::Again::PrintPolicy)?;
+    Ok(Printed::verdict(
+        detect::policy_text(&found, &[])?.text,
+        true,
+    ))
 }
 
 fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
@@ -98,7 +102,7 @@ fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {
         }
         Ok(_) => (None, Vec::new()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let new = detect::policy_text(&detect::detect(&repo)?, &reads)?;
+            let new = detect::policy_text(&detect::detect(&repo, detect::Again::Init)?, &reads)?;
             (Some(new), reads.into_iter().map(|r| r.pin).collect())
         }
         Err(e) => return Err(Refusal::init_io("the policy", &policy_path, &e)),
@@ -366,6 +370,22 @@ pub(crate) fn slashes(path: &Path) -> String {
 }
 
 impl Refusal {
+    /// `--print-policy` where git names no work tree.
+    pub(crate) fn print_policy_repository(err: &RepoError) -> Self {
+        let first = match err {
+            RepoError::Git(jtac_checks::git::GitError::Spawn { .. }) => {
+                "Install git and put it on PATH"
+            }
+            _ => "Change into the work tree of the repository to read (`git status` answers there)",
+        };
+        ask(
+            err.to_string(),
+            "The policy init writes comes from the files the work tree holds, so with no work \
+             tree there is nothing to detect and no policy to print.",
+            format!("{first}, then run `jtac init --print-policy` again."),
+        )
+    }
+
     /// `.jtac` is a symlink, so a write into it would land wherever it points.
     pub fn init_symlink(path: &Path) -> Self {
         let path = slashes(path);
@@ -428,7 +448,7 @@ mod tests {
             Refusal::init_key(&sign),
             Refusal::init_key_file(path, &sign),
             Refusal::init_config_write("/workspace/key", &git),
-            Refusal::init_package_json("expected value"),
+            Refusal::init_package_json("expected value", detect::Again::Init),
             Refusal::init_policy(Some(&parse)),
             Refusal::init_policy(None),
         ];
@@ -454,5 +474,31 @@ mod tests {
                 .how
                 .contains("git config --global user.email")
         );
+    }
+
+    #[test]
+    fn a_print_policy_refusal_names_the_run_that_writes_nothing() {
+        let git = |stderr: &str| jtac_checks::git::GitError::Failed {
+            argv: vec!["git".into()],
+            status: Some(128),
+            stderr: stderr.into(),
+        };
+        let spawn = jtac_checks::git::GitError::Spawn {
+            argv: vec!["git".into()],
+            source: std::io::ErrorKind::NotFound.into(),
+        };
+        let rows = [
+            Refusal::print_policy_repository(&RepoError::Git(git("not a git repository"))),
+            Refusal::print_policy_repository(&RepoError::Git(spawn)),
+            Refusal::init_package_json("expected value", detect::Again::PrintPolicy),
+        ];
+        for r in &rows {
+            assert_eq!(r.kind, "negotiation", "{r:?}");
+            assert!(!r.what.is_empty() && !r.why.is_empty(), "{r:?}");
+            assert!(r.how.contains("`jtac init --print-policy` again"), "{r:?}");
+            for writes in ["`jtac init`", "jtac check", "jtac init again"] {
+                assert!(!r.how.contains(writes), "{writes} in {r:?}");
+            }
+        }
     }
 }

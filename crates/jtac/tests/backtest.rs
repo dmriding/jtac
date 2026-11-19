@@ -339,9 +339,10 @@ fn no_policy_refuses_in_three_parts_with_exit_two() {
     );
     assert!(parts[1].contains("decision 26"), "{}", parts[1]);
     assert!(
-        parts[2]
-            .starts_with("negotiation: Run `jtac init --print-policy > ../backtest-policy.toml`")
-            && parts[2].contains("`jtac backtest --policy ../backtest-policy.toml HEAD`"),
+        parts[2].starts_with(
+            "negotiation: At the repository's root, run `jtac init --print-policy > \
+             ../backtest-policy.toml`"
+        ) && parts[2].contains("`jtac backtest --policy ../backtest-policy.toml HEAD`"),
         "{}",
         parts[2]
     );
@@ -496,8 +497,14 @@ fn a_refused_policy_names_where_it_was_read_and_never_the_gate_s_file_or_command
 fn an_unreadable_range_and_a_directory_outside_git_exit_two() {
     let (repo, _) = history();
     let (dir, _) = outside();
-    let bad = jtac(&repo, &["backtest", "nope..main"]);
+    let bad = jtac(&repo, &["backtest", "--policy", "own.toml", "nope..main"]);
     assert_eq!((bad.code, bad.stdout.as_str()), (2, ""));
+    assert!(
+        bad.stderr
+            .contains("then `jtac backtest --policy own.toml` with a range it lists"),
+        "{}",
+        bad.stderr
+    );
     assert!(
         bad.stderr.contains("not a range git can list"),
         "{}",

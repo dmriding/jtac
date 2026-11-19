@@ -302,6 +302,16 @@ fn print_policy_prints_the_file_init_writes_needs_no_key_and_writes_nothing() {
         written,
         "a policy in the tree changes nothing it prints"
     );
+    env.repo.write("package.json", b"{not json");
+    let refused = env.jtac(&["init", "--print-policy"]);
+    assert_eq!((refused.code, refused.stdout.as_str()), (2, ""));
+    assert!(
+        refused
+            .stderr
+            .contains("run `jtac init --print-policy` again"),
+        "the run that writes nothing, not `jtac init`: {}",
+        refused.stderr
+    );
 }
 
 #[test]
@@ -789,6 +799,16 @@ fn outside_a_repository_init_refuses() {
     let ran = env.jtac(&["init"]);
     assert_eq!(ran.code, 2, "{}", ran.stdout);
     assert!(ran.stderr.starts_with("jtac: "), "{}", ran.stderr);
+    let print = env.jtac(&["init", "--print-policy"]);
+    assert_eq!((print.code, print.stdout.as_str()), (2, ""));
+    assert!(
+        print
+            .stderr
+            .contains("run `jtac init --print-policy` again")
+            && !print.stderr.contains("jtac check"),
+        "{}",
+        print.stderr
+    );
 }
 
 /// `--agent claude-code` writes the per-clone settings file once and keeps it after; the

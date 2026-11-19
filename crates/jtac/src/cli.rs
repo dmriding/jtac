@@ -93,8 +93,11 @@ pub struct InitArgs {
     #[arg(long)]
     pub json: bool,
     /// Print only the policy init would write for a tree that holds none, as the file's
-    /// text, and write nothing: `jtac init --print-policy > FILE`
-    #[arg(long, conflicts_with = "json")]
+    /// text, and write nothing: `jtac init --print-policy > FILE`; takes no other flag
+    #[arg(
+        long,
+        conflicts_with_all = ["dry_run", "remote", "keep_hook", "agent", "ci", "read", "json"]
+    )]
     pub print_policy: bool,
 }
 
@@ -364,6 +367,22 @@ mod tests {
     }
 
     #[test]
+    fn print_policy_takes_no_other_init_flag() {
+        assert!(Cli::try_parse_from(["jtac", "init", "--print-policy"]).is_ok());
+        for other in [
+            &["--dry-run"][..],
+            &["--remote", "up"],
+            &["--keep-hook"],
+            &["--agent", "claude-code"],
+            &["--ci", "github"],
+            &["--json"],
+        ] {
+            let args = [&["jtac", "init", "--print-policy"], other].concat();
+            assert!(Cli::try_parse_from(&args).is_err(), "{other:?}");
+        }
+    }
+
+    #[test]
     fn check_flags_parse_and_unknown_commands_land_in_other() {
         let cli = Cli::try_parse_from(["jtac", "check", "--preview", "--base", "main", "--json"])
             .unwrap();
@@ -408,8 +427,6 @@ mod tests {
                 print_policy: false,
             }))
         );
-        assert!(Cli::try_parse_from(["jtac", "init", "--print-policy"]).is_ok());
-        assert!(Cli::try_parse_from(["jtac", "init", "--print-policy", "--json"]).is_err());
         let cli = Cli::try_parse_from(["jtac", "hook", "pre-tool", "claude-code"]).unwrap();
         assert_eq!(
             cli.command,

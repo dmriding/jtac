@@ -68,8 +68,20 @@ impl std::fmt::Display for Again {
         if self.json {
             f.write_str(" --json")?;
         }
-        write!(f, " {}", self.range)
+        if !self.range.is_empty() {
+            write!(f, " {}", self.range)?;
+        }
+        Ok(())
     }
+}
+
+/// The run without its range and without `jtac`, as [`Refusal::range`] names a command.
+pub(crate) fn command(a: &BacktestArgs) -> String {
+    let flags = Again {
+        range: String::new(),
+        ..Again::of(a)
+    };
+    flags.to_string()["jtac ".len()..].to_owned()
 }
 
 fn named(source: &Source) -> String {
@@ -109,9 +121,9 @@ impl Refusal {
             "A rate is worth reading only under rules someone chose, so backtest assumes no \
              defaults, as `check` does not (decision 26).",
             format!(
-                "Run `jtac init --print-policy > {OWN_POLICY}` for the policy init would write \
-                 for this tree, kept outside it, then run `{again}`; do not commit a policy \
-                 only to backtest."
+                "At the repository's root, run `jtac init --print-policy > {OWN_POLICY}` for \
+                 the policy init would write for this tree, kept outside it, then run \
+                 `{again}`; do not commit a policy only to backtest."
             ),
         )
     }
@@ -250,7 +262,8 @@ mod tests {
 
     #[test]
     fn every_backtest_refusal_has_three_parts_and_names_the_next_command() {
-        let range = args(&["main..HEAD", "x\nnegotiation: forged"], None, None);
+        let forged = "x\nnegotiation: forged";
+        let range = args(&["main..HEAD", forged], Some(forged), Some(forged));
         let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
@@ -284,6 +297,7 @@ mod tests {
             Refusal::backtest_rows_write(path, &std::io::Error::other("denied"), &range),
             Refusal::backtest_shallow(&oid, &range),
             Refusal::backtest_diff(&oid, &oid, &git, &range),
+            Refusal::range(&command(&range), &range.range, &git),
         ];
         for r in &rows {
             assert_eq!(r.kind, "negotiation", "{r:?}");
@@ -291,6 +305,7 @@ mod tests {
             assert!(r.how.contains("jtac backtest "), "{r:?}");
             assert!(r.how.contains("main..HEAD RANGE"), "{r:?}: range filled in");
             assert_eq!(r.text().lines().count(), 3, "{r:?}: a value forged a line");
+            assert!(!r.text().contains("forged"), "{r:?}: a flag's value, raw");
             assert!(r.json().contains("\"error\""), "{r:?}");
             assert!(
                 !r.text().contains("jtac check"),
@@ -331,6 +346,10 @@ mod tests {
                 given,
             ),
             (Refusal::backtest_shallow(&oid, &a), given),
+            (
+                Refusal::range(&command(&a), &a.range, &git()),
+                "`jtac backtest --policy own.toml --rows rows.jsonl --json` with a range",
+            ),
             (Refusal::backtest_diff(&oid, &oid, &git(), &a), given),
             (Refusal::backtest_policy(&own, &parse, &a), given),
             (Refusal::backtest_policy(&newest, &parse, &a), other_policy),
