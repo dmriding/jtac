@@ -60,16 +60,26 @@ pub fn detected(file: &dyn Fn(&str) -> bool, package: Option<&str>) -> Result<De
     })
 }
 
-/// Read the facts at `root`.
-pub fn detect(root: &Path) -> Result<Detected, Refusal> {
+/// Read the facts at `root`, for the run `again` names.
+pub fn detect(root: &Path, again: Again) -> Result<Detected, Refusal> {
     let file = |name: &str| root.join(name).is_file();
     let package = if file("package.json") {
         let text = std::fs::read_to_string(root.join("package.json"));
-        Some(text.map_err(|e| Refusal::init_package_json(&e.to_string()))?)
+        Some(text.map_err(|e| Refusal::init_package_json(&e.to_string(), again))?)
     } else {
         None
     };
-    detected(&file, package.as_deref()).map_err(|e| Refusal::init_package_json(&e))
+    detected(&file, package.as_deref()).map_err(|e| Refusal::init_package_json(&e, again))
+}
+
+/// Which run a detection refusal sends its reader back to: `--print-policy` writes nothing,
+/// and a refusal of it that named `jtac init` would have a clone set up to be measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Again {
+    /// `jtac init`.
+    Init,
+    /// `jtac init --print-policy`.
+    PrintPolicy,
 }
 
 /// The languages found, for the report.
@@ -142,13 +152,22 @@ pub fn kept_hash(path: &Path) -> Result<Sha256Digest, Refusal> {
 
 impl Refusal {
     /// `package.json` could not be read as a manifest.
-    pub fn init_package_json(what: &str) -> Self {
+    pub fn init_package_json(what: &str, again: Again) -> Self {
+        let then = match again {
+            Again::Init => {
+                "run `jtac init` again, or write `.jtac/policy.toml` yourself and run `jtac init`"
+            }
+            Again::PrintPolicy => {
+                "run `jtac init --print-policy` again, or write the policy file yourself"
+            }
+        };
         ask(
             format!("`package.json` could not be read: {what}."),
             "init writes a check for each script the manifest declares; a manifest it cannot \
              read would get a policy with none, a gate that looks set up and checks nothing.",
-            "Fix `package.json` (`npm pkg get scripts` shows what npm reads), then run `jtac \
-             init` again, or write `.jtac/policy.toml` yourself and run `jtac init`.",
+            format!(
+                "Fix `package.json` (`npm pkg get scripts` shows what npm reads), then {then}."
+            ),
         )
     }
 

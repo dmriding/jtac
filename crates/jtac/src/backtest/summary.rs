@@ -61,6 +61,10 @@ pub struct Summary {
     pub blocking: u64,
     /// `blocking` per thousand units, rounded down.
     pub blocking_per_mille: u64,
+    /// Units with a blocking finding not marked `preexisting`.
+    pub blocking_not_preexisting: u64,
+    /// `blocking_not_preexisting` per thousand units, rounded down.
+    pub blocking_not_preexisting_per_mille: u64,
     /// Units with no finding at all.
     pub silent: u64,
     /// `silent` per thousand units, rounded down.
@@ -154,7 +158,7 @@ pub fn summarize(rows: &[Row], skipped: u64, under: Under) -> Summary {
     let block_at = under.block_at;
     let units = rows.len() as u64;
     let silent = rows.iter().filter(|r| r.findings.is_empty()).count() as u64;
-    let mut blocking = 0;
+    let (mut blocking, mut not_preexisting) = (0, 0);
     let mut all = Tally::default();
     let mut by_language: BTreeMap<&'static str, Tally> = BTreeMap::new();
     for row in rows {
@@ -168,6 +172,7 @@ pub fn summarize(rows: &[Row], skipped: u64, under: Under) -> Summary {
             .filter(|f| f.severity <= block_at)
             .collect();
         blocking += u64::from(!blockers.is_empty());
+        not_preexisting += u64::from(blockers.iter().any(|f| f.preexisting != Some(true)));
         let rules: BTreeSet<Rule> = blockers.iter().map(|f| f.rule).collect();
         let [rule] = rules.into_iter().collect::<Vec<_>>()[..] else {
             continue;
@@ -193,6 +198,8 @@ pub fn summarize(rows: &[Row], skipped: u64, under: Under) -> Summary {
         skipped,
         blocking,
         blocking_per_mille: per_mille(blocking, units),
+        blocking_not_preexisting: not_preexisting,
+        blocking_not_preexisting_per_mille: per_mille(not_preexisting, units),
         silent,
         silent_per_mille: per_mille(silent, units),
         findings: all.findings(),
@@ -314,6 +321,34 @@ mod tests {
         );
         assert_eq!(s.rows_written, None);
         assert_eq!(s.does_not_say, DOES_NOT_SAY);
+    }
+
+    #[test]
+    fn a_unit_blocked_only_by_preexisting_findings_leaves_the_second_rate() {
+        use Rule::*;
+        use Severity::*;
+        let rows = [
+            row(vec![f(Size001, Major, "src/big.rs", Some(true))]),
+            row(vec![
+                f(Size001, Major, "src/big.rs", Some(true)),
+                f(Cmt001, Minor, "src/big.rs", Some(false)),
+            ]),
+            row(vec![
+                f(Size001, Major, "src/big.rs", Some(true)),
+                f(Size002, Major, "src/big.rs", Some(false)),
+            ]),
+            row(vec![f(Test001, Blocker, "src/a.rs", None)]),
+        ];
+        let s = summarize(&rows, 0, under(Major));
+        assert_eq!((s.blocking, s.blocking_per_mille), (4, 1000));
+        assert_eq!(
+            (
+                s.blocking_not_preexisting,
+                s.blocking_not_preexisting_per_mille
+            ),
+            (2, 500),
+            "a minor finding that is not preexisting blocks nothing"
+        );
     }
 
     #[test]

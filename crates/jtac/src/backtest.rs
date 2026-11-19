@@ -14,10 +14,11 @@ use std::path::Path;
 
 use jtac_checks::diff::git::changes;
 use jtac_checks::diff::{Adoption, report};
+use jtac_core::GitOid;
 
 use crate::Printed;
 use crate::cli::BacktestArgs;
-use crate::range;
+use crate::range::{self, Landed};
 use crate::refuse::Refusal;
 use crate::repo::{self, RepoError};
 
@@ -26,7 +27,7 @@ use summary::Under;
 
 /// Judge every unit of the range and print the summary.
 pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
-    let git = |e: RepoError| Refusal::backtest_repository(&e, &a.range);
+    let git = |e: RepoError| Refusal::backtest_repository(&e, a);
     let repo = repo::root(cwd).map_err(git)?;
     if let Some(path) = repo::grafted(&repo).map_err(git)? {
         return Err(Refusal::grafted(&path));
@@ -34,25 +35,18 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
     if let Some(path) = &a.rows
         && path.symlink_metadata().is_ok()
     {
-        return Err(Refusal::backtest_rows_exist(path, &a.range));
+        return Err(Refusal::backtest_rows_exist(path, a));
     }
     let format = repo::format(&repo).map_err(git)?;
-    let line = range::first_parent_line(&repo, &format, "backtest", &a.range)?;
+    let line = range::first_parent_line(&repo, &format, &refuse::command(a), &a.range)?;
+    let (units, skipped) = paired(&repo, &line, a)?;
     let chosen = policy::choose(&repo, &format, a, line.first())?;
     let (policy, matchers) = (&chosen.policy, &chosen.matchers);
     let block_at = policy.integrity.block_at;
     let mut rows = Vec::new();
-    let mut skipped = 0;
-    for unit in &line {
-        let Some(parent) = unit.parents.first() else {
-            if range::has_parent(&repo, &unit.commit).map_err(git)? {
-                return Err(Refusal::backtest_shallow(&unit.commit, &a.range));
-            }
-            skipped += 1;
-            continue;
-        };
+    for (unit, parent) in units {
         let changed = changes(&repo, &parent.hex(), &unit.commit.hex())
-            .map_err(|e| Refusal::backtest_diff(&unit.commit, parent, &e, &a.range))?;
+            .map_err(|e| Refusal::backtest_diff(&unit.commit, parent, &e, a))?;
         let said = report(&policy.integrity, matchers, &changed, Adoption::None);
         rows.push(Row::of(unit, changed.len(), said, block_at));
     }
@@ -63,7 +57,7 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
     };
     let mut summary = summary::summarize(&rows, skipped, under);
     if let Some(path) = &a.rows {
-        write_rows(path, &rows).map_err(|e| Refusal::backtest_rows_write(path, &e, &a.range))?;
+        write_rows(path, &rows).map_err(|e| Refusal::backtest_rows_write(path, &e, a))?;
         summary.rows_written = Some(rows.len() as u64);
     }
     let text = if a.json {
@@ -72,6 +66,32 @@ pub fn backtest(a: &BacktestArgs, cwd: &Path) -> Result<Printed, Refusal> {
         render::text(&summary)
     };
     Ok(Printed::verdict(text, true))
+}
+
+/// A first-parent commit and the parent it is judged against.
+type Unit<'a> = (&'a Landed, &'a GitOid);
+
+/// Each unit with its first parent, and how many commits have none. Before any diff: a
+/// shallow cut is the range's oldest commit, so it refuses here and not after the rest ran.
+fn paired<'a>(
+    repo: &Path,
+    line: &'a [Landed],
+    a: &BacktestArgs,
+) -> Result<(Vec<Unit<'a>>, u64), Refusal> {
+    let mut units = Vec::new();
+    let mut skipped = 0;
+    for unit in line {
+        match unit.parents.first() {
+            Some(parent) => units.push((unit, parent)),
+            None if range::has_parent(repo, &unit.commit)
+                .map_err(|e| Refusal::backtest_repository(&e, a))? =>
+            {
+                return Err(Refusal::backtest_shallow(&unit.commit, a));
+            }
+            None => skipped += 1,
+        }
+    }
+    Ok((units, skipped))
 }
 
 /// One JSON line per row, into a file created here: an existing one is never replaced.

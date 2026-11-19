@@ -51,8 +51,7 @@ pub fn choose(
     a: &BacktestArgs,
     newest: Option<&Landed>,
 ) -> Result<Chosen, Refusal> {
-    let unread =
-        |source: &Source, detail: &str| Refusal::backtest_policy_unread(source, detail, &a.range);
+    let unread = |source: &Source, detail: &str| Refusal::backtest_policy_unread(source, detail, a);
     let (source, bytes) = match (&a.policy, newest) {
         (Some(path), _) => {
             let source = Source::File(path.clone());
@@ -60,24 +59,24 @@ pub fn choose(
             (source, bytes)
         }
         (None, Some(unit)) => {
-            let git = |e: RepoError| Refusal::backtest_repository(&e, &a.range);
+            let git = |e: RepoError| Refusal::backtest_repository(&e, a);
             let source = Source::Newest(unit.commit);
             let head = repo::peel(repo, format, &unit.commit.hex()).map_err(git)?;
             match repo::blob_at(repo, &head, POLICY_PATH) {
                 Ok(Some((_, bytes))) => (source, bytes),
-                Ok(None) => return Err(Refusal::backtest_no_policy(&a.range)),
+                Ok(None) => return Err(Refusal::backtest_no_policy(a)),
                 Err(RepoError::NotAFile { .. }) => {
                     return Err(unread(&source, "it is a link or a directory there"));
                 }
                 Err(e) => return Err(git(e)),
             }
         }
-        (None, None) => return Err(Refusal::backtest_no_policy(&a.range)),
+        (None, None) => return Err(Refusal::backtest_no_policy(a)),
     };
     let text = String::from_utf8(bytes).map_err(|_| unread(&source, "it is not UTF-8"))?;
     let (policy, matchers) = jtac_policy::parse(&text)
         .and_then(|p| p.matchers().map(|m| (p, m)))
-        .map_err(|e| Refusal::backtest_policy(&source, &e, &a.range))?;
+        .map_err(|e| Refusal::backtest_policy(&source, &e, a))?;
     let hash = jtac_policy::policy_hash(&policy).map_err(Refusal::internal)?;
     Ok(Chosen {
         policy,

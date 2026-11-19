@@ -283,6 +283,38 @@ fn a_second_run_keeps_every_step_and_changes_nothing() {
 }
 
 #[test]
+fn print_policy_prints_the_file_init_writes_needs_no_key_and_writes_nothing() {
+    let env = Env::new();
+    env.repo
+        .write("Cargo.toml", b"[package]\nname = \"example-app\"\n");
+    env.repo.git(&["config", "--unset", "user.email"]);
+    let before = env.snapshot();
+    let printed = env.init(&["--print-policy"]);
+    assert_eq!(env.snapshot(), before, "{}", printed.stdout);
+    assert_eq!(printed.stderr, "");
+    env.repo.git(&["config", "user.email", "dev@example.com"]);
+    env.init(&[]);
+    let written = std::fs::read_to_string(env.repo.path().join(".jtac/policy.toml")).unwrap();
+    assert_eq!(printed.stdout, written);
+    std::fs::write(env.repo.path().join(".jtac/policy.toml"), "version = 1\n").unwrap();
+    assert_eq!(
+        env.init(&["--print-policy"]).stdout,
+        written,
+        "a policy in the tree changes nothing it prints"
+    );
+    env.repo.write("package.json", b"{not json");
+    let refused = env.jtac(&["init", "--print-policy"]);
+    assert_eq!((refused.code, refused.stdout.as_str()), (2, ""));
+    assert!(
+        refused
+            .stderr
+            .contains("run `jtac init --print-policy` again"),
+        "the run that writes nothing, not `jtac init`: {}",
+        refused.stderr
+    );
+}
+
+#[test]
 fn a_dry_run_reports_would_write_and_writes_nothing() {
     let env = Env::new();
     env.repo
@@ -767,6 +799,16 @@ fn outside_a_repository_init_refuses() {
     let ran = env.jtac(&["init"]);
     assert_eq!(ran.code, 2, "{}", ran.stdout);
     assert!(ran.stderr.starts_with("jtac: "), "{}", ran.stderr);
+    let print = env.jtac(&["init", "--print-policy"]);
+    assert_eq!((print.code, print.stdout.as_str()), (2, ""));
+    assert!(
+        print
+            .stderr
+            .contains("run `jtac init --print-policy` again")
+            && !print.stderr.contains("jtac check"),
+        "{}",
+        print.stderr
+    );
 }
 
 /// `--agent claude-code` writes the per-clone settings file once and keeps it after; the
