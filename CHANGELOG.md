@@ -10,7 +10,7 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 - (0.2.38) `jtac init --print-policy` prints only the policy init writes for a tree that
   holds none, as the file's text, and writes nothing (`DESIGN.md` section 11.7). It takes
-  no other flag and reads no key, hook or remote, so it runs in any clone: `jtac init
+  no other flag and reads no key, hook or remote, so it runs in any work tree: `jtac init
   --print-policy > ../backtest-policy.toml` is the file `jtac backtest --policy` starts
   from, and the no-policy refusal says so.
 - (0.2.38) The `jtac backtest` summary gives the share that would block a second time with
@@ -19,10 +19,10 @@ request moves them under a dated heading and bumps nothing, unless a spent tag h
 
 ### Changed
 
-- (0.2.38) A `jtac backtest` refusal names the run again with every flag it was given,
-  `--policy`, `--rows` and `--json`, the unreadable range's among them; before, the command
-  it printed dropped them. A shallow cut refuses before any unit is judged, not after the
-  rest of the range ran.
+- (0.2.38) A refusal of `jtac backtest`'s own names the run again with every flag it was
+  given, `--policy`, `--rows` and `--json`, the unreadable range's among them; before, the
+  command it printed dropped them. A shallow cut refuses before any unit is judged, not
+  after the rest of the range ran.
 
 ## [0.2.37] - 2026-11-19
 

@@ -67,8 +67,8 @@ pub fn init(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
     Ok(Printed::verdict(text, true))
 }
 
-/// Detection alone: no key, hook, remote or store is read, so it runs in any clone, and a
-/// policy the tree already holds changes nothing it prints. Its refusals name this run,
+/// Detection alone: no key, hook, remote or store is read, so it runs in any work tree, and
+/// a policy the tree already holds changes nothing it prints. Its own refusals name this run,
 /// never the one that writes (`a_print_policy_refusal_names_the_run_that_writes_nothing`).
 fn print_policy(cwd: &Path) -> Result<Printed, Refusal> {
     let repo = repo::root(cwd).map_err(|e| Refusal::print_policy_repository(&e))?;
