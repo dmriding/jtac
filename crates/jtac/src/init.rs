@@ -54,6 +54,9 @@ impl Plan {
 
 /// Set the repository up, or say what would be.
 pub fn init(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
+    if a.print_policy {
+        return print_policy(a, cwd);
+    }
     let plan = gather(a, cwd)?;
     let out = apply(&plan, a.dry_run)?;
     let text = if a.json {
@@ -62,6 +65,14 @@ pub fn init(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
         out.text()
     };
     Ok(Printed::verdict(text, true))
+}
+
+/// Detection alone: no key, hook, remote or store is read, so it runs in any clone, and a
+/// policy the tree already holds changes nothing it prints.
+fn print_policy(a: &InitArgs, cwd: &Path) -> Result<Printed, Refusal> {
+    let repo = repo::root(cwd).map_err(|e| Refusal::repository(&e))?;
+    let new = detect::policy_text(&detect::detect(&repo)?, &ciread::parse(&a.read)?)?;
+    Ok(Printed::verdict(new.text, true))
 }
 
 fn gather(a: &InitArgs, cwd: &Path) -> Result<Plan, Refusal> {

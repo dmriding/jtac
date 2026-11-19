@@ -92,6 +92,10 @@ pub struct InitArgs {
     /// Print the structure the text is rendered from, as JSON
     #[arg(long)]
     pub json: bool,
+    /// Print only the policy init would write for a tree that holds none, as the file's
+    /// text, and write nothing: `jtac init --print-policy > FILE`
+    #[arg(long, conflicts_with = "json")]
+    pub print_policy: bool,
 }
 
 /// The hooks git can call. Stdout is the protocol wire; diagnostics go to stderr.
@@ -401,8 +405,11 @@ mod tests {
                 ci: None,
                 read: Vec::new(),
                 json: false,
+                print_policy: false,
             }))
         );
+        assert!(Cli::try_parse_from(["jtac", "init", "--print-policy"]).is_ok());
+        assert!(Cli::try_parse_from(["jtac", "init", "--print-policy", "--json"]).is_err());
         let cli = Cli::try_parse_from(["jtac", "hook", "pre-tool", "claude-code"]).unwrap();
         assert_eq!(
             cli.command,

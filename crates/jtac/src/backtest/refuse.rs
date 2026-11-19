@@ -1,7 +1,7 @@
 //! What `jtac backtest` refuses (DESIGN.md sections 11.10 and 12), each with exit 2: no
 //! policy, a policy that does not read, a rows file that exists or cannot be written, and
-//! history this clone cannot read or diff. Every one names `jtac backtest` with the range
-//! filled in and the policy it actually read, never the gate's file, commit or command.
+//! history this clone cannot read or diff. Every one names the run again as it was given,
+//! flags and range, and the policy it actually read, never the gate's file, commit or command.
 
 use std::path::Path;
 
@@ -10,6 +10,7 @@ use jtac_core::GitOid;
 use jtac_policy::{POLICY_PATH, PolicyError};
 
 use super::policy::Source;
+use crate::cli::BacktestArgs;
 use crate::init::ask;
 use crate::refuse::Refusal;
 use crate::repo::RepoError;
@@ -25,6 +26,52 @@ fn file(path: &Path) -> String {
     quoted(&path.to_string_lossy(), "FILE")
 }
 
+/// The run as it was given, for a refusal's next command: a flag dropped there is another
+/// run (`every_backtest_refusal_names_the_run_again_with_the_flags_it_was_given`).
+struct Again {
+    policy: Option<String>,
+    rows: Option<String>,
+    json: bool,
+    range: String,
+}
+
+impl Again {
+    fn of(a: &BacktestArgs) -> Self {
+        Self {
+            policy: a.policy.as_deref().map(file),
+            rows: a.rows.as_deref().map(file),
+            json: a.json,
+            range: shown(&a.range),
+        }
+    }
+
+    fn policy(mut self, file: &str) -> Self {
+        self.policy = Some(file.to_owned());
+        self
+    }
+
+    fn rows(mut self, file: String) -> Self {
+        self.rows = Some(file);
+        self
+    }
+}
+
+impl std::fmt::Display for Again {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("jtac backtest")?;
+        if let Some(policy) = &self.policy {
+            write!(f, " --policy {policy}")?;
+        }
+        if let Some(rows) = &self.rows {
+            write!(f, " --rows {rows}")?;
+        }
+        if self.json {
+            f.write_str(" --json")?;
+        }
+        write!(f, " {}", self.range)
+    }
+}
+
 fn named(source: &Source) -> String {
     match source {
         Source::File(path) => format!("the `--policy` file `{}`", file(path)),
@@ -37,8 +84,8 @@ fn named(source: &Source) -> String {
 
 impl Refusal {
     /// git could not answer about the repository.
-    pub(crate) fn backtest_repository(err: &RepoError, range: &[String]) -> Self {
-        let range = shown(range);
+    pub(crate) fn backtest_repository(err: &RepoError, a: &BacktestArgs) -> Self {
+        let again = Again::of(a);
         let first = match err {
             RepoError::Git(GitError::Spawn { .. }) => "Install git and put it on PATH",
             _ => "Run `git status` here; once git answers",
@@ -47,13 +94,13 @@ impl Refusal {
             err.to_string(),
             "A report over history git cannot read would count what it could not see as no \
              finding, so backtest refuses rather than print a rate.",
-            format!("{first}, then run `jtac backtest {range}` again."),
+            format!("{first}, then run `{again}` again."),
         )
     }
 
     /// Neither `--policy` nor a policy in the range's newest commit.
-    pub(crate) fn backtest_no_policy(range: &[String]) -> Self {
-        let range = shown(range);
+    pub(crate) fn backtest_no_policy(a: &BacktestArgs) -> Self {
+        let (range, again) = (shown(&a.range), Again::of(a).policy(OWN_POLICY));
         ask(
             format!(
                 "no policy to backtest `{range}` under: no `--policy` file was given, and the \
@@ -62,32 +109,30 @@ impl Refusal {
             "A rate is worth reading only under rules someone chose, so backtest assumes no \
              defaults, as `check` does not (decision 26).",
             format!(
-                "Run `jtac init --dry-run` to print the policy init would write for this tree, \
-                 save its policy text outside the tree as `{OWN_POLICY}`, then run `jtac \
-                 backtest --policy {OWN_POLICY} {range}`; do not commit a policy only to \
-                 backtest."
+                "Run `jtac init --print-policy > {OWN_POLICY}` for the policy init would write \
+                 for this tree, kept outside it, then run `{again}`; do not commit a policy \
+                 only to backtest."
             ),
         )
     }
 
     /// The policy `source` names could not be read as text.
-    pub(crate) fn backtest_policy_unread(source: &Source, detail: &str, range: &[String]) -> Self {
-        let range = shown(range);
+    pub(crate) fn backtest_policy_unread(source: &Source, detail: &str, a: &BacktestArgs) -> Self {
+        let again = Again::of(a).policy(OWN_POLICY);
         ask(
             format!("{} could not be read: {detail}.", named(source)),
             "A policy that cannot be read denies and never falls back to defaults: a rate under \
              rules nobody wrote is no rate.",
             format!(
-                "Write the policy as UTF-8 TOML in a file you can read and run `jtac backtest \
-                 --policy {OWN_POLICY} {range}`; `jtac init --dry-run` prints one to start \
-                 from."
+                "Write the policy as UTF-8 TOML in a file you can read and run `{again}`; \
+                 `jtac init --print-policy` prints one to start from."
             ),
         )
     }
 
     /// The policy `source` names does not parse under this build.
-    pub(crate) fn backtest_policy(source: &Source, err: &PolicyError, range: &[String]) -> Self {
-        let range = shown(range);
+    pub(crate) fn backtest_policy(source: &Source, err: &PolicyError, a: &BacktestArgs) -> Self {
+        let again = Again::of(a);
         match source {
             Source::File(path) => {
                 let file = file(path);
@@ -95,11 +140,11 @@ impl Refusal {
                 ask(
                     format!("the `--policy` file was refused: {what}"),
                     why,
-                    format!("{fix}, then run `jtac backtest --policy {file} {range}` again."),
+                    format!("{fix}, then run `{again}` again."),
                 )
             }
             Source::Newest(commit) => {
-                let hex = commit.hex();
+                let (hex, again) = (commit.hex(), again.policy(OWN_POLICY));
                 let [what, why, _] = err.parts_in(POLICY_PATH);
                 let [_, _, fix] = err.parts_in(OWN_POLICY);
                 ask(
@@ -111,8 +156,7 @@ impl Refusal {
                     format!(
                         "That commit's policy cannot be edited and the work tree's is not \
                          read: write the output of `git show {hex}:{POLICY_PATH}` to \
-                         `{OWN_POLICY}`, {fix}, then run `jtac backtest --policy {OWN_POLICY} \
-                         {range}`."
+                         `{OWN_POLICY}`, {fix}, then run `{again}`."
                     ),
                 )
             }
@@ -120,36 +164,38 @@ impl Refusal {
     }
 
     /// `--rows` names a file that is already there.
-    pub(crate) fn backtest_rows_exist(path: &Path, range: &[String]) -> Self {
-        let (path, range) = (file(path), shown(range));
+    pub(crate) fn backtest_rows_exist(path: &Path, a: &BacktestArgs) -> Self {
+        let path = file(path);
+        let again = Again::of(a).rows(format!("{path}.2"));
         ask(
             format!("`{path}` exists, and `--rows` creates its file, never replaces one."),
             "The rows hold this repository's paths and messages for adjudication; writing over \
              a file could destroy an earlier run's rows or follow a link somewhere else.",
             format!(
-                "Name a file that does not exist yet: `jtac backtest --rows {path}.2 {range}`. \
-                 Do not delete the old one to make room unless you mean to lose it."
+                "Name a file that does not exist yet: `{again}`. Do not delete the old one to \
+                 make room unless you mean to lose it."
             ),
         )
     }
 
     /// The rows file could not be created or written.
-    pub(crate) fn backtest_rows_write(path: &Path, err: &std::io::Error, range: &[String]) -> Self {
-        let (path, range) = (file(path), shown(range));
+    pub(crate) fn backtest_rows_write(path: &Path, err: &std::io::Error, a: &BacktestArgs) -> Self {
+        let path = file(path);
+        let again = Again::of(a).rows("../backtest-rows.jsonl".to_owned());
         ask(
             format!("`--rows {path}` could not be written: {err}."),
             "A rows file cut short must not read as a run's rows, so the run reports nothing \
              rather than a summary of rows nobody can check.",
             format!(
                 "Remove anything left at `{path}`, then give `--rows` a new file in a directory \
-                 you can write: `jtac backtest --rows ../backtest-rows.jsonl {range}`."
+                 you can write: `{again}`."
             ),
         )
     }
 
     /// A first-parent commit whose parent the clone does not walk: a shallow boundary.
-    pub(crate) fn backtest_shallow(commit: &GitOid, range: &[String]) -> Self {
-        let range = shown(range);
+    pub(crate) fn backtest_shallow(commit: &GitOid, a: &BacktestArgs) -> Self {
+        let again = Again::of(a);
         ask(
             format!(
                 "`{}` names a parent this clone does not walk: the history is shallow.",
@@ -158,8 +204,8 @@ impl Refusal {
             "A unit is a commit judged against its first parent; counting a commit cut off by \
              a shallow mark as parentless would skip a change nobody judged.",
             format!(
-                "Run `git fetch --unshallow`, then `jtac backtest {range}` again, or give a \
-                 range that ends above the cut."
+                "Run `git fetch --unshallow`, then `{again}` again, or give a range that ends \
+                 above the cut."
             ),
         )
     }
@@ -169,9 +215,9 @@ impl Refusal {
         commit: &GitOid,
         parent: &GitOid,
         err: &GitError,
-        range: &[String],
+        a: &BacktestArgs,
     ) -> Self {
-        let (commit, parent, range) = (commit.hex(), parent.hex(), shown(range));
+        let (commit, parent, again) = (commit.hex(), parent.hex(), Again::of(a));
         let said = match err {
             GitError::Failed { stderr, .. } => stderr.clone(),
             e => e.to_string(),
@@ -182,8 +228,8 @@ impl Refusal {
              would count as one with no finding.",
             format!(
                 "Run `git diff --raw {parent} {commit}` to see what git says; in a partial \
-                 clone fetch the missing objects first (`git fetch --refetch`), then run `jtac \
-                 backtest {range}` again."
+                 clone fetch the missing objects first (`git fetch --refetch`), then run \
+                 `{again}` again."
             ),
         )
     }
@@ -193,9 +239,18 @@ impl Refusal {
 mod tests {
     use super::*;
 
+    fn args(range: &[&str], policy: Option<&str>, rows: Option<&str>) -> BacktestArgs {
+        BacktestArgs {
+            range: range.iter().map(|w| (*w).to_owned()).collect(),
+            policy: policy.map(Into::into),
+            rows: rows.map(Into::into),
+            json: false,
+        }
+    }
+
     #[test]
     fn every_backtest_refusal_has_three_parts_and_names_the_next_command() {
-        let range = ["main..HEAD".to_owned(), "x\nnegotiation: forged".to_owned()];
+        let range = args(&["main..HEAD", "x\nnegotiation: forged"], None, None);
         let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
@@ -243,12 +298,64 @@ mod tests {
             );
             assert!(!r.text().contains("HEAD is"), "{r:?}: the gate's commit");
         }
-        assert!(rows[0].how.contains("jtac init --dry-run"));
+        assert!(
+            rows[0]
+                .how
+                .contains("jtac init --print-policy > ../backtest-policy.toml")
+        );
+    }
+
+    #[test]
+    fn every_backtest_refusal_names_the_run_again_with_the_flags_it_was_given() {
+        let mut a = args(&["main"], Some("own.toml"), Some("rows.jsonl"));
+        a.json = true;
+        let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let parse = jtac_policy::parse("version = 3\n").unwrap_err();
+        let git = || GitError::Failed {
+            argv: vec!["git".into(), "diff".into()],
+            status: Some(128),
+            stderr: "fatal: bad object".into(),
+        };
+        let own = Source::File("own.toml".into());
+        let newest = Source::Newest(oid);
+        let given = "`jtac backtest --policy own.toml --rows rows.jsonl --json main`";
+        let other_policy = "`jtac backtest --policy ../backtest-policy.toml --rows rows.jsonl \
+                            --json main`";
+        let rows = Path::new("rows.jsonl");
+        let io = std::io::Error::other("denied");
+        let table = [
+            (
+                Refusal::backtest_repository(&RepoError::Git(git()), &a),
+                given,
+            ),
+            (Refusal::backtest_shallow(&oid, &a), given),
+            (Refusal::backtest_diff(&oid, &oid, &git(), &a), given),
+            (Refusal::backtest_policy(&own, &parse, &a), given),
+            (Refusal::backtest_policy(&newest, &parse, &a), other_policy),
+            (
+                Refusal::backtest_policy_unread(&own, "not UTF-8", &a),
+                other_policy,
+            ),
+            (Refusal::backtest_no_policy(&a), other_policy),
+            (
+                Refusal::backtest_rows_exist(rows, &a),
+                "`jtac backtest --policy own.toml --rows rows.jsonl.2 --json main`",
+            ),
+            (
+                Refusal::backtest_rows_write(rows, &io, &a),
+                "`jtac backtest --policy own.toml --rows ../backtest-rows.jsonl --json main`",
+            ),
+        ];
+        for (r, want) in &table {
+            assert!(r.how.contains(want), "{want} in {}", r.how);
+        }
     }
 
     #[test]
     fn a_refused_policy_names_the_file_it_was_read_from_and_the_edit_that_fixes_it() {
-        let range = ["main".to_owned()];
+        let range = args(&["main"], Some("own.toml"), None);
         let oid: GitOid = "sha1:0000000000000000000000000000000000000001"
             .parse()
             .unwrap();

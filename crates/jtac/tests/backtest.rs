@@ -231,6 +231,14 @@ fn a_file_already_past_the_cap_is_preexisting_and_one_pushed_past_it_is_not() {
         (s["blocking"].as_u64(), s["silent"].as_u64()),
         (Some(3), Some(1))
     );
+    assert_eq!(
+        (
+            s["blocking_not_preexisting"].as_u64(),
+            s["blocking_not_preexisting_per_mille"].as_u64()
+        ),
+        (Some(2), Some(500)),
+        "the edit to the file already past the cap is left out"
+    );
 }
 
 #[test]
@@ -331,8 +339,9 @@ fn no_policy_refuses_in_three_parts_with_exit_two() {
     );
     assert!(parts[1].contains("decision 26"), "{}", parts[1]);
     assert!(
-        parts[2].starts_with("negotiation: Run `jtac init --dry-run`")
-            && parts[2].contains("jtac backtest --policy ../backtest-policy.toml HEAD"),
+        parts[2]
+            .starts_with("negotiation: Run `jtac init --print-policy > ../backtest-policy.toml`")
+            && parts[2].contains("`jtac backtest --policy ../backtest-policy.toml HEAD`"),
         "{}",
         parts[2]
     );
@@ -343,7 +352,17 @@ fn no_policy_refuses_in_three_parts_with_exit_two() {
         v["error"]["how"]
             .as_str()
             .unwrap()
-            .contains("jtac init --dry-run")
+            .contains("jtac backtest --policy ../backtest-policy.toml --json HEAD")
+    );
+    let printed = jtac(&repo, &["init", "--print-policy"]);
+    assert_eq!((printed.code, printed.stderr.as_str()), (0, ""));
+    let (_dir, rows) = outside();
+    let policy = rows.with_file_name("backtest-policy.toml");
+    std::fs::write(&policy, &printed.stdout).unwrap();
+    let s = summary(&repo, &["backtest", "--policy", &arg(&policy), "HEAD"]);
+    assert_eq!(
+        (s["units"].as_u64(), s["policy_from"].as_str()),
+        (Some(1), Some("file"))
     );
     let missing = jtac(
         &repo,
@@ -500,8 +519,23 @@ fn an_unreadable_range_and_a_directory_outside_git_exit_two() {
 fn a_shallow_boundary_refuses_rather_than_reading_as_a_root() {
     let (repo, ids) = history();
     repo.write(".git/shallow", format!("{}\n", ids.edit).as_bytes());
-    let ran = jtac(&repo, &["backtest", "main"]);
+    let given = [
+        "backtest",
+        "--policy",
+        "no-such-policy.toml",
+        "--rows",
+        "rows.jsonl",
+        "main",
+    ];
+    let ran = jtac(&repo, &given);
     assert_eq!(ran.code, 2, "{}", ran.stdout);
+    assert!(
+        ran.stderr
+            .contains(&format!("`jtac {}` again", given.join(" "))),
+        "the cut refuses before the policy is read, naming the run as given: {}",
+        ran.stderr
+    );
+    assert!(!repo.path().join("rows.jsonl").exists());
     assert!(
         ran.stderr.contains("the history is shallow"),
         "{}",

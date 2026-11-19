@@ -28,6 +28,12 @@ pub fn text(s: &Summary) -> String {
     );
     let _ = writeln!(
         out,
+        "               {} ({}) with preexisting findings left out",
+        units(s.blocking_not_preexisting),
+        share(s.blocking_not_preexisting_per_mille)
+    );
+    let _ = writeln!(
+        out,
         "  no finding   {} ({})",
         units(s.silent),
         share(s.silent_per_mille)
@@ -123,6 +129,8 @@ mod tests {
             skipped: 1,
             blocking: 3,
             blocking_per_mille: 375,
+            blocking_not_preexisting: 2,
+            blocking_not_preexisting_per_mille: 250,
             silent: 1,
             silent_per_mille: 125,
             findings: vec![size.clone()],
@@ -147,6 +155,7 @@ mod tests {
                 Sha256Digest::of("policy")
             ),
             "would block  3 units (37.5%)",
+            "               2 units (25.0%) with preexisting findings left out",
             "no finding   1 unit (12.5%)",
             "JT-SIZE-001  major    3, 2 preexisting",
             "rust    JT-SIZE-001",
