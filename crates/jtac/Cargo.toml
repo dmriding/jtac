@@ -20,7 +20,7 @@ jtac-store = { workspace = true }
 jtac-sign = { workspace = true }
 jtac-gate = { workspace = true }
 clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
-jiff = "0.2.38"
+jiff = "1.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
